@@ -1950,6 +1950,11 @@ export interface HarnessOptions {
   screen?: { [stage: string]: ScriptedAnswer };
   item?: string;
   /**
+   * The context's configuration, as landrace.yaml would give it — `branch`,
+   * say, for a workflow on `lr-{item}`. Absent, none: every default holds.
+   */
+  config?: Partial<RuntimeConfig>;
+  /**
    * What the world does while a step runs — a push, a pull request appearing,
    * a person resolving a thread. Called after the invocation is decided and
    * before the answer comes back, which is where those things actually happen.
@@ -2039,7 +2044,8 @@ export interface ExternalPull {
   /**
    * The branch it was opened from: what `pull.open` looks a pull request up
    * by, and — on the item branch the context configures — what ties it to an
-   * item. `landrace/{item}` of the item it was added for, unless the test says.
+   * item. The item branch of the item it was added for, unless the test says:
+   * `config.branch` as `createExternalState` was given it, or `landrace/{item}`.
    */
   branch?: string;
   /**
@@ -2060,7 +2066,11 @@ export interface ExternalPull {
   failed: FailedCheck[];
   /** False: the forge will not merge it — a conflict, or a rule of its own — and `merge` refuses, as a real one does. */
   mergeable?: false;
-  /** What it changes, file by file: none unless the test says. */
+  /**
+   * What it changes, file by file: none unless the test says. Once a test
+   * says, a review's findings are placed on it as `placeFindings` places them;
+   * until then, every well-formed finding opens a thread.
+   */
   files?: ChangedFile[];
   /** False: the forge's list of `files` stopped before its end, as a vendor's cap stops one. */
   filesComplete?: false;
@@ -2092,7 +2102,7 @@ export interface ExternalState extends ComposedHooks {
   /** The in-memory docs role's spec page: published, read back and briefed like any docs integration's. */
   spec: ArtifactHook;
   /**
-   * Open a pull request for `item`, from its `landrace/{item}` branch unless the test names another; returns
+   * Open a pull request for `item`, from its item branch — `config.branch`, or `landrace/{item}` — unless the test names another; returns
    * its node id, `pr-<n>`, numbered from 1 in creation order. `awaitingFix` defaults to `openThreads`: a
    * thread nobody has answered awaits a fix. Its head is `sha-<n>` and its checks `none`, unless the test says.
    */

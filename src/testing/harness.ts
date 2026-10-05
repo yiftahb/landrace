@@ -122,7 +122,7 @@ export function createHarness(options: HarnessOptions): Harness {
         ...(screener === undefined ? {} : { screen: { executor: screener, model: "screener" } }),
         ctx: {
           item,
-          config: {} as HookContext["config"],
+          config: (options.config ?? {}) as HookContext["config"],
           secrets: new Map<string, string>(),
           signal: new AbortController().signal,
           log: () => {},
