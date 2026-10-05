@@ -11,7 +11,7 @@
 import type { HookContext, RuntimeContext } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, isEffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
-  ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
+  itemBranchOf, ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
   type BranchHeads, type ChangedFiles, type CheckState, type FailedCheck, type ForgeOptions, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
@@ -59,7 +59,7 @@ query LandraceClosedPulls($owner: String!, $name: String!, $cursor: String) {
 }`;
 
 /**
- * Every pull request on one item's `landrace/{item}` head, a page at a time
+ * Every pull request on one item's branch as its head, a page at a time
  * on its own cursor — a fork's among them, since GitHub cannot be asked for
  * one repository's heads alone, until `pullsNaming` leaves it out.
  */
@@ -454,7 +454,7 @@ function constructedIn(): string | null {
  * off, it writes none — beside another vendor's tracker, `#7` is GitHub's
  * issue 7, which is somebody else's, and a merge would close it. Either way
  * it reads none: a pull request is an item's only from that item's own
- * `landrace/{item}` head in this repository, since anybody — a fork on a
+ * branch as its head in this repository, since anybody — a fork on a
  * public repository — can write `Closes #7`, and what it was tied to by that
  * reached the prompts and the routing of an item merged with no person.
  */
@@ -532,8 +532,8 @@ export class GitHubForge extends BaseForge {
   }
 
   /**
-   * One item's pull requests: every one on its `landrace/{item}` head in
-   * this repository. A fork's on a head of that name is not this item's —
+   * One item's pull requests: every one on its branch — `landrace/{item}`,
+   * or the one landrace.yaml names — as its head in this repository. A fork's on a head of that name is not this item's —
    * the name is in somebody else's repository — and nor is one that only
    * says it closes the item.
    *
@@ -545,7 +545,7 @@ export class GitHubForge extends BaseForge {
    */
   async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
     const gh = this.gh(ctx);
-    const head = prBranch(item);
+    const head = prBranch(item, itemBranchOf(ctx.config));
     const own: PullNode[] = [];
     let cursor: string | null = null;
     for (let page = 0; ; page++) {

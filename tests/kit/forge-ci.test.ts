@@ -225,8 +225,8 @@ describe("pull.merge", () => {
     const pr = forge.add("7", { branch: "landrace/7", checks: "success", headSha: "abc" });
     const snapshot = await read(hooks);
     const naming = forge.pullsNaming.bind(forge);
-    jest.spyOn(forge, "pullsNaming").mockImplementation(async (item) => {
-      const pulls = await naming(item);
+    jest.spyOn(forge, "pullsNaming").mockImplementation(async (item, c) => {
+      const pulls = await naming(item, c);
       forge.pull(pr).headSha = "def"; // a push lands between the read at apply and the merge
       return pulls;
     });

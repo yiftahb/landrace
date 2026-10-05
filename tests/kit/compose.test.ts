@@ -243,8 +243,8 @@ describe("the graph compose reads", () => {
    */
   it("ties a pull request to its item by a landrace/{item} head or by the items it names, and nothing else", async () => {
     class Forked extends MemoryForge {
-      override async pullsNaming(item: string): Promise<PullRecord[]> {
-        return (await super.pullsNaming(item)).map((p) => (p.number === 3 ? { ...p, branch: undefined, items: [] } : p));
+      override async pullsNaming(item: string, c: RuntimeContext): Promise<PullRecord[]> {
+        return (await super.pullsNaming(item, c)).map((p) => (p.number === 3 ? { ...p, branch: undefined, items: [] } : p));
       }
       override async pulls(): Promise<PullRecord[]> {
         return (await super.pulls()).map((p) => (p.number === 3 ? { ...p, branch: undefined, items: [] } : p));
@@ -261,6 +261,23 @@ describe("the graph compose reads", () => {
     const edges = (g: Graph) => g.relationships.filter((r) => r.type === "implements").map((r) => r.from).sort();
     expect(edges(await hooks.source.read("1", ctx))).toEqual(["pr-1", "pr-4", "pr-5"]);
     expect(edges(await hooks.source.list(ctx))).toEqual(["pr-1", "pr-4", "pr-5"]);
+  });
+
+  /*
+   * The item branch landrace.yaml names (#120): a pull request on lr-KEY-1 is
+   * KEY-1's, and one on landrace/KEY-1 is nobody's, in a read and a list.
+   */
+  it("ties a pull request to its item by the item branch the context configures, and by no other", async () => {
+    const state = createExternalState({ items: [{ id: "KEY-1" }] });
+    const ours = state.openPull("KEY-1", { branch: "lr-KEY-1" });
+    state.openPull("KEY-1", { branch: "landrace/KEY-1" });
+    const lr = { ...ctx, config: { ...ctx.config, branch: "lr-{item}" } };
+    const edges = (g: Graph) => g.relationships.filter((r) => r.type === "implements").map((r) => r.from);
+    expect(edges(await state.source.read("KEY-1", lr))).toEqual([ours]);
+    expect(edges(await state.source.list(lr))).toEqual([ours]);
+    // With none configured, exactly as before: the landrace/ one is the item's.
+    expect(edges(await state.source.read("KEY-1", ctx))).toEqual(["pr-2"]);
+    expect(edges(await state.source.list(ctx))).toEqual(["pr-2"]);
   });
 
   // A landrace/{item}-api head names no item there is, so the pull request is
