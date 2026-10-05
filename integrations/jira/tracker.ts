@@ -7,8 +7,9 @@
  * otherwise moves only to close an item or reopen it.
  */
 import {
-  type Closed, type Effect, type HookContext, type ItemPatch, mayCreateItems, neutraliseMarkers, type PreflightContext, RELATIONS,
-  type RuntimeContext, sameLogin, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT, WORKLOG_EFFECT,
+  type Closed, type Effect, FIELD_EFFECT, type HookContext, type ItemPatch, type Json, mayCreateItems, neutraliseMarkers, type Node,
+  type PreflightContext, RELATIONS, type RuntimeContext, sameLogin, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT,
+  type TrackerFieldValue, WORKLOG_EFFECT,
 } from "landrace/hooks";
 import {
   BaseTracker, botLoginOf, type CommentVisibility, type CreateRequest, DONE_WINDOW_MS, EffectRefused, type EffectTable, ISSUE_PAGE, MAX_ISSUE_PAGES,
@@ -78,7 +79,10 @@ const TEXTFIELD = "com.atlassian.jira.plugin.system.customfieldtypes:textfield";
 export const MAX_TEXTFIELD = 255;
 
 /** A field as `GET /field` lists it, or a create screen does under `fieldId`. */
-export interface Field { id?: unknown; name?: unknown; schema?: { type?: unknown; custom?: unknown } | null }
+export interface Field { id?: unknown; name?: unknown; schema?: { type?: unknown; items?: unknown; custom?: unknown } | null }
+
+/** A field as an issue's edit screen holds it: what it is, and the options a select offers there. */
+export interface EditField { name?: unknown; schema?: Field["schema"]; allowedValues?: Array<{ value?: unknown } | null> | null }
 
 /**
  * What a field takes by its type — a textarea a document unless its renderer
@@ -123,6 +127,154 @@ export function adfOf(text: string, what: string, mention?: Mention): AdfDoc {
   return plain;
 }
 
+/** What a `tracker.field` writes into a field, by the field's type. */
+type FieldKind = "option" | "options" | "user" | "users" | "number" | "adf" | "string";
+
+const FIELD_KINDS: readonly string[] = ["option", "options", "user", "users", "number", "adf", "string"];
+
+const isKind = (kind: string): kind is FieldKind => FIELD_KINDS.includes(kind);
+
+/**
+ * What a `tracker.field` writes into a field by its schema — a select, a
+ * multi-select, a user or several, a number, or text as `shapeOf` says text
+ * is written — or why it cannot write it, naming the field.
+ */
+function fieldKindOf(id: string, field: EditField | Field): FieldKind | string {
+  const schema = field.schema ?? null;
+  const { type, items, custom } = schema ?? {};
+  if (type === "option") return "option";
+  if (type === "user") return "user";
+  if (type === "number") return "number";
+  if (type === "array" && items === "option") return "options";
+  if (type === "array" && items === "user") return "users";
+  const shape = shapeOf({ id, name: field.name, schema });
+  if (shape === "adf" || shape === "string") return shape;
+  return `"${String(field.name)}" (${id}) is a ${typeof custom === "string" ? custom : String(type)} field; ` +
+    `a ${FIELD_EFFECT} sets a select, a multi-select, a user or users, a number, or a text or textarea field`;
+}
+
+/** Why a value is not one a field of this kind takes, or null: one string — or a list of one — for a select or a user, a number for a number, text for text. */
+function valueProblem(label: string, kind: FieldKind, value: TrackerFieldValue): string | null {
+  const shown = JSON.stringify(value);
+  if (kind === "option" || kind === "user") {
+    const one = typeof value === "string" || (Array.isArray(value) && value.length === 1);
+    return one ? null : `${label} is a ${kind === "option" ? "select" : "user"} field, which takes one value, not ${shown}`;
+  }
+  if (kind === "options" || kind === "users") return typeof value === "number" ? `${label} takes a name or a list of them, not ${shown}` : null;
+  if (kind === "number") return typeof value === "number" ? null : `${label} is a number field, and ${shown} is not a number`;
+  if (typeof value !== "string") return `${label} is a text field, and ${shown} is not text`;
+  if (kind === "string" && value.length > MAX_TEXTFIELD) return `${label} is a text field, which holds at most ${MAX_TEXTFIELD} characters, not ${value.length}`;
+  return null;
+}
+
+/** The names a value lists: itself, or each of its own. */
+const namesOf = (value: TrackerFieldValue): string[] => (Array.isArray(value) ? value : [String(value)]);
+
+/** Why an option is none of a field's, naming the options it has; null when it is one, or the screen lists none to judge by. */
+function optionProblem(label: string, name: string, field: EditField, where: string): string | null {
+  if (!Array.isArray(field.allowedValues)) return null;
+  const allowed = field.allowedValues.flatMap((o) => (typeof o?.value === "string" ? [o.value] : []));
+  if (allowed.includes(name)) return null;
+  return `"${name}" is no option of ${label}${where}; it has ${allowed.map((o) => `"${o}"`).join(", ") || "none"}`;
+}
+
+/**
+ * A field's value as an issue answers it, in `node.state.fields`' neutral
+ * shape: an option as its value, a user as an account id, a list of either
+ * as a list, a textarea's document as Markdown, text and numbers as they
+ * are, and an empty one as null. Undefined — left out, so it reads as not
+ * read — for a field the answer does not hold, or holds in a shape not
+ * among these.
+ */
+function fieldValueOf(raw: unknown): Json | undefined {
+  const scalar = (v: unknown): string | undefined => {
+    if (typeof v === "string") return v;
+    const { value, accountId } = (v ?? {}) as { value?: unknown; accountId?: unknown };
+    if (typeof value === "string") return value;
+    return typeof accountId === "string" ? accountId : undefined;
+  };
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  if (typeof raw === "number") return raw;
+  if (typeof raw === "string") return raw.trim() === "" ? null : raw;
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) return null;
+    const all = raw.map(scalar);
+    return all.every((v): v is string => v !== undefined) ? all : undefined;
+  }
+  if ((raw as { type?: unknown }).type === "doc") {
+    const text = fromAdf(raw);
+    return text.trim() === "" ? null : text;
+  }
+  return scalar(raw);
+}
+
+/** Whether a field read holds nothing. */
+const emptyField = (value: Json | undefined): boolean => value === undefined || value === null;
+
+/** A `tracker.field`'s fields, as the effect carries them; `validate` refuses any other shape, so one here is a broken workflow. */
+function wantedFields(effect: Effect): Array<[string, TrackerFieldValue]> {
+  const { fields } = effect;
+  if (fields === null || typeof fields !== "object" || Array.isArray(fields) || Object.keys(fields).length === 0) {
+    throw new Error(`a ${FIELD_EFFECT} effect needs fields, a map of field id to its value`);
+  }
+  return Object.entries(fields).map(([id, value]) => {
+    const ok = typeof value === "string" || (typeof value === "number" && Number.isFinite(value)) ||
+      (Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === "string"));
+    if (!ok) throw new Error(`a ${FIELD_EFFECT} sets ${id} to ${JSON.stringify(value)}; a value is a string, a number or a list of strings`);
+    return [id, value as TrackerFieldValue];
+  });
+}
+
+/**
+ * The edit screens of the issue types an item can be: the types of the open
+ * issues in the tracker's scope, read by one search under `jiraAssignee` and
+ * `jql`, and the tracker's own `itemTypes`. A project's Epics, say, are no
+ * item's, and are not looked at. Each type is read off one open issue of it,
+ * the only way Jira says what an issue's edit screen holds — open, because a
+ * closed status may make issues non-editable, which answers an empty screen.
+ * A type with no open issue to look at is `unchecked`. Reads only.
+ */
+export async function editScreens(
+  jira: Client, ctx: RuntimeContext, { project, jql, itemTypes, keyPattern }: { project: string; jql: string | undefined; itemTypes: string[]; keyPattern: RegExp },
+): Promise<{ screens: Array<{ type: string; fields: Record<string, EditField> }>; unchecked: string[] }> {
+  const scoped = await search(
+    jira, `project = "${project}" AND statusCategory != Done${await scopeOf(jira, ctx, jql)} ORDER BY created ASC`, { fields: ["issuetype"] },
+  );
+  // A type past the last page read may be one of them: not found is not missing.
+  if (!scoped.complete) throw new Error(`${project} has more open issues in the tracker's scope than one listing carries, so which types its items are cannot be told`);
+  const names = new Set([
+    ...scoped.issues.flatMap((i) => {
+      const name = (i.fields as { issuetype?: { name?: unknown } | null }).issuetype?.name;
+      return typeof name === "string" ? [name] : [];
+    }),
+    ...itemTypes,
+  ]);
+  const found = await jira.call<{ issueTypes?: Array<{ id?: unknown; name?: unknown }> } | null>("GET", `/rest/api/3/project/${project}`);
+  // A type the tracker names that the project lacks is the tracker's preflight to refuse.
+  const types = (found?.issueTypes ?? []).flatMap((t) =>
+    (typeof t.id === "string" && /^[0-9]+$/.test(t.id) && names.has(String(t.name)) ? [{ id: t.id, name: String(t.name) }] : []));
+  const screens: Array<{ type: string; fields: Record<string, EditField> }> = [];
+  const unchecked: string[] = [];
+  for (const type of types) {
+    const { issues = [] } = await jira.call<{ issues?: Array<{ key?: unknown }> }>("POST", "/rest/api/3/search/jql", {
+      jql: `project = "${project}" AND issuetype = ${type.id} AND statusCategory != Done`, fields: ["key"], maxResults: 1,
+    });
+    const key = issues[0]?.key;
+    if (typeof key !== "string" || !keyPattern.test(key)) {
+      unchecked.push(type.name);
+      continue;
+    }
+    try {
+      const { fields = {} } = await jira.call<{ fields?: Record<string, EditField> }>("GET", `/rest/api/3/issue/${key}/editmeta`);
+      screens.push({ type: type.name, fields });
+    } catch (e) {
+      throw new Error(`cannot read ${key}'s edit screen, for its "${type.name}" issues: ${messageOf(e)}`);
+    }
+  }
+  return { screens, unchecked };
+}
+
 /**
  * Every field an item is read from, asked for by name: a search returns ids
  * alone unless told. A read's children are asked for all but their links,
@@ -133,6 +285,24 @@ const CHILD_FIELDS = [
   "statuscategorychangedate", "parent", "priority",
 ];
 const FIELDS = [...CHILD_FIELDS, "issuelinks"];
+
+/** The fields a read asks for: its own, and those the loaded `tracker.field` effects set, in the same request. */
+const withAsked = (own: string[], ctx: RuntimeContext): string[] => [...new Set([...own, ...(ctx.trackerFields ?? [])])];
+
+/**
+ * The asked fields of an issue as `ItemRecord.fields` carries them: each
+ * one the answer holds, in its neutral shape. None when nothing was asked.
+ */
+function fieldsRead(fields: Issue["fields"], ctx: RuntimeContext): Pick<ItemRecord, "fields"> {
+  const asked = [...(ctx.trackerFields ?? [])];
+  if (asked.length === 0) return {};
+  const read: Record<string, Json> = {};
+  for (const id of asked) {
+    const value = fieldValueOf((fields as Record<string, unknown>)[id]);
+    if (value !== undefined) read[id] = value;
+  }
+  return { fields: read };
+}
 
 /**
  * Any issue's key on the site: its project's key — a capital, then capitals,
@@ -382,45 +552,53 @@ export async function assigneeOf(jira: Client, ctx: RuntimeContext): Promise<str
   const known = assignees.get(jira);
   if (known !== undefined) return known;
   const value = ctx.secrets.get("jiraAssignee")?.trim() ?? "";
-  let id: string | null = null;
-  if (value !== "") {
-    if (!value.includes("@") && !ACCOUNT_ID.test(value)) {
-      throw new Error(`jiraAssignee "${value}" is neither an email nor a Jira account id`);
-    }
-    let users: User[];
-    if (value.includes("@")) {
-      const found = await usersWithEmail(jira, value);
-      if (found === null) throw new Error(`jiraAssignee "${value}" matches more Jira users than one search returns; name one by its account id`);
-      users = found;
-    } else {
-      users = await jira.call<User | null>("GET", `/rest/api/3/user?accountId=${encodeURIComponent(value)}`)
-        .then((u) => (u === null ? [] : [u]), (e: unknown) => { if (isMissing(e)) return []; throw e; });
-    }
-    const [only] = users;
-    if (!only) {
-      // Jira answers an account without "Browse users and groups" with nobody, not a refusal: asked, so the
-      // refusal names the cause that applied.
-      const { permissions = {} } = await jira.call<{ permissions?: Record<string, { havePermission?: boolean }> }>(
-        "GET", "/rest/api/3/mypermissions?permissions=USER_PICKER",
-      );
-      if (permissions.USER_PICKER?.havePermission !== true) {
-        throw new Error(
-          `jiraAssignee "${value}" cannot be looked up: the account lacks the global "Browse users and groups" permission (USER_PICKER), ` +
-          "without which Jira finds no user; grant it",
-        );
-      }
-      throw new Error(`jiraAssignee "${value}" matches no Jira user`);
-    }
-    if (users.length > 1) {
-      throw new Error(`jiraAssignee "${value}" matches ${users.length} Jira users: ${users.map((u) => u.displayName ?? u.accountId).join(", ")}; name one by its account id`);
-    }
-    if (typeof only.accountId !== "string" || !ACCOUNT_ID.test(only.accountId)) {
-      throw new Error(`Jira answered jiraAssignee "${value}" with no usable account id`);
-    }
-    id = only.accountId;
-  }
+  const id = value === "" ? null : await accountFor(jira, value, `jiraAssignee "${value}"`);
   assignees.set(jira, id);
   return id;
+}
+
+/** Why a user lookup found no one account: a refusal of the value, told apart from Jira failing to answer. */
+class NoAccount extends Error {}
+
+/**
+ * The one account an email or an account id is, as `jiraAssignee` and a
+ * `tracker.field`'s user value are resolved: refused when it matches no user
+ * or several, `what` naming the value in each refusal. An account id is asked
+ * after too, so a typo is refused rather than written.
+ */
+async function accountFor(jira: Client, value: string, what: string): Promise<string> {
+  if (!value.includes("@") && !ACCOUNT_ID.test(value)) throw new NoAccount(`${what} is neither an email nor a Jira account id`);
+  let users: User[];
+  if (value.includes("@")) {
+    const found = await usersWithEmail(jira, value);
+    if (found === null) throw new NoAccount(`${what} matches more Jira users than one search returns; name one by its account id`);
+    users = found;
+  } else {
+    users = await jira.call<User | null>("GET", `/rest/api/3/user?accountId=${encodeURIComponent(value)}`)
+      .then((u) => (u === null ? [] : [u]), (e: unknown) => { if (isMissing(e)) return []; throw e; });
+  }
+  const [only] = users;
+  if (!only) {
+    // Jira answers an account without "Browse users and groups" with nobody, not a refusal: asked, so the
+    // refusal names the cause that applied.
+    const { permissions = {} } = await jira.call<{ permissions?: Record<string, { havePermission?: boolean }> }>(
+      "GET", "/rest/api/3/mypermissions?permissions=USER_PICKER",
+    );
+    if (permissions.USER_PICKER?.havePermission !== true) {
+      throw new NoAccount(
+        `${what} cannot be looked up: the account lacks the global "Browse users and groups" permission (USER_PICKER), ` +
+        "without which Jira finds no user; grant it",
+      );
+    }
+    throw new NoAccount(`${what} matches no Jira user`);
+  }
+  if (users.length > 1) {
+    throw new NoAccount(`${what} matches ${users.length} Jira users: ${users.map((u) => u.displayName ?? u.accountId).join(", ")}; name one by its account id`);
+  }
+  if (typeof only.accountId !== "string" || !ACCOUNT_ID.test(only.accountId)) {
+    throw new NoAccount(`Jira answered ${what} with no usable account id`);
+  }
+  return only.accountId;
 }
 
 /**
@@ -497,6 +675,8 @@ export class Jira extends BaseTracker {
   private readonly createProjects: readonly string[];
   private readonly createType: string;
   private readonly createLinkType: string;
+  /** Each `tracker.field` user value resolved, by field and value: the account `satisfied` compares an email as. */
+  private readonly accounts = new Map<string, string>();
 
   constructor({
     project, issueType, childType, transitions, blockedByLinkType, statuses, jql, createIn, createType, createLinkType, fetchImpl,
@@ -754,6 +934,7 @@ export class Jira extends BaseTracker {
         parent: parent !== undefined && this.keyPattern.test(parent) ? parent : null,
         priority: priority === -1 ? null : priority,
         ...(own === undefined ? {} : this.blockersOf(jira, key, own, resolutions, ctx)),
+        ...fieldsRead(fields, ctx),
       });
     }
     return records;
@@ -773,12 +954,14 @@ export class Jira extends BaseTracker {
     this.unreadableSaid.clear();
     const jira = this.jira(ctx);
     const mine = await scopeOf(jira, ctx, this.jql);
-    const open = await search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`);
+    const fields = withAsked(FIELDS, ctx);
+    const open = await search(jira, `project = "${this.project}" AND statusCategory != Done${mine} ORDER BY created ASC`, { fields });
     if (!open.complete) throw new Error(`${this.project} has more open issues${mine ? " in its scope (jiraAssignee, jql)" : ""} than ${MAX_ISSUE_PAGES} pages carry`);
     const since = Date.now() - DONE_WINDOW_MS;
     const closed = await search(
       jira,
       `project = "${this.project}" AND statusCategory = Done AND updated >= -${Math.ceil(DONE_WINDOW_MS / 60_000)}m${mine} ORDER BY updated DESC`,
+      { fields },
     );
     const done = closed.issues.filter((i) =>
       Date.parse(i.fields.statuscategorychangedate ?? "") >= since &&
@@ -792,7 +975,7 @@ export class Jira extends BaseTracker {
     const jira = this.jira(ctx);
     let issue: Issue;
     try {
-      issue = await jira.call<Issue>("GET", `/rest/api/3/issue/${key}?fields=${FIELDS.join(",")}`);
+      issue = await jira.call<Issue>("GET", `/rest/api/3/issue/${key}?fields=${withAsked(FIELDS, ctx).map(encodeURIComponent).join(",")}`);
     } catch (e) {
       if (isMissing(e)) throw new Error(`${key} is not an issue in ${this.project}, or this account cannot see it`);
       throw e;
@@ -825,7 +1008,7 @@ export class Jira extends BaseTracker {
     const subtasks = (parent.fields?.subtasks ?? []).flatMap((s) => (s.id === undefined ? [] : [Number(s.id)]));
     if (subtasks.length > ITEM_PAGE) throw new Error(`${key} has more than the ${ITEM_PAGE} children one read carries`);
     const found = await search(
-      jira, `project = "${this.project}" AND parent = "${key}" ORDER BY created ASC`, { reconcile: subtasks, fields: CHILD_FIELDS },
+      jira, `project = "${this.project}" AND parent = "${key}" ORDER BY created ASC`, { reconcile: subtasks, fields: withAsked(CHILD_FIELDS, ctx) },
     );
     if (!found.complete || found.issues.length > ITEM_PAGE) {
       throw new Error(`${key} has more than the ${ITEM_PAGE} children one read carries`);
@@ -1269,6 +1452,23 @@ export class Jira extends BaseTracker {
           }
         },
       },
+      [FIELD_EFFECT]: {
+        // Off `node.state.fields`, which every read fills with the fields the loaded
+        // tracker.field effects set: a field missing there was not read, and not read
+        // is not empty. A user given by email is its account once apply or the
+        // preflight has resolved it; until then it does not hold, and apply judges
+        // it again over the issue as it is.
+        satisfied: (snapshot: Snapshot, effect) => {
+          const read = (snapshot.node as Node | undefined)?.state.fields;
+          if (read === null || typeof read !== "object" || Array.isArray(read)) return false;
+          return wantedFields(effect).every(([id, want]) => {
+            if (!Object.hasOwn(read, id)) return false;
+            const have = read[id];
+            return effect.onlyIfEmpty === true ? !emptyField(have) : this.holds(id, want, have);
+          });
+        },
+        apply: (effect, ctx) => this.setFields(effect, ctx),
+      },
       [STATUS_EFFECT]: {
         satisfied: (snapshot: Snapshot, effect) => {
           if (!statusSatisfied(snapshot, effect)) return false;
@@ -1297,6 +1497,210 @@ export class Jira extends BaseTracker {
         },
       },
     };
+  }
+
+  /**
+   * Whether a field read holds a `tracker.field`'s value: the names each
+   * lists, compared as sets — a select's one value, a multi-select's list —
+   * text trimmed, a number as its digits, and a user's email as the account
+   * it was resolved to, by field.
+   */
+  private holds(id: string, want: TrackerFieldValue, have: Json | undefined): boolean {
+    if (emptyField(have)) return false;
+    const wanted = new Set(namesOf(want).map((name) => (this.accounts.get(JSON.stringify([id, name.toLowerCase()])) ?? name).trim()));
+    const held = new Set((Array.isArray(have) ? have : [have]).map((v) => String(v).trim()));
+    return wanted.size === held.size && [...wanted].every((name) => held.has(name));
+  }
+
+  /** A user value's account, resolved once a process for each field and value, so `satisfied` reads an email as its account. */
+  private async accountOf(jira: Client, id: string, value: string): Promise<string> {
+    const cached = JSON.stringify([id, value.toLowerCase()]);
+    const known = this.accounts.get(cached);
+    if (known !== undefined) return known;
+    const account = await accountFor(jira, value, `"${value}", which a ${FIELD_EFFECT} sets ${id} to,`);
+    this.accounts.set(cached, account);
+    return account;
+  }
+
+  /**
+   * `tracker.field`: judged over the issue as it is now — a route's effect
+   * is applied with no reconcile first, and `satisfied` cannot resolve an
+   * email — then every field not yet holding its value written in one
+   * request, each in the shape its type takes: `{ value }` for a select, a
+   * list of them for a multi-select, `{ accountId }` for a user (an email
+   * resolved to exactly one), a list of those for several, a number as it
+   * is, a text field a string and a textarea a document, as `JiraField`
+   * writes one — a string where Jira refuses the document by name, for a
+   * plain-text renderer. With `onlyIfEmpty`, only the fields empty on the
+   * issue now. A field off the issue's edit screen, of any other type, given
+   * a value it does not take, or that Jira refuses, is refused: no retry
+   * puts it there. Everything is checked before anything is written.
+   */
+  private async setFields(effect: Effect, ctx: HookContext): Promise<void> {
+    const key = this.keyOf(ctx.item);
+    const wanted = wantedFields(effect);
+    const onlyIfEmpty = effect.onlyIfEmpty === true;
+    const jira = this.jira(ctx);
+    const asked = ["issuetype", ...wanted.map(([id]) => id)].map(encodeURIComponent).join(",");
+    const issue = await jira.call<{ fields?: Record<string, unknown> } | null>("GET", `/rest/api/3/issue/${key}?fields=${asked}`);
+    const { fields: screen = {} } = await jira.call<{ fields?: Record<string, EditField> } | null>("GET", `/rest/api/3/issue/${key}/editmeta`) ?? {};
+    const writes: Array<{ id: string; value: unknown; text: string | null }> = [];
+    for (const [id, want] of wanted) {
+      const field = Object.hasOwn(screen, id) ? screen[id] : undefined;
+      if (field === undefined) {
+        const type = (issue?.fields?.issuetype as { name?: unknown } | null | undefined)?.name;
+        throw new EffectRefused(`${key} is a "${String(type)}" issue, whose edit screen has no ${id} (or the account may not edit it), so a ${FIELD_EFFECT} cannot set it`);
+      }
+      const kind = fieldKindOf(id, field);
+      if (!isKind(kind)) throw new EffectRefused(kind);
+      const label = `"${String(field.name)}" (${id})`;
+      const problem = valueProblem(label, kind, want) ??
+        (kind === "option" || kind === "options" ? namesOf(want).map((name) => optionProblem(label, name, field, "")).find((p) => p !== null) ?? null : null);
+      if (problem !== null) throw new EffectRefused(problem);
+      const have = fieldValueOf(issue?.fields?.[id]);
+      if (onlyIfEmpty && !emptyField(have)) continue;
+      writes.push({ id, ...(await this.fieldJson(jira, key, id, kind, want)) });
+      if (!onlyIfEmpty && this.holds(id, want, have)) writes.pop();
+    }
+    if (writes.length === 0) return;
+    const send = (plain: ReadonlySet<string>) => jira.call("PUT", `/rest/api/3/issue/${key}`, {
+      fields: Object.fromEntries(writes.map(({ id, value, text }) => [id, text !== null && plain.has(id) ? text : value])),
+    });
+    try {
+      try {
+        await send(new Set());
+      } catch (asDocs) {
+        // A textarea's renderer is in its field configuration, which only "Administer Jira" may read: Jira's refusal of the document by name says it takes a string.
+        const plain = new Set(writes.filter((w) => w.text !== null && refusesField(asDocs, w.id)).map((w) => w.id));
+        if (plain.size === 0) throw asDocs;
+        await send(plain);
+      }
+    } catch (e) {
+      const status = (e as { status?: unknown } | null)?.status;
+      if (status === 400 || isRefused(e)) {
+        throw new EffectRefused(`Jira refused to set ${writes.map((w) => w.id).join(", ")} on ${key}: ${messageOf(e)}`);
+      }
+      throw e;
+    }
+  }
+
+  /** A checked value as the request carries it, and a textarea's text beside its document, for a plain-text renderer. */
+  private async fieldJson(jira: Client, key: string, id: string, kind: FieldKind, want: TrackerFieldValue): Promise<{ value: unknown; text: string | null }> {
+    const account = async (name: string): Promise<{ accountId: string }> => {
+      try {
+        return { accountId: await this.accountOf(jira, id, name) };
+      } catch (e) {
+        if (e instanceof NoAccount) throw new EffectRefused(e.message);
+        throw e;
+      }
+    };
+    switch (kind) {
+      case "option": return { value: { value: namesOf(want)[0] }, text: null };
+      case "options": return { value: namesOf(want).map((value) => ({ value })), text: null };
+      case "user": return { value: await account(namesOf(want)[0] ?? ""), text: null };
+      case "users": {
+        const accounts: Array<{ accountId: string }> = [];
+        for (const name of namesOf(want)) accounts.push(await account(name));
+        return { value: accounts, text: null };
+      }
+      case "adf": return { value: adfOf(String(want), `${id} on ${key}`), text: String(want) };
+      default: return { value: want, text: null };
+    }
+  }
+
+  /**
+   * The values the loaded `tracker.field` effects set, at start: each field
+   * on the site and of a type one sets, each value of the shape it takes,
+   * each user resolving to exactly one account, and each option among the
+   * field's allowed values on the edit screen of every issue type an item
+   * can be — read off an open issue of each, as `JiraField` reads them. A
+   * type whose screen lacks the field is logged, `jira.tracker-field.missing`,
+   * and its items are refused when the effect is applied; a type with no open
+   * issue to look at is logged, `jira.tracker-field.unchecked`; and options
+   * no screen could be read for, a field no screen read has, and a screen
+   * listing no allowed values for it are refused: nothing compared is not a pass.
+   */
+  private async fieldProblems(jira: Client, ctx: PreflightContext, declared: Array<[string, readonly TrackerFieldValue[]]>): Promise<string[]> {
+    const problems: string[] = [];
+    const all = await jira.call<Field[] | null>("GET", "/rest/api/3/field") ?? [];
+    const options: Array<{ id: string; label: string; names: string[] }> = [];
+    for (const [id, values] of declared) {
+      const field = all.find((f) => f.id === id);
+      if (field === undefined) {
+        problems.push(`the site has no field ${id}, which a ${FIELD_EFFECT} sets`);
+        continue;
+      }
+      const kind = fieldKindOf(id, field);
+      if (!isKind(kind)) {
+        problems.push(kind);
+        continue;
+      }
+      const label = `"${String(field.name)}" (${id})`;
+      for (const value of values) {
+        const problem = valueProblem(label, kind, value);
+        if (problem !== null) {
+          problems.push(problem);
+          continue;
+        }
+        if (kind === "user" || kind === "users") {
+          for (const name of namesOf(value)) {
+            try {
+              await this.accountOf(jira, id, name);
+            } catch (e) {
+              if (!(e instanceof NoAccount)) throw e;
+              problems.push(e.message);
+            }
+          }
+        }
+        if (kind === "option" || kind === "options") options.push({ id, label, names: namesOf(value) });
+      }
+    }
+    if (options.length === 0) return problems;
+    const ids = [...new Set(options.map((o) => o.id))];
+    const { screens, unchecked } = await editScreens(jira, ctx, {
+      project: this.project, jql: this.jql, itemTypes: [this.issueType, this.childType], keyPattern: this.keyPattern,
+    });
+    if (screens.length === 0) {
+      problems.push(`there is no open issue of any issue type an item of ${this.project} can be to read an edit screen from, so whether ${ids.join(", ")} offer the options a ${FIELD_EFFECT} sets cannot be told`);
+      return problems;
+    }
+    if (unchecked.length > 0) ctx.log("jira.tracker-field.unchecked", { fields: ids, types: unchecked, reason: "no open issue of the type to read its edit screen from" });
+    for (const { type, fields } of screens) {
+      for (const id of ids) {
+        if (!Object.hasOwn(fields, id)) {
+          ctx.log("jira.tracker-field.missing", {
+            field: id, type, reason: "not on the type's edit screen, or the account may not edit it: a tracker.field setting it on these items is refused",
+          });
+        }
+      }
+    }
+    const said = new Set<string>();
+    const say = (problem: string): void => {
+      if (said.has(problem)) return;
+      said.add(problem);
+      problems.push(problem);
+    };
+    for (const { id, label, names } of options) {
+      const values = names.map((n) => `"${n}"`).join(", ");
+      const on = screens.filter(({ fields }) => Object.hasOwn(fields, id));
+      if (on.length === 0) {
+        say(`${label} is on no edit screen read on ${this.project} (${screens.map((s) => `"${s.type}"`).join(", ")}), so whether it offers ${values} cannot be told`);
+        continue;
+      }
+      for (const { type, fields } of on) {
+        const field = fields[id];
+        if (field === undefined) continue;
+        if (!Array.isArray(field.allowedValues)) {
+          say(`${label} on ${this.project}'s "${type}" edit screen lists no allowed values, so whether it offers ${values} cannot be told`);
+          continue;
+        }
+        for (const name of names) {
+          const problem = optionProblem(label, name, field, ` on ${this.project}'s "${type}" issues`);
+          if (problem !== null) say(problem);
+        }
+      }
+    }
+    return problems;
   }
 
   /**
@@ -1476,7 +1880,8 @@ export class Jira extends BaseTracker {
    * issues to, "Assign Issues", and each type without an assignee field too. For each `createIn` project, the
    * same of filing an issue there: "Browse projects", "Create issues" and "Link issues", the assignee,
    * `createType`, `createLinkType` on the site, and each field a loaded route's `tracker.create` there
-   * fills (`fieldsFrom`) on `createType`'s create screen and a text or textarea one. Reads only: every write shows in the
+   * fills (`fieldsFrom`) on `createType`'s create screen and a text or textarea one. Each value a loaded
+   * `tracker.field` sets, as `fieldProblems` checks it. Reads only: every write shows in the
    * project's history, so the preflight makes none.
    */
   async check(ctx: PreflightContext): Promise<void> {
@@ -1633,6 +2038,8 @@ export class Jira extends BaseTracker {
       if (!isMissing(e)) throw e;
       problems.push(`issue linking is disabled on this site, and blocked-by is read off "${this.linkType}" links (blockedByLinkType)`);
     }
+    const fieldValues = [...(ctx.fieldValues ?? [])];
+    if (fieldValues.length > 0) problems.push(...await this.fieldProblems(jira, ctx, fieldValues));
     if (problems.length > 0) throw new Error(problems.join("; "));
   }
 }

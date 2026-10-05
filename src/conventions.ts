@@ -479,6 +479,14 @@ export const COMMENT_VISIBILITIES: readonly string[] = ["internal", "public"];
 export const WORKLOG_EFFECT = "tracker.worklog";
 
 /**
+ * Issue fields set from the workflow file: `fields` maps a field id to a
+ * value, `{vars.*}` the only thing that fills one — never an answer or the
+ * snapshot — and `onlyIfEmpty` leaves a field a person filled. Read back as
+ * `node.state.fields`. Only a tracker with fields of its own handles it.
+ */
+export const FIELD_EFFECT = "tracker.field";
+
+/**
  * The kind a conversation turn is recorded under: what a person asked a
  * running step through the MCP, and what it answered.
  */

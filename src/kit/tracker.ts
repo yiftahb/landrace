@@ -269,7 +269,9 @@ export function itemNode(item: Omit<ItemRecord, "parent">, bot: string): Node {
     // a path the node does not carry is one the tick cannot answer, and it
     // abstains on those — so an unassigned item would be worked by every
     // instance instead of none.
-    state: { labels: item.labels, assignees: item.assignees },
+    // The fields a `tracker.field` sets, where a tracker read them: absent
+    // rather than empty otherwise, so nothing reads as an empty field.
+    state: { labels: item.labels, assignees: item.assignees, ...(item.fields === undefined ? {} : { fields: item.fields }) },
     ...createdAtOf(item.createdAt),
     ...updatedAtOf(item.updatedAt),
   };

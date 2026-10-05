@@ -23,6 +23,7 @@ import {
   retiredPlaceholder,
   unknownCapabilities,
   WORKLOG_EFFECT,
+  FIELD_EFFECT,
   workDurationMs,
 } from "#conventions.js";
 import { isEngineLabel } from "#conventions.js";
@@ -30,7 +31,7 @@ import { gotoTargetsOf } from "#core/goto.js";
 import { fillTemplate, isNoteField, noteFields, pathsNoNodeCarries } from "#core/index.js";
 import { identityOf, placedByState } from "#core/locate.js";
 import { assertAllowedOperators, compile, pathsIn } from "#core/predicate.js";
-import type { Condition, EligibilityRule, LoadedWorkflow, PostHook, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
+import type { Condition, Effect, EligibilityRule, LoadedWorkflow, PostHook, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { routeEffects } from "#runner/step.js";
 
@@ -571,7 +572,8 @@ const nonEmptyStrings = (value: unknown): value is string[] =>
  * `addFrom` on a `tracker.label` with a non-empty `allowed` list holding no
  * `lr:` label, `spentFrom` on a `tracker.worklog` — which needs it, a marker,
  * and a `max` that is a duration above zero. #113's `titleFrom` and
- * `fieldsFrom` are a route's `tracker.create`'s alone.
+ * `fieldsFrom` are a route's `tracker.create`'s alone. #119's `fields` and
+ * `onlyIfEmpty` are a `tracker.field`'s, in on_enter and on a route alike.
  */
 function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
   const problems: Problem[] = [];
@@ -645,6 +647,11 @@ function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
         else if (!nonEmptyStrings(named)) say("fieldsFrom must map field ids to output fields, such as { customfield_10050: plan }");
         else named.forEach(undeclared);
       }
+      if (effect.type === FIELD_EFFECT) fieldEffectProblems(effect).forEach(say);
+      else {
+        if (effect.fields !== undefined) say(`a ${effect.type} has fields; only a ${FIELD_EFFECT} sets an issue's fields`);
+        if (effect.onlyIfEmpty !== undefined) say(`a ${effect.type} has onlyIfEmpty; only a ${FIELD_EFFECT} has one`);
+      }
       if (effect.type === WORKLOG_EFFECT && route) {
         if (typeof effect.spentFrom !== "string" || effect.spentFrom === "") say(`a ${WORKLOG_EFFECT} needs spentFrom, the output field its time is read from`);
         else undeclared(effect.spentFrom);
@@ -652,6 +659,45 @@ function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
         const max = typeof effect.max === "string" ? workDurationMs(effect.max) : null;
         if (max === null || max === 0) say(`a ${WORKLOG_EFFECT} needs a max above zero such as "4h", and has ${JSON.stringify(effect.max)}`);
       }
+    }
+  }
+  return problems;
+}
+
+/** A `{…}` left in a value: `{vars.x}` is filled at load, and nothing fills any other. */
+const TEMPLATE_LEFT = /\{[^{}]*\}/;
+
+/**
+ * What is wrong with a `tracker.field`: `fields` a non-empty map of field id
+ * to a string, a number or a non-empty list of strings, none blank and none holding a `{…}`
+ * after load — the plan fills no template in `fields`, so one left would be
+ * written as it stands — and `onlyIfEmpty` a boolean when it is there.
+ */
+function fieldEffectProblems(effect: Effect): string[] {
+  const problems: string[] = [];
+  const { fields, onlyIfEmpty } = effect;
+  if (onlyIfEmpty !== undefined && typeof onlyIfEmpty !== "boolean") problems.push(`onlyIfEmpty is ${JSON.stringify(onlyIfEmpty)}; it is true or false`);
+  if (fields === null || typeof fields !== "object" || Array.isArray(fields) || Object.keys(fields).length === 0) {
+    return [`a ${FIELD_EFFECT} needs fields, a map of field id to its value, such as { customfield_10123: ["R&D"] }`, ...problems];
+  }
+  for (const [id, value] of Object.entries(fields)) {
+    const strings = typeof value === "string" ? [value] : Array.isArray(value) && value.every((v) => typeof v === "string") ? (value as string[]) : null;
+    if (strings === null && !(typeof value === "number" && Number.isFinite(value))) {
+      problems.push(`${id} is ${JSON.stringify(value)}; a field's value is a string, a number or a list of strings`);
+      continue;
+    }
+    if (Array.isArray(value) && value.length === 0) {
+      problems.push(`${id} is an empty list; a ${FIELD_EFFECT} sets a value, and never clears one`);
+      continue;
+    }
+    // A blank string writes nothing a person can see over what the field held, and reads back as empty, so it is never satisfied.
+    if ((strings ?? []).some((s) => s.trim() === "")) {
+      problems.push(`${id} is ${JSON.stringify(value)}, a blank value; a ${FIELD_EFFECT} sets a value, and never clears one`);
+      continue;
+    }
+    const templated = (strings ?? []).map((s) => TEMPLATE_LEFT.exec(s)?.[0]).find((t) => t !== undefined);
+    if (templated !== undefined) {
+      problems.push(`${id} holds ${templated}; a field's value comes from the workflow file, and only {vars.*} fills one, at load`);
     }
   }
   return problems;

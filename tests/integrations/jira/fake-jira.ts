@@ -47,7 +47,8 @@ const CATEGORIES = {
   done: { id: 3, key: "done", colorName: "green", name: "Done" },
 } as const;
 
-export interface FakeTransition { id: string; name: string; to: string }
+/** `needs`: fields a condition hides the transition behind until each holds a value, as a Jira workflow's conditions do. */
+export interface FakeTransition { id: string; name: string; to: string; needs?: string[] }
 
 /** An entity property, as Jira keeps one on a comment or a worklog: a key and any JSON value. */
 export interface FakeProperty { key: string; value: unknown }
@@ -87,11 +88,22 @@ export interface FakeIssue {
 export interface FakeIssueType { id: string; name: string; subtask: boolean; fields: string[] }
 
 /** A field as `GET /field` lists it. */
-export interface FakeField { id: string; name: string; custom: boolean; schema: { type: string; custom?: string; customId?: number } }
+export interface FakeField { id: string; name: string; custom: boolean; schema: { type: string; items?: string; custom?: string; customId?: number } }
 
 export const DESIGN = "customfield_10050";
 export const TEXTAREA = "com.atlassian.jira.plugin.system.customfieldtypes:textarea";
 export const TEXTFIELD = "com.atlassian.jira.plugin.system.customfieldtypes:textfield";
+const TYPES = "com.atlassian.jira.plugin.system.customfieldtypes";
+
+/** A select, a multi-select, a user, a multi-user and a number field, as Jira Cloud's own custom types: a test adds them with `fake.fields.push`. */
+export const CATEGORY: FakeField = { id: "customfield_10123", name: "Category", custom: true, schema: { type: "option", custom: `${TYPES}:select`, customId: 10123 } };
+export const AREAS: FakeField = { id: "customfield_10126", name: "Areas", custom: true, schema: { type: "array", items: "option", custom: `${TYPES}:multiselect`, customId: 10126 } };
+export const REVIEWER: FakeField = { id: "customfield_10124", name: "Reviewer", custom: true, schema: { type: "user", custom: `${TYPES}:userpicker`, customId: 10124 } };
+export const WATCHERS: FakeField = { id: "customfield_10127", name: "Watchers", custom: true, schema: { type: "array", items: "user", custom: `${TYPES}:multiuserpicker`, customId: 10127 } };
+export const POINTS: FakeField = { id: "customfield_10125", name: "Points", custom: true, schema: { type: "number", custom: `${TYPES}:float`, customId: 10125 } };
+export const SUMMARY_LINE: FakeField = { id: "customfield_10128", name: "One line", custom: true, schema: { type: "string", custom: TEXTFIELD, customId: 10128 } };
+export const NOTES: FakeField = { id: "customfield_10129", name: "Notes", custom: true, schema: { type: "string", custom: TEXTAREA, customId: 10129 } };
+export const DUE: FakeField = { id: "customfield_10130", name: "Due", custom: true, schema: { type: "date", custom: `${TYPES}:datepicker`, customId: 10130 } };
 
 export interface FakeLinkType { id: string; name: string; inward: string; outward: string }
 
@@ -200,6 +212,8 @@ export function createFakeJira(project = "KEY") {
       { id: DESIGN, name: "Technical design", custom: true, schema: { type: "string", custom: TEXTAREA, customId: 10050 } },
       { id: "customfield_10051", name: "Team", custom: true, schema: { type: "option", custom: "com.atlassian.jira.plugin.system.customfieldtypes:select", customId: 10051 } },
     ] as FakeField[],
+    /** Each select's and multi-select's options, by field id: what the edit screen offers as `allowedValues`, and all a write may name. */
+    options: {} as Record<string, string[]>,
     /** Textareas with the plain-text renderer: REST v3 answers and takes them as strings, not ADF, and `GET /field` does not say which. */
     plainText: new Set<string>(),
     priorities: [
@@ -407,6 +421,8 @@ export function createFakeJira(project = "KEY") {
       },
       issuetype: { id: "10001", name: issue.issuetype, subtask: issue.issuetype === "Subtask" },
       issuelinks: linksJson(issue),
+      // Every custom field the site has, null when the issue holds no value in it, as Jira answers a field asked for.
+      ...Object.fromEntries(fake.fields.map((f) => [f.id, null])),
       ...issue.custom,
       // Read off the issue itself, so never behind the way search can be.
       subtasks: [...issues.values()]
@@ -496,7 +512,8 @@ export function createFakeJira(project = "KEY") {
     return value as FakeProperty[];
   };
 
-  const transitionsOf = (issue: FakeIssue) => fake.transitions.filter((t) => t.to !== issue.status);
+  const filled = (value: unknown): boolean => value !== undefined && value !== null && value !== "" && !(Array.isArray(value) && value.length === 0);
+  const transitionsOf = (issue: FakeIssue) => fake.transitions.filter((t) => t.to !== issue.status && (t.needs ?? []).every((id) => filled(issue.custom[id])));
 
   function route(method: string, url: URL, body: unknown): Response {
     const path = url.pathname;
@@ -685,9 +702,9 @@ export function createFakeJira(project = "KEY") {
         if (!type.fields.includes(field)) return errors(400, [], { [field]: `Field '${field}' cannot be set. It is not on the appropriate screen, or unknown.` });
         const declared = fake.fields.find((c) => c.id === field);
         if (declared === undefined) continue;
-        const problem = customProblem(declared, f[field], fake.plainText);
+        const problem = customProblem(declared, f[field], fake.plainText, fake.options[field], fake.users);
         if (problem) return errors(400, [], { [field]: problem });
-        custom[field] = f[field];
+        custom[field] = stored(declared, f[field], fake.options[field], fake.users);
       }
       if (String(f.summary ?? "").length > 255) return errors(400, [], { summary: "Summary must be less than 255 characters." });
       const parent = (f.parent as { key?: string } | undefined)?.key;
@@ -758,7 +775,17 @@ export function createFakeJira(project = "KEY") {
       if (m[2] === "/editmeta" && method === "GET") {
         if (STATUSES[issue.status]?.category === "done") return json({ fields: {} });
         const type = fake.issueTypes.find((t) => t.name === issue.issuetype);
-        return json({ fields: Object.fromEntries((type?.fields ?? []).map((id) => [id, { required: false, key: id, name: id, operations: ["set"] }])) });
+        return json({
+          fields: Object.fromEntries((type?.fields ?? []).map((id) => {
+            const custom = fake.fields.find((c) => c.id === id);
+            const options = fake.options[id];
+            return [id, {
+              required: false, key: id, name: custom?.name ?? id, operations: ["set"],
+              schema: custom === undefined ? { type: id === "labels" ? "array" : "string", system: id } : custom.schema,
+              ...(options === undefined ? {} : { allowedValues: options.map((value, i) => ({ self: `${SITE}/rest/api/3/customFieldOption/${20_000 + i}`, value, id: String(20_000 + i) })) }),
+            }];
+          })),
+        });
       }
 
       if (m[2] === undefined && method === "PUT") {
@@ -768,9 +795,9 @@ export function createFakeJira(project = "KEY") {
           const custom = fake.fields.find((c) => c.id === field);
           if (custom !== undefined && type?.fields.includes(field)) {
             const value = f[field];
-            const problem = customProblem(custom, value, fake.plainText);
+            const problem = customProblem(custom, value, fake.plainText, fake.options[field], fake.users);
             if (problem) return errors(400, [], { [field]: problem });
-            issue.custom[field] = value;
+            issue.custom[field] = stored(custom, value, fake.options[field], fake.users);
             continue;
           }
           if (field !== "summary" && field !== "description") return errors(400, [], { [field]: `Field '${field}' cannot be set. It is not on the appropriate screen, or unknown.` });
@@ -934,8 +961,52 @@ const MARKS = new Set(["code", "strong", "em", "link"]);
  * with a paragraph or code, a mark it does not know or code beside any mark
  * but a link, a heading level outside 1–6.
  */
+/** An option as Jira answers one, and a user, as an issue's field holds them. */
+const optionJson = (value: string, options: readonly string[]) => {
+  const at = options.indexOf(value);
+  return { self: `${SITE}/rest/api/3/customFieldOption/${20_000 + at}`, value, id: String(20_000 + at) };
+};
+
+/** What Jira keeps of a value it took, in the shape it answers it in: an option or a user in full, a list of them, anything else as sent. */
+function stored(custom: FakeField, value: unknown, options: readonly string[] = [], users: readonly FakeUser[] = []): unknown {
+  const userOf = (v: unknown) => user(users.find((u) => u.accountId === (v as { accountId?: unknown }).accountId) as FakeUser);
+  const optionOf = (v: unknown) => optionJson(String((v as { value?: unknown }).value), options);
+  const { type, items } = custom.schema;
+  if (type === "option") return value === null ? null : optionOf(value);
+  if (type === "user") return value === null ? null : userOf(value);
+  if (type === "array" && Array.isArray(value)) {
+    if (value.length === 0) return null;
+    if (items === "option") return value.map(optionOf);
+    if (items === "user") return value.map(userOf);
+  }
+  return value;
+}
+
 /** Why Jira refuses `value` for a custom field, by its type and renderer, or null when it takes it — on create and on edit alike. */
-function customProblem(custom: FakeField, value: unknown, plainText: ReadonlySet<string>): string | null {
+function customProblem(
+  custom: FakeField, value: unknown, plainText: ReadonlySet<string>, options: readonly string[] = [], users: readonly FakeUser[] = [],
+): string | null {
+  const { type, items } = custom.schema;
+  const optionProblem = (v: unknown): string | null => {
+    const named = (v as { value?: unknown } | null)?.value;
+    if (typeof named !== "string") return "Specify a valid 'id' or 'name' for " + custom.name;
+    return options.includes(named) ? null : `Option value '${named}' is not valid`;
+  };
+  const userProblem = (v: unknown): string | null => {
+    const id = (v as { accountId?: unknown } | null)?.accountId;
+    return typeof id === "string" && users.some((u) => u.accountId === id) ? null : `Specified user does not exist or you do not have required permissions`;
+  };
+  if (type === "option") return value === null ? null : optionProblem(value);
+  if (type === "user") return value === null ? null : userProblem(value);
+  if (type === "array" && (items === "option" || items === "user")) {
+    if (!Array.isArray(value)) return "Operation value must be an array";
+    for (const v of value) {
+      const problem = items === "option" ? optionProblem(v) : userProblem(v);
+      if (problem) return problem;
+    }
+    return null;
+  }
+  if (type === "number") return typeof value === "number" ? null : "Operation value must be a number";
   const tooLong = (limit: string): string => `The entered text is too long. It exceeds the allowed limit of ${limit} characters.`;
   if (custom.schema.custom === TEXTAREA && plainText.has(custom.id)) {
     if (typeof value !== "string") return "Operation value must be a string";

@@ -145,6 +145,13 @@ describe("itemNode", () => {
     });
   });
 
+  // What `tracker.field`'s satisfied reads: the fields as read, a null among them, and none at all from a tracker that read none.
+  it("carries the fields its tracker read as state.fields, and no fields when it read none", () => {
+    const read = { customfield_1: ["R&D"], customfield_2: null, customfield_3: 3 };
+    expect(itemNode({ ...fields, fields: read }, BOT).state).toEqual({ labels: ["P1", "lr:auto"], assignees: ["someone"], fields: read });
+    expect(itemNode(fields, BOT).state).not.toHaveProperty("fields");
+  });
+
   it("carries no update time for an item whose tracker gave none", () => {
     expect(itemNode({ ...fields, updatedAt: undefined }, BOT)).not.toHaveProperty("updatedAt");
   });

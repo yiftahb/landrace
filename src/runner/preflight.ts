@@ -1,6 +1,6 @@
-import { TRACKER_CREATE_EFFECT } from "#conventions.js";
+import { FIELD_EFFECT, TRACKER_CREATE_EFFECT } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
-import type { Preflight, PreflightContext, Step } from "#namespace.js";
+import type { Preflight, PreflightContext, Step, TrackerFieldValue, Workflow } from "#namespace.js";
 
 /**
  * Run every registered preflight, in load order, before the caller does
@@ -56,7 +56,61 @@ export function declaredCreateFields(workflows: Iterable<ReadonlyMap<string, Ste
   return declared;
 }
 
-/** What the loaded workflows' steps declare, as a preflight is handed it by every caller alike. */
-export function declaredOf(workflows: ReadonlyArray<ReadonlyMap<string, Step>>): Pick<PreflightContext, "capabilities" | "createFields"> {
-  return { capabilities: declaredCapabilities(workflows), createFields: declaredCreateFields(workflows) };
+/** A value `tracker.field` takes; anything else `validate` refuses, and nothing here guesses at it. */
+const isFieldValue = (value: unknown): value is TrackerFieldValue =>
+  typeof value === "string" || (typeof value === "number" && Number.isFinite(value)) ||
+  (Array.isArray(value) && value.every((v) => typeof v === "string"));
+
+/**
+ * Each field id a loaded `tracker.field` sets, with every value it is set
+ * to: in a stage's `on_enter`, and in the routes of the step a stage runs,
+ * whether a route has one effect or a list of them. The ids are what a
+ * tracker's reads fetch into `node.state.fields`; the values are what its
+ * preflight checks a field can hold, before an item is entered into a stage
+ * whose transition needs it.
+ */
+export function declaredTrackerFields(
+  workflows: Iterable<{ workflow: Workflow; steps: ReadonlyMap<string, Step> }>,
+): Map<string, TrackerFieldValue[]> {
+  const declared = new Map<string, TrackerFieldValue[]>();
+  for (const { workflow, steps } of workflows) {
+    for (const stage of workflow.stages) {
+      const routes = (stage.step === undefined ? undefined : steps.get(stage.step))?.output?.routes ?? [];
+      const effects = [...(stage.on_enter ?? []), ...routes.flatMap((route) => [...(route.effect ? [route.effect] : []), ...(route.effects ?? [])])];
+      for (const effect of effects) {
+        const { fields } = effect as { fields?: unknown };
+        if (effect.type !== FIELD_EFFECT || fields === null || typeof fields !== "object" || Array.isArray(fields)) continue;
+        for (const [id, value] of Object.entries(fields)) {
+          if (!isFieldValue(value)) continue;
+          declared.set(id, [...(declared.get(id) ?? []), value]);
+        }
+      }
+    }
+  }
+  return declared;
+}
+
+/** What the loaded workflows declare, as a preflight is handed it by every caller alike. */
+export function declaredOf(
+  workflows: ReadonlyArray<{ workflow: Workflow; steps: ReadonlyMap<string, Step> }>,
+): Pick<PreflightContext, "capabilities" | "createFields"> {
+  const steps = workflows.map((w) => w.steps);
+  return { capabilities: declaredCapabilities(steps), createFields: declaredCreateFields(steps) };
+}
+
+/**
+ * Each preflight once, by identity and in load order, handed as `fieldValues`
+ * only what the workflows that load it set with `tracker.field`. A tracker
+ * checks a value against its own project's screens, so a second workflow's
+ * value, on another project, would refuse an option only that one offers.
+ */
+export function scopedPreflights(
+  loads: Iterable<{ preflights: readonly Preflight[]; workflow: { workflow: Workflow; steps: ReadonlyMap<string, Step> } }>,
+): Preflight[] {
+  const loadedBy = new Map<Preflight, Array<{ workflow: Workflow; steps: ReadonlyMap<string, Step> }>>();
+  for (const { preflights, workflow } of loads) for (const preflight of preflights) loadedBy.set(preflight, [...(loadedBy.get(preflight) ?? []), workflow]);
+  return [...loadedBy].map(([preflight, workflows]) => {
+    const fieldValues = declaredTrackerFields(workflows);
+    return { id: preflight.id, check: (ctx) => preflight.check({ ...ctx, fieldValues }) };
+  });
 }

@@ -24,7 +24,6 @@ import type {
   PairDeps,
   PreHook,
   ReadRoute,
-  Preflight,
   Problem,
   RedactingLogger,
   Registry,
@@ -52,7 +51,7 @@ import { createLogger, scrubberOf } from "#runner/events.js";
 import { createNotify, notifyProblems } from "#runner/notify.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { held } from "#runner/lock.js";
-import { declaredOf, runPreflights } from "#runner/preflight.js";
+import { declaredOf, declaredTrackerFields, runPreflights, scopedPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { itemTag, oneLine } from "#runner/status.js";
@@ -558,6 +557,8 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     // vocabulary — otherwise adding an event to a hook would mean editing the
     // engine's EventName union.
     log: (event, data) => log(event as EventName, data),
+    // Every loaded workflow's, on one context: every list and read fetches them, for `tracker.field`'s `satisfied`.
+    trackerFields: new Set(declaredTrackerFields(hooked.map((h) => h.loaded)).keys()),
   };
 
   // Resolved here, before the first poll, for the same reason everything else
@@ -569,10 +570,9 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // which runs no step and must write nothing.
   const activity = opts.readOnly ? undefined : createActivityLog(sandboxRoot(dir), scrubberOf(ctx.secrets, log.scrub));
 
-  const preflights: Preflight[] = [];
+  const preflights = scopedPreflights(hooked.map(({ loaded, registry }) => ({ preflights: registry.preflights, workflow: loaded })));
   const workflows: WorkflowRuntime[] = [];
   for (const { loaded: { id, workflow, steps }, registry, source } of hooked) {
-    for (const preflight of registry.preflights) if (!preflights.includes(preflight)) preflights.push(preflight);
     // An executor factory's own members, beyond what every hook gets: where its
     // repository is, a way to keep what its setup turns up out of every log
     // line from here on — an MCP server's env, say, which the configuration
@@ -927,7 +927,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // recorded to show for it. Run from here rather than from the runtime's
   // build so `landrace status`, which builds one the same way, never makes
   // this write while only trying to read.
-  await runPreflights(rt.preflights, { ...rt.ctx, ...declaredOf(rt.workflows.map((w) => w.deps.steps)) });
+  await runPreflights(rt.preflights, { ...rt.ctx, ...declaredOf(rt.workflows.map((w) => w.deps)) });
 
   // The last listing a tick or a Refresh made. The page is shown what
   // `display` makes of it, and finds an item's workflow there; a write also
