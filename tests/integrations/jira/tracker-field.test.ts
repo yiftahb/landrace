@@ -340,6 +340,23 @@ describe("the preflight checks each tracker.field value", () => {
     await expect(jira.check({ ...ctx, fieldValues: values([[CATEGORY.id, ["R&D"]]]) })).rejects.toThrow(/no open issue.*customfield_10123/);
   });
 
+  // Nothing compared is not a pass: an option checked against no screen would pass start and be refused on every item.
+  it("refuses an option field no edit screen it read has", async () => {
+    const { fake, jira, ctx } = setup();
+    for (const type of fake.issueTypes) type.fields = type.fields.filter((f) => f !== CATEGORY.id);
+    fake.add();
+    await expect(jira.check({ ...ctx, fieldValues: values([[CATEGORY.id, ["R&D"]]]) }))
+      .rejects.toThrow(/"Category" \(customfield_10123\).*no edit screen.*"R&D".*cannot be told/);
+  });
+
+  it("refuses an option field whose edit screen lists no allowed values", async () => {
+    const { fake, jira, ctx } = setup();
+    delete fake.options[CATEGORY.id];
+    fake.add();
+    await expect(jira.check({ ...ctx, fieldValues: values([[CATEGORY.id, ["R&D"]]]) }))
+      .rejects.toThrow(/"Category" \(customfield_10123\).*"Task".*no allowed values.*"R&D".*cannot be told/);
+  });
+
   it("reads nothing more when no tracker.field is loaded", async () => {
     const { fake, jira, ctx } = setup();
     fake.add();

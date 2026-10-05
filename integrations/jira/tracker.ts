@@ -1617,7 +1617,8 @@ export class Jira extends BaseTracker {
    * type whose screen lacks the field is logged, `jira.tracker-field.missing`,
    * and its items are refused when the effect is applied; a type with no open
    * issue to look at is logged, `jira.tracker-field.unchecked`; and options
-   * no screen could be read for are refused: nothing compared is not a pass.
+   * no screen could be read for, a field no screen read has, and a screen
+   * listing no allowed values for it are refused: nothing compared is not a pass.
    */
   private async fieldProblems(jira: Client, ctx: PreflightContext, declared: Array<[string, readonly TrackerFieldValue[]]>): Promise<string[]> {
     const problems: string[] = [];
@@ -1674,16 +1675,28 @@ export class Jira extends BaseTracker {
       }
     }
     const said = new Set<string>();
+    const say = (problem: string): void => {
+      if (said.has(problem)) return;
+      said.add(problem);
+      problems.push(problem);
+    };
     for (const { id, label, names } of options) {
-      for (const { type, fields } of screens) {
-        const field = Object.hasOwn(fields, id) ? fields[id] : undefined;
+      const values = names.map((n) => `"${n}"`).join(", ");
+      const on = screens.filter(({ fields }) => Object.hasOwn(fields, id));
+      if (on.length === 0) {
+        say(`${label} is on no edit screen read on ${this.project} (${screens.map((s) => `"${s.type}"`).join(", ")}), so whether it offers ${values} cannot be told`);
+        continue;
+      }
+      for (const { type, fields } of on) {
+        const field = fields[id];
         if (field === undefined) continue;
+        if (!Array.isArray(field.allowedValues)) {
+          say(`${label} on ${this.project}'s "${type}" edit screen lists no allowed values, so whether it offers ${values} cannot be told`);
+          continue;
+        }
         for (const name of names) {
           const problem = optionProblem(label, name, field, ` on ${this.project}'s "${type}" issues`);
-          if (problem !== null && !said.has(problem)) {
-            said.add(problem);
-            problems.push(problem);
-          }
+          if (problem !== null) say(problem);
         }
       }
     }
