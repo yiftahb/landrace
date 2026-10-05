@@ -6,10 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-05
+
 ### Added
 
 - **Jira fields a transition needs.** A `tracker.field` effect, in `on_enter` or on a route, sets issue fields from the workflow file, such as `{ type: tracker.field, fields: { customfield_10123: ["R&D"] }, onlyIfEmpty: true }`. Listed before a stage's `tracker.status`, it sets the Category or Reviewer that the transition's condition or validator needs, so the status follows the stage. Each field is written in its own shape: a select, a multi-select, a user (an account id, or an email looked up as `jiraAssignee` is), several users, a number or text. `onlyIfEmpty` leaves a field a person filled. Reads fetch the fields into `node.state.fields`, where `satisfied()` judges them. `start` refuses a field the site lacks or cannot set, a user that is not exactly one account, and an option the field does not offer, naming the options it has. `validate` refuses any other shape, and a value still holding a `{…}` after load. See [Workflows](docs/workflows.md#effects) and [Integrations](docs/integrations.md#jira).
-
 - **A configurable item branch.** `branch` in `landrace.yaml` sets the branch each item's work is on, such as `lr-{item}` for CI that cannot take a `/` in a branch name. The default stays `landrace/{item}`. `{item}` is the tracker's id, unchanged. The GitHub, GitLab and in-memory forges tie a pull request to its item only by this branch. `validate` holds every workflow's stage `branch` and `branch.push` and `pull.*` effect to it, naming both. `validate` and `start` refuse a template that names `{item}` other than once, has no fixed text before it, names another placeholder, or that git would refuse. Change it only when no item has a pull request open: one on the old branch is no longer the item's. `createHarness` takes `config` with `branch`, so a workflow on a configured branch can be tested. See [Configuration](docs/configuration.md#landraceyaml), [Workflows](docs/workflows.md#the-items-branch) and [Development](docs/development.md#testing-a-workflow-of-your-own).
 
 ### Fixed
@@ -90,7 +91,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Versions and updates.** `landrace version` (and `--version`) prints the version and whether npm has a newer one; `landrace update` updates the project's own dependency with its package manager, or the global install; `landrace start` says when a newer version is out. The check asks npm's registry once, gives up after two seconds, and is off in CI or with `LANDRACE_NO_UPDATE_CHECK=1`.
 - **Notifications and telemetry.** A `notify` block tells a person, through a notifier hook, when an item comes to rest needing them. `--telemetry` exports the engine's events as OpenTelemetry log records.
 
-[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/yiftahb/landrace/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/yiftahb/landrace/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/yiftahb/landrace/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/yiftahb/landrace/compare/v1.0.0...v1.1.0
