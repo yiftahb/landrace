@@ -425,7 +425,7 @@ describe("landrace next, over a workspace", () => {
 describe("landrace validate, a stage's branch, and worktree isolation", () => {
   const exec = promisify(execFile);
 
-  const repo = async (isolation: string): Promise<string> => {
+  const repo = async (isolation: string, config = ""): Promise<string> => {
     const root = await mkdtemp(join(tmpdir(), "landrace-validate-branch-"));
     await exec("git", ["init", "-q"], { cwd: root });
     const dir = join(root, ".landrace");
@@ -457,7 +457,7 @@ output:
 
 build
 `);
-    await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude, isolation: ${isolation} }\n`);
+    await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude, isolation: ${isolation} }\n${config}`);
     return dir;
   };
 
@@ -482,5 +482,17 @@ build
     expect(r.problems.filter(notExecutor)).toEqual([
       { rule: "branch", message: expect.stringMatching(/stage "build"[\s\S]*agent\.isolation[\s\S]*"none"/) },
     ]);
+  });
+
+  it("holds the stage's branch to the one landrace.yaml names, naming both", async () => {
+    const r = await runValidate(await repo("worktree", 'branch: "lr-{item}"\n'));
+    expect(r.problems.filter(notExecutor)).toEqual([
+      { rule: "branch", message: expect.stringMatching(/stage "build" works on branch "landrace\/\{item\}"; it must be lr-\{item\}, the branch landrace\.yaml names/) },
+    ]);
+  });
+
+  it("reports a branch landrace.yaml names that is no template", async () => {
+    const r = await runValidate(await repo("worktree", 'branch: "lr-{item}-{item}"\n'));
+    expect(r.problems.filter(notExecutor)).toContainEqual({ rule: "branch", message: expect.stringMatching(/names it 2 times/) });
   });
 });

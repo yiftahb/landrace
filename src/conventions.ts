@@ -535,12 +535,14 @@ export const CLOSE_EFFECT = "tracker.close";
  * both, and a forge hook for somebody else's tracker has to spell them the
  * same way or a workflow does not carry over. Which branch is always the
  * effect's own `branch` field, which the workflow writes — and `validate`
- * holds it, and every stage's `branch`, to `ITEM_BRANCH`.
+ * holds it, and every stage's `branch`, to the item branch landrace.yaml
+ * configures, `ITEM_BRANCH` unless it sets another.
  */
 export const BRANCH_PUSH_EFFECT = "branch.push";
 
 /**
- * The one branch an item's work is on, as a workflow writes it. A forge ties
+ * The one branch an item's work is on, as a workflow writes it, unless
+ * landrace.yaml's `branch` sets another — the default it reads. A forge ties
  * a pull request to an item by this head alone — a branch named any other
  * way is anybody's to name after any item — so a stage or a publishing
  * effect on another would open a pull request nothing ties back to the item.
@@ -647,6 +649,25 @@ export function branchNameProblem(name: string): string | null {
     if (part.endsWith(".lock")) return bad(`its component "${part}" ends with ".lock"`);
   }
   return null;
+}
+
+/**
+ * Why an item branch template — `branch` in landrace.yaml — cannot be one,
+ * or null when it can. A forge reads the item back out of a head as what
+ * sits between the template's fixed text, so `{item}` comes exactly once and
+ * after some fixed text: with none before it, every branch, `main` included,
+ * reads as the item of the same name. Any other placeholder would never be
+ * filled. And git has to take the template filled with an id.
+ */
+export function branchTemplateProblem(template: string): string | null {
+  const bad = (why: string): string => `branch "${template.slice(0, 80)}" is not an item branch template: ${why}`;
+  const count = template.split("{item}").length - 1;
+  if (count !== 1) return bad(`it must name {item} once, and names it ${count === 0 ? "none" : count} times`);
+  if (template.startsWith("{item}")) return bad("it needs fixed text before {item}, or any branch, main included, would read as an item");
+  const other = /\{[^}]*\}/.exec(template.replace("{item}", ""))?.[0];
+  if (other !== undefined) return bad(`it names ${other}, and {item} is the only placeholder a branch is filled with`);
+  const filled = branchNameProblem(template.replace("{item}", "PROJ-7"));
+  return filled === null ? null : bad(`filled with an id, ${filled}`);
 }
 
 /**

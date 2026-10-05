@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { durationMs } from "#conventions.js";
+import { durationMs, ITEM_BRANCH } from "#conventions.js";
 
 export const runtimeConfigSchema = z.object({
   version: z.literal(1),
@@ -40,6 +40,14 @@ export const runtimeConfigSchema = z.object({
    * imported by path, so there is no id left to name.
    */
   tracker: z.record(z.unknown()).default({}),
+  /**
+   * The branch an item's work is on, `{item}` filled with the tracker's id as
+   * it gives it. Here and not a forge option: `validate` holds every
+   * workflow's branch to it and the forges tie a pull request to an item by
+   * it, and two places to set one name would be an ambiguity. What makes one
+   * a template is `branchTemplateProblem`, reported by `configProblems`.
+   */
+  branch: z.string().default(ITEM_BRANCH),
   tick: z.object({ interval: z.string().default("60s"), concurrency: z.number().int().positive().default(3) }).default({}),
   /**
    * `adapter` names the executor that screens, by the same lookup as

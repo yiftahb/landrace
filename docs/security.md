@@ -108,7 +108,7 @@ Under either shipped executor, a step or turn gets exactly the MCP servers `agen
 
 A merge no person makes is held by the kit, not by a prompt, to three guards: green checks, the head the review read (`reviewedBy`), and no change to a protected path (`refuse`). How each works is in [Workflows](workflows.md#the-merges-three-guards), and fastlane's protected paths are listed in [Workflows](workflows.md#fastlane). The protected paths keep a change to the orchestrator itself — its hooks, configuration, workflows, step prompts, CI, dependencies and agent instructions — a person's to merge.
 
-Only an item's own `landrace/{item}` pull request in its own repository is its work, so a stranger's pull request saying it closes the item reaches none of its prompts or counts — see [Which pull requests are an item's](workflows.md#which-pull-requests-are-an-items).
+Only a pull request from an item's own branch (`landrace/{item}` unless `branch` sets another) in its own repository is its work, so a stranger's pull request saying it closes the item reaches none of its prompts or counts — see [Which pull requests are an item's](workflows.md#which-pull-requests-are-an-items).
 
 A step's front matter carries routes, effects and capabilities, and a retro writes lessons beside it — which is why `validate` refuses a `pull.merge` anywhere but a stage's `on_enter`, and why `.landrace/**` is protected.
 

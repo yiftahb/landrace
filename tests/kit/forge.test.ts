@@ -1,7 +1,7 @@
 import { renderMarker } from "#conventions.js";
 import {
   answered, BRIEF_DIFF_CHARS, BRIEF_HISTORY_ITEMS, BRIEF_THREADS, checkCounts, ciBrief, commentableLines, commentLine, cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief,
-  isFinding, isReply, newest, placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadsBrief,
+  isFinding, isReply, itemBranchOf, itemsNamedBy, newest, placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadsBrief,
   threadLine, where,
 } from "#kit/forge.js";
 import type { HistoryItem, ReviewThread, Snapshot, ThreadComment } from "#namespace.js";
@@ -170,9 +170,36 @@ describe("placeFindings", () => {
 });
 
 describe("prBranch", () => {
-  it("names an item's branch", () => {
-    expect(prBranch("7")).toBe("landrace/7");
-    expect(prBranch("PROJ-7")).toBe("landrace/PROJ-7");
+  it("names an item's branch, by the template landrace.yaml configures", () => {
+    expect(prBranch("7", "landrace/{item}")).toBe("landrace/7");
+    expect(prBranch("PROJ-7", "landrace/{item}")).toBe("landrace/PROJ-7");
+    expect(prBranch("PROJ-7", "lr-{item}")).toBe("lr-PROJ-7");
+  });
+});
+
+describe("itemBranchOf", () => {
+  it("is the configured template, and landrace/{item} for a context that sets none", () => {
+    expect(itemBranchOf({ branch: "lr-{item}" })).toBe("lr-{item}");
+    expect(itemBranchOf({})).toBe("landrace/{item}");
+  });
+});
+
+describe("itemsNamedBy", () => {
+  const known = new Set(["KEY-1", "7"]);
+  const named = (branch: string, template: string): string[] => [...itemsNamedBy({ branch, items: [] }, known, template)];
+
+  it("ties a head on the template to its item, and nothing on another", () => {
+    expect(named("lr-KEY-1", "lr-{item}")).toEqual(["KEY-1"]);
+    expect(named("landrace/KEY-1", "lr-{item}")).toEqual([]);
+    expect(named("landrace/KEY-1", "landrace/{item}")).toEqual(["KEY-1"]);
+    expect(named("lr-KEY-1", "landrace/{item}")).toEqual([]);
+  });
+
+  it("reads the item from between the fixed text, on either side of it", () => {
+    expect(named("lr/7-x", "lr/{item}-x")).toEqual(["7"]);
+    expect(named("lr/7", "lr/{item}-x")).toEqual([]);
+    expect(named("lr/-x", "lr/{item}-x")).toEqual([]);
+    expect(named("lr-", "lr-{item}")).toEqual([]);
   });
 });
 

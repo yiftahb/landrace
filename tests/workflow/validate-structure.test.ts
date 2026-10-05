@@ -745,6 +745,15 @@ describe("the item's one branch", () => {
     expect(said(w)).toEqual([expect.stringMatching(new RegExp(`stage "p" has a ${effect.replace(".", "\\.")} on branch "other/\\{item\\}"`))]);
   });
 
+  it("holds them to the configured template instead, when landrace.yaml sets one, naming both", () => {
+    const configured = (w: Workflow) => validateStructure(w, new Map(), "lr-{item}").filter((p) => p.rule === "branch").map((p) => p.message);
+    expect(configured(publishing("lr-{item}"))).toEqual([]);
+    expect(configured(publishing("landrace/{item}"))).toEqual([
+      expect.stringMatching(/stage "a" works on branch "landrace\/\{item\}"; it must be lr-\{item\}, the branch landrace\.yaml names/),
+      expect.stringMatching(/stage "p" has a pull\.open on branch "landrace\/\{item\}"; it must be lr-\{item\}, the branch landrace\.yaml names/),
+    ]);
+  });
+
   it("refuses another branch on a step's pull.review route", () => {
     const steps = new Map<string, Step>([["a.md", {
       prompt: "x", output: { shapes: [{ kind: "reviewed" }], routes: [{ when: { kind: "reviewed" }, effect: { type: "pull.review", branch: "review/{item}" } }] },

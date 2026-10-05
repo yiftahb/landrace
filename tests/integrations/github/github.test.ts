@@ -16,7 +16,7 @@ import type { FakeTracker } from "#tests/support/fake-tracker.js";
  * check in the engine, which is now the wrong place for it: the engine has no
  * idea what a login is.
  */
-const ctx = {} as RuntimeContext;
+const ctx = { config: {} } as RuntimeContext;
 const itemCtx = { item: "1" } as HookContext;
 
 const json = (value: unknown, status = 200): Response =>

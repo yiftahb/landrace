@@ -1184,7 +1184,7 @@ export interface ItemRecord {
 
 /**
  * A pull request as a forge integration reads it: `pullNode`'s fields, and
- * the items it is tied to beside the one its `landrace/{item}` head is for —
+ * the items it is tied to beside the one its head on the item branch is for —
  * none, for the forges landrace ships: what a pull request's own text says it
  * closes ties nothing, since anybody can write that, from a fork too.
  * `branch` is undefined for a fork's.
@@ -2038,8 +2038,8 @@ export interface ExternalPull {
   closed: Closed;
   /**
    * The branch it was opened from: what `pull.open` looks a pull request up
-   * by, and — as `landrace/{item}` — what ties it to an item. `landrace/{item}`
-   * of the item it was added for, unless the test says.
+   * by, and — on the item branch the context configures — what ties it to an
+   * item. `landrace/{item}` of the item it was added for, unless the test says.
    */
   branch?: string;
   /**

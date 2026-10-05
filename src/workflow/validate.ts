@@ -35,7 +35,8 @@ import type { Condition, Effect, EligibilityRule, LoadedWorkflow, PostHook, Prob
 import { messageOf } from "#runner/errors.js";
 import { routeEffects } from "#runner/step.js";
 
-export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map()): Problem[] {
+/** `branch` is the item branch landrace.yaml configures; `ITEM_BRANCH` when there is none to read. */
+export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map(), branch = ITEM_BRANCH): Problem[] {
   const problems: Problem[] = [];
 
   const entries = w.stages.filter((s) => s.entry);
@@ -330,7 +331,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
 
   problems.push(...haltLabelProblems(w));
   problems.push(...entryFirstProblems(w));
-  problems.push(...itemBranchProblems(w, steps));
+  problems.push(...itemBranchProblems(w, steps, branch));
   problems.push(...mergePlacementProblems(w, steps));
   problems.push(...effectFieldProblems(w, steps));
   problems.push(...routeFromProblems(w, steps));
@@ -709,25 +710,26 @@ const BRANCHED_EFFECTS: ReadonlySet<string> = new Set([
 
 /**
  * `branch`: every stage's `branch`, and the branch every publishing effect
- * names, is the item's own, `landrace/{item}`. A forge finds an item's pull
- * requests by that head alone, so one opened from another is nobody's:
- * `pull.open` is never satisfied, and `pull.merge` and `pull.close` cannot
- * see it. The in-memory forge relates by the same head, so a test would
- * catch it too — but only once it ran.
+ * names, is the item's own — `landrace/{item}`, or the template landrace.yaml
+ * sets as `branch`. A forge finds an item's pull requests by that head alone,
+ * so one opened from another is nobody's: `pull.open` is never satisfied, and
+ * `pull.merge` and `pull.close` cannot see it. The in-memory forge relates by
+ * the same head, so a test would catch it too — but only once it ran.
  */
-function itemBranchProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
+function itemBranchProblems(w: Workflow, steps: Map<string, Step>, branch: string): Problem[] {
   const problems: Problem[] = [];
-  const why = `a forge ties a pull request to an item only by its ${ITEM_BRANCH} head`;
+  const must = branch === ITEM_BRANCH ? branch : `${branch}, the branch landrace.yaml names`;
+  const why = `a forge ties a pull request to an item only by its ${branch} head`;
   for (const stage of w.stages) {
-    if (stage.branch !== undefined && stage.branch !== ITEM_BRANCH) {
-      problems.push({ rule: "branch", message: `stage "${stage.id}" works on branch "${stage.branch}"; it must be ${ITEM_BRANCH}: ${why}` });
+    if (stage.branch !== undefined && stage.branch !== branch) {
+      problems.push({ rule: "branch", message: `stage "${stage.id}" works on branch "${stage.branch}"; it must be ${must}: ${why}` });
     }
     const step = stage.step ? steps.get(stage.step) : undefined;
     for (const effect of [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).flatMap(routeEffects)]) {
-      if (!BRANCHED_EFFECTS.has(effect.type) || effect.branch === ITEM_BRANCH) continue;
+      if (!BRANCHED_EFFECTS.has(effect.type) || effect.branch === branch) continue;
       problems.push({
         rule: "branch",
-        message: `stage "${stage.id}" has a ${effect.type} on branch ${JSON.stringify(effect.branch)}; it must be ${ITEM_BRANCH}: ${why}`,
+        message: `stage "${stage.id}" has a ${effect.type} on branch ${JSON.stringify(effect.branch)}; it must be ${must}: ${why}`,
       });
     }
   }
@@ -1881,6 +1883,6 @@ export function admitProblems(id: string, w: Workflow): Problem[] {
   }))];
 }
 
-export function validate(w: Workflow, steps: Map<string, Step>, provided?: string[]): Problem[] {
-  return dedupe([...validateStructure(w, steps), ...validateSemantics(w, steps, provided)]);
+export function validate(w: Workflow, steps: Map<string, Step>, provided?: string[], branch = ITEM_BRANCH): Problem[] {
+  return dedupe([...validateStructure(w, steps, branch), ...validateSemantics(w, steps, provided)]);
 }

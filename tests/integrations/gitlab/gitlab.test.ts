@@ -642,6 +642,17 @@ describe("GitLab composed as a project's forge", () => {
     expect(JSON.stringify(brief)).not.toContain("OUTSIDER");
   });
 
+  // #120: the item branch landrace.yaml names is the one source branch that ties.
+  it("ties a merge request on the item branch the config names to its item, and none on landrace/{item}", async () => {
+    const { gl, hooks } = project();
+    const ours = gl.open({ source_branch: "lr-7", sha: "a1" });
+    gl.open({ source_branch: "landrace/7", sha: "b1" });
+    const lr = { ...gl.ctx(), config: { ...gl.ctx().config, branch: "lr-{item}" } };
+    for (const g of [await hooks.source.read("7", lr), await hooks.source.list(lr)]) {
+      expect(g.relationships.filter((r) => r.type === "implements").map((r) => r.from)).toEqual([`pr-${ours.iid}`]);
+    }
+  });
+
   /*
    * The bound a review is cut to is the forge's own (separation review M4):
    * GitLab takes a note of a million characters, so a review longer than
