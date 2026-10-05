@@ -129,7 +129,7 @@ An item's priority comes from a `P0`..`P9` label (`P0` most urgent), unless its 
 | Type | From → to | Meaning |
 |---|---|---|
 | `child-of` | sub-item → parent | A sub-issue of its parent. Singular |
-| `implements` | pull request → item | The item's pull request: one from the item's own `landrace/{item}` branch — see [Which pull requests are an item's](#which-pull-requests-are-an-items). Singular |
+| `implements` | pull request → item | The item's pull request: one from the item's own branch, `landrace/{item}` unless [`branch`](#the-items-branch) sets another — see [Which pull requests are an item's](#which-pull-requests-are-an-items). Singular |
 | `documents` | page → item | The item's published spec page. Singular |
 | `blocked-by` | item → blocker | The item waits on the blocker. Many per item, outward-only: `rel.blocked-by.in` is refused. Reported by trackers that read it — GitHub, Jira and the in-memory tracker |
 
@@ -251,13 +251,24 @@ A person sends an item back with the board's "Go to step…", with `landrace_got
 
 ## The item's branch
 
-A stage that runs a step may name the branch its step works on. That branch is always the item's own, `landrace/{item}`: a forge ties a pull request to an item only by that head, so a pull request from any other branch would be nobody's. `validate` refuses any other, here and on every `branch.push` and `pull.*` effect.
+A stage that runs a step may name the branch its step works on. That branch is always the item's own: `landrace/{item}`, or the template `branch` in [`landrace.yaml`](configuration.md#landraceyaml) sets. A forge ties a pull request to an item only by that head, so a pull request from any other branch would be nobody's. `validate` refuses any other, here and on every `branch.push` and `pull.*` effect, and its message names both branches.
 
 ```yaml
   - id: build
     step: steps/build.md
     branch: "landrace/{item}"
 ```
+
+Set `branch` when your CI cannot take a `/` in a branch name, for example when it tags images `branch-<branch name>`:
+
+```yaml
+# .landrace/landrace.yaml
+branch: "lr-{item}"
+```
+
+The workflows keep naming their branch, so change every `branch` line in them to the same template. `validate` lists each line it still refuses. Item `KEY-1`'s work is then on `lr-KEY-1`.
+
+Change the template only when no item has a pull request open. A pull request is tied to its item by the branch alone, so one open on the old branch is no longer read as the item's: the item's `rel.implements` counts, its briefings and its `pull.*` effects no longer see it. Landrace does not detect this; merge or close those pull requests first.
 
 The step's worktree is checked out on that branch: the branch itself for a step that may write (`repo:write`), so what it commits outlives the worktree; and the branch's commit, detached, for a read-only step, so a reviewer reads the item's code and cannot commit onto it.
 
@@ -346,7 +357,7 @@ Any other refusal from the forge — not mergeable, conflicts, a missing permiss
 
 ### Which pull requests are an item's
 
-A pull request is an item's only when it comes from the item's own `landrace/{item}` branch, in the item's own repository — never a fork's, whatever its branch is called, and never one that only says it closes the item. Anybody can open a pull request whose text says `Closes #7`, from a fork too; tied to #7 by that, its diff, its failed checks' logs and its review threads would reach the agents of a workflow that merges with no person.
+A pull request is an item's only when it comes from the item's own branch (`landrace/{item}`, or the [`branch`](#the-items-branch) you set), in the item's own repository — never a fork's, whatever its branch is called, and never one that only says it closes the item. Anybody can open a pull request whose text says `Closes #7`, from a fork too; tied to #7 by that, its diff, its failed checks' logs and its review threads would reach the agents of a workflow that merges with no person.
 
 Forks are left out before counting. Neither forge can be asked for one repository's branches alone, so an item's read pages through every pull request on a branch of its name; past 500 of them on GitHub, or 1,000 on GitLab, the list is not read to its end and the item halts, saying so. Two open pull requests from the one branch refuse a merge.
 

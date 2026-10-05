@@ -527,12 +527,14 @@ export const CLOSE_EFFECT = "tracker.close";
  * both, and a forge hook for somebody else's tracker has to spell them the
  * same way or a workflow does not carry over. Which branch is always the
  * effect's own `branch` field, which the workflow writes — and `validate`
- * holds it, and every stage's `branch`, to `ITEM_BRANCH`.
+ * holds it, and every stage's `branch`, to the item branch landrace.yaml
+ * configures, `ITEM_BRANCH` unless it sets another.
  */
 export const BRANCH_PUSH_EFFECT = "branch.push";
 
 /**
- * The one branch an item's work is on, as a workflow writes it. A forge ties
+ * The one branch an item's work is on, as a workflow writes it, unless
+ * landrace.yaml's `branch` sets another — the default it reads. A forge ties
  * a pull request to an item by this head alone — a branch named any other
  * way is anybody's to name after any item — so a stage or a publishing
  * effect on another would open a pull request nothing ties back to the item.
