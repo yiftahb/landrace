@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { branchNameProblem, effectBranch } from "#conventions.js";
+import { branchNameProblem, branchTemplateProblem, effectBranch } from "#conventions.js";
 
 const exec = promisify(execFile);
 
@@ -81,5 +81,29 @@ describe("the branch an effect names", () => {
   it("is refused when it names none, or one git would refuse", () => {
     expect(() => effectBranch({ type: "branch.push" })).toThrow(/names none/);
     expect(() => effectBranch({ type: "branch.push", branch: "a..b" })).toThrow(/not a usable branch name/);
+  });
+});
+
+/*
+ * The item branch a project configures. A forge reads an item back out of a
+ * head by the template's fixed text, so the template has to leave `{item}`
+ * recoverable, and git has to take what it fills to.
+ */
+describe("an item branch template", () => {
+  it.each(["landrace/{item}", "lr-{item}", "lr/{item}-x"])("takes %j", (template) => {
+    expect(branchTemplateProblem(template)).toBeNull();
+  });
+
+  it.each([
+    ["lr-", /\{item\} once.*none/],
+    ["lr-{item}-{item}", /\{item\} once.*2/],
+    ["{item}", /fixed text before \{item\}/],
+    ["{item}-lr", /fixed text before \{item\}/],
+    ["lr-{round}-{item}", /\{round\}/],
+    ["lr..{item}", /not a usable branch name.*".."/],
+    ["lr-{item}.lock", /not a usable branch name.*\.lock/],
+    ["-{item}", /not a usable branch name.*"-"/],
+  ])("refuses %j, saying which rule", (template, why) => {
+    expect(branchTemplateProblem(template)).toMatch(why);
   });
 });

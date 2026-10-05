@@ -642,6 +642,25 @@ export function branchNameProblem(name: string): string | null {
 }
 
 /**
+ * Why an item branch template — `branch` in landrace.yaml — cannot be one,
+ * or null when it can. A forge reads the item back out of a head as what
+ * sits between the template's fixed text, so `{item}` comes exactly once and
+ * after some fixed text: with none before it, every branch, `main` included,
+ * reads as the item of the same name. Any other placeholder would never be
+ * filled. And git has to take the template filled with an id.
+ */
+export function branchTemplateProblem(template: string): string | null {
+  const bad = (why: string): string => `branch "${template.slice(0, 80)}" is not an item branch template: ${why}`;
+  const count = template.split("{item}").length - 1;
+  if (count !== 1) return bad(`it must name {item} once, and names it ${count === 0 ? "none" : count} times`);
+  if (template.startsWith("{item}")) return bad("it needs fixed text before {item}, or any branch, main included, would read as an item");
+  const other = /\{[^}]*\}/.exec(template.replace("{item}", ""))?.[0];
+  if (other !== undefined) return bad(`it names ${other}, and {item} is the only placeholder a branch is filled with`);
+  const filled = branchNameProblem(template.replace("{item}", "PROJ-7"));
+  return filled === null ? null : bad(`filled with an id, ${filled}`);
+}
+
+/**
  * How big one item's neighbourhood may be. `read` returns the whole
  * descendant subtree, because a cascade close must see every node it closes,
  * and it runs on every converge pass. Past this, the honest answer is a halt

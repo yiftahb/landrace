@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, varsHoldingSecrets } from "#config/load.js";
+import { assertConfigUsable, configProblems, loadConfig, varsHoldingSecrets } from "#config/load.js";
 
 const CONFIG = `version: 1
 agent: { adapter: claude, model: opus }
@@ -179,5 +179,21 @@ describe("a var that is really a secret", () => {
   it("says nothing about an ordinary var", async () => {
     const loaded = await loadConfig(await fixture("GITHUB_TOKEN=ghp_x", "vars:\n  team: platform\n"));
     expect(varsHoldingSecrets(loaded)).toEqual([]);
+  });
+});
+
+describe("the item branch", () => {
+  it("is landrace/{item} when none is set, and takes the one set", async () => {
+    expect((await loadConfig(await fixture(""))).config.branch).toBe("landrace/{item}");
+    expect((await loadConfig(await fixture("", 'branch: "lr-{item}"\n'))).config.branch).toBe("lr-{item}");
+  });
+
+  it("is a configuration problem, validate's and start's, when it is no template, saying why", async () => {
+    const dir = await fixture("GITHUB_TOKEN=ghp_xxxxxxxxxxxx", 'branch: "{item}"\n');
+    const loaded = await loadConfig(dir);
+    expect(configProblems(dir, loaded)).toEqual([
+      { rule: "branch", message: expect.stringMatching(/"\{item\}".*fixed text before \{item\}/) },
+    ]);
+    expect(() => assertConfigUsable(dir, loaded)).toThrow(/branch: .*fixed text/);
   });
 });
