@@ -165,7 +165,7 @@ export class JiraField extends BaseDocs {
     const jira = this.jira(ctx);
     const id = this.field.slice("customfield_".length);
     const found = await search(jira, `project = "${this.project}" AND cf[${id}] is not EMPTY${await scopeOf(jira, ctx, this.jql)} ORDER BY created ASC`, {
-      fields: ["id"],
+      fields: ["key"],
     });
     if (!found.complete) throw new Error(`${this.project} has more issues with ${this.field} filled than one listing carries`);
     return new Set(found.issues.map((i) => i.key));
@@ -212,7 +212,7 @@ export class JiraField extends BaseDocs {
     const unchecked: string[] = [];
     for (const type of types) {
       const { issues = [] } = await jira.call<{ issues?: Array<{ key?: unknown }> }>("POST", "/rest/api/3/search/jql", {
-        jql: `project = "${this.project}" AND issuetype = ${type.id} AND statusCategory != Done`, fields: ["id"], maxResults: 1,
+        jql: `project = "${this.project}" AND issuetype = ${type.id} AND statusCategory != Done`, fields: ["key"], maxResults: 1,
       });
       const key = issues[0]?.key;
       if (typeof key !== "string" || !this.keyPattern.test(key)) {

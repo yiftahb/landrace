@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Jira's enhanced search.** `JiraField`'s preflight and `published()`, and the tracker's `jql` check, now work against Jira's enhanced search. It returns no `key` for `fields: ["id"]`, so the preflight found no open issue of any type and refused start, and the board lost its spec documents. It refuses `maxResults: 0`, so every `jql` refused start. Each search now asks for `key`, and the `jql` check for one issue.
+
 ## [1.2.0] - 2026-10-05
 
 ### Added

@@ -1270,10 +1270,10 @@ describe("scoped by a jql clause", () => {
     expect((await jira.children(parent.key, ctx)).map((c) => c.id)).toEqual([child.key]);
   });
 
-  it("runs the clause once at start, asking for no issues, and refuses one Jira cannot parse with Jira's own words", async () => {
+  it("runs the clause once at start, asking for one issue, and refuses one Jira cannot parse with Jira's own words", async () => {
     const good = setup({ jql });
     await good.jira.check(good.ctx);
-    expect(queries(good.fake)).toContainEqual(expect.objectContaining({ jql: `project = "KEY" AND (${jql})`, maxResults: 0 }));
+    expect(queries(good.fake)).toContainEqual(expect.objectContaining({ jql: `project = "KEY" AND (${jql})`, fields: ["key"], maxResults: 1 }));
     const bad = setup({ jql: "created >>> soon" });
     await expect(bad.jira.check(bad.ctx)).rejects.toThrow(/jql "created >>> soon" does not run in KEY[\s\S]*Error in the JQL Query/);
   });
