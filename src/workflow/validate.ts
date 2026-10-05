@@ -594,7 +594,7 @@ function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
       };
       /*
        * settleOutput cuts the answer down to the matched shape's fields before
-       * addFrom or spentFrom is read, so a field no shape declares never
+       * a field a route names is read, so a field no shape declares never
        * arrives and every round fails as missing, after the agent was paid.
        */
       const undeclared = (field: string): void => {

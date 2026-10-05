@@ -283,7 +283,7 @@ Effect fields may use `{item}`, `{stage}` and `{round}`, and nothing from the sn
 | `tracker.label` | `add`, `remove`; on a route, `addFrom` and `allowed` | Adds and removes labels. `addFrom` takes the labels from the answer — see [Fields from the answer](#fields-from-the-answer) | the labels already match |
 | `tracker.worklog` | `spentFrom`, `max`, `marker` (all required), `skipIfLogged` | Route only, Jira only. Logs the time the answer's `spentFrom` field names against the item. With `skipIfLogged: true`, logs nothing on an item that has any worklog, a person's included | a worklog Landrace wrote carries that marker; with `skipIfLogged`, any worklog is on the item |
 | `tracker.close` | `how`: `done` (default) or `dropped` | Closes the item | the item is closed, either way — a person who closed it as not planned decided that |
-| `tracker.create` | `project`, `title`, `body` (required: `project`, `title`) | Files an issue in another project of the tracker, linked to the item and unlabelled, so no workflow works it. Then posts a `created` record on the item naming the new issue's key. The title and body are escaped. Only a tracker that opts in does this, and only in the projects it names (Jira's [`createIn`](integrations.md#jira)). If a crash comes between filing and recording, the next apply reuses the issue that carries the effect's marker, so no second issue is filed. Put it in a route's `effects`, which marks it; anywhere else it needs a `marker` of its own | the item already carries the `created` record for this effect's marker |
+| `tracker.create` | `project` (required), `title` or, on a route, `titleFrom` (exactly one), `body`; on a route, `fieldsFrom` | Files an issue in another project of the tracker, linked to the item and unlabelled, so no workflow works it. Then posts a `created` record on the item naming the new issue's key. `titleFrom` takes the title from the answer, and `fieldsFrom` fills the issue's fields — see [Fields from the answer](#fields-from-the-answer). The title, body and fields are escaped. Only a tracker that opts in does this, and only in the projects it names (Jira's [`createIn`](integrations.md#jira)). If a crash comes between filing and recording, the next apply reuses the issue that carries the effect's marker, so no second issue is filed. Put it in a route's `effects`, which marks it; anywhere else it needs a `marker` of its own | the item already carries the `created` record for this effect's marker |
 | `nodes.close` | `follow`: relationship types | Closes the nodes a superseded round of this stage created, following those types — see [Splitting work into sub-items](#splitting-work-into-sub-items) | none of them is open |
 | `artifact.publish` | `artifact` | Publishes a step's output as an artifact, such as the spec page | the published copy already matches |
 | `branch.push` | `branch` | Pushes the branch to `origin`, fast-forward only — never forced | the checkout's branch head equals `origin`'s as last fetched or pushed, or the checkout has no such branch |
@@ -296,7 +296,7 @@ An effect no hook handles fails when it is applied, and two hooks claiming one t
 
 ### Fields from the answer
 
-Two route fields name a field of the step's answer, and the engine reads it, so no hook parses what an agent wrote:
+Four route fields name fields of the step's answer, and the engine reads them, so no hook parses what an agent wrote:
 
 ```yaml
     - when: { kind: diagnosed }
@@ -307,12 +307,21 @@ Two route fields name a field of the step's answer, and the engine reads it, so 
         remove: [bug, question, feature]
     - when: { kind: logged }
       effect: { type: tracker.worklog, spentFrom: spent, max: 4h, marker: "work:{stage}:{round}", skipIfLogged: true }
+    - when: { kind: bug }
+      effects:
+        - type: tracker.create
+          project: ENG
+          titleFrom: bugTitle
+          from: report
+          fieldsFrom: { customfield_10050: bugPlan }
 ```
 
 - `addFrom` names one answer field, or a list of them. Each holds a label or a list of labels, and they are added beside any `add`. Each must be in `allowed`, and none may start with `lr:`. The labels added are taken out of `remove`, so removing a whole set and adding one of it back leaves exactly that one, and the next pass writes nothing.
 - `spentFrom` names the answer field holding the time spent, as hours and minutes: `45m`, `2h`, `1h30m`. It becomes the worklog's seconds.
-- An answer field that is missing, a label outside `allowed`, or a time that is not a duration, is zero, or is over `max` fails the round as a broken contract. Nothing is trimmed to fit, nothing is written, and the round is not run again.
-- `addFrom` and `spentFrom` are route fields: `on_enter` has no answer to read them from.
+- `titleFrom` names the answer field holding the new issue's title, one line of text. It replaces `title`: a `tracker.create` takes exactly one of them. The title is escaped, and a tracker with a bound on titles cuts it to fit (Jira: 255 characters).
+- `fieldsFrom` maps a field id of the target project to an answer field. The keys are written in the workflow, never taken from the answer. Each value is written to that field when the issue is filed, in the same request; one the answer left empty is not written. Jira takes text and textarea fields, and checks them at start ([Jira](integrations.md#jira)).
+- An answer field that is missing, a label outside `allowed`, a time that is not a duration, is zero, or is over `max`, a title that is empty or more than one line, or a `fieldsFrom` value that is not text fails the round as a broken contract. Nothing is trimmed to fit, nothing is written, and the round is not run again.
+- All four are route fields: `on_enter` has no answer to read them from.
 
 ### The merge's three guards
 
