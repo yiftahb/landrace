@@ -10,7 +10,7 @@ import type { RuntimeContext } from "landrace/hooks";
 import { BaseDocs, EffectRefused } from "landrace/kit";
 import { fromAdf } from "./adf.js";
 import { type Client, clientFor, isMissing, refusesField } from "./client.js";
-import { adfOf, type Field, type Jira, MAX_TEXTFIELD, scopeOf, search, shapeOf } from "./tracker.js";
+import { adfOf, editScreens, type Field, type Jira, MAX_TEXTFIELD, scopeOf, search, shapeOf } from "./tracker.js";
 
 export interface JiraFieldOptions {
   /**
@@ -192,46 +192,14 @@ export class JiraField extends BaseDocs {
     if (field === null) throw new Error(`the site has no field ${this.field}, which the spec is kept in (JiraField's field)`);
     const shape = shapeOf(field);
     if (shape !== "adf" && shape !== "string") throw new Error(shape);
-    const scoped = await search(
-      jira, `project = "${this.project}" AND statusCategory != Done${await scopeOf(jira, ctx, this.jql)} ORDER BY created ASC`, { fields: ["issuetype"] },
-    );
-    // A type past the last page read may be one of them: not found is not missing.
-    if (!scoped.complete) throw new Error(`${this.project} has more open issues in the tracker's scope than one listing carries, so which types its items are cannot be told`);
-    const names = new Set([
-      ...scoped.issues.flatMap((i) => {
-        const name = (i.fields as { issuetype?: { name?: unknown } | null }).issuetype?.name;
-        return typeof name === "string" ? [name] : [];
-      }),
-      ...this.itemTypes,
-    ]);
-    const project = await jira.call<{ issueTypes?: Array<{ id?: unknown; name?: unknown }> } | null>("GET", `/rest/api/3/project/${this.project}`);
-    // A type the tracker names that the project lacks is the tracker's preflight to refuse.
-    const types = (project?.issueTypes ?? []).flatMap((t) =>
-      (typeof t.id === "string" && /^[0-9]+$/.test(t.id) && names.has(String(t.name)) ? [{ id: t.id, name: String(t.name) }] : []));
-    const missing: string[] = [];
-    const unchecked: string[] = [];
-    for (const type of types) {
-      const { issues = [] } = await jira.call<{ issues?: Array<{ key?: unknown }> }>("POST", "/rest/api/3/search/jql", {
-        jql: `project = "${this.project}" AND issuetype = ${type.id} AND statusCategory != Done`, fields: ["key"], maxResults: 1,
-      });
-      const key = issues[0]?.key;
-      if (typeof key !== "string" || !this.keyPattern.test(key)) {
-        unchecked.push(type.name);
-        continue;
-      }
-      try {
-        const { fields = {} } = await jira.call<{ fields?: Record<string, unknown> }>("GET", `/rest/api/3/issue/${key}/editmeta`);
-        if (!(this.field in fields)) missing.push(type.name);
-      } catch (e) {
-        throw new Error(`cannot read ${key}'s edit screen, for its "${type.name}" issues: ${messageOf(e)}`);
-      }
-    }
+    const { screens, unchecked } = await editScreens(jira, ctx, { project: this.project, jql: this.jql, itemTypes: this.itemTypes, keyPattern: this.keyPattern });
+    const missing = screens.filter(({ fields }) => !(this.field in fields)).map(({ type }) => type);
     for (const type of missing) {
       ctx.log("jira.field.missing", {
         field: this.field, type, reason: "not on the type's edit screen, or the account may not edit it: its items' specs are refused when published",
       });
     }
-    if (unchecked.length === types.length) {
+    if (screens.length === 0) {
       throw new Error(`there is no open issue of any issue type an item of ${this.project} can be to read an edit screen from, so whether ${this.field} is on one cannot be told`);
     }
     if (unchecked.length > 0) ctx.log("jira.field.unchecked", { field: this.field, types: unchecked, reason: "no open issue of the type to read its edit screen from" });

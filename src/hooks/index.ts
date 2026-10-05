@@ -46,6 +46,7 @@ export type {
   RuntimeContext,
   Snapshot,
   Source,
+  TrackerFieldValue,
   ItemPatch,
   TrackerComment,
 } from "#namespace.js";
