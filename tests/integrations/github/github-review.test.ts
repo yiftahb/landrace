@@ -1,5 +1,5 @@
 import { createClient, GitHubForge } from "landrace/integrations/github";
-import { parseMarker, renderMarker } from "#conventions.js";
+import { isEffectRefused, parseMarker, renderMarker } from "#conventions.js";
 import type { Effect, Graph, HookContext, Node, Snapshot } from "#namespace.js";
 import { createFakeTracker, noBranches, type FakeTracker } from "#tests/support/fake-tracker.js";
 
@@ -103,13 +103,34 @@ describe("pull.review", () => {
     expect(pull(gh).threads[0]?.body).toContain("line 40");
   });
 
-  it("lists a finding on a file the pull request does not change in the review itself, since GitHub cannot thread it", async () => {
+  /*
+   * #120: listed only in the review's text, such a finding counted toward
+   * nothing, and the item merged past it. It is a thread on a changed file,
+   * naming where it really is, and blocks the merge like any other.
+   */
+  it("threads a finding on a file the pull request does not change on a changed file, naming its real path:line", async () => {
     const gh = withPull();
     await apply(gh, review({ kind: "reviewed", findings: [{ file: "src/elsewhere.ts", line: 3, body: "caller not updated" }], resolved: [] }));
 
+    expect(pull(gh).threads).toEqual([expect.objectContaining({ path: "src/a.ts", isResolved: false })]);
+    expect(pull(gh).threads[0]?.line).toBeUndefined();
+    expect(pull(gh).threads[0]?.body).toMatch(/^`src\/elsewhere\.ts:3` — caller not updated/);
+    expect(parseMarker(pull(gh).threads[0]?.body ?? "")?.marker).toBe("finding:code-review:1:0");
+    const pr = ((await snapshotOf(gh)).graph as Graph | undefined)?.nodes.find((n: Node) => n.id === "pr-20");
+    expect(pr?.state).toMatchObject({ openThreads: 1, awaitingFix: 1 });
+  });
+
+  it("refuses a review whose finding has no changed file to go on, posting nothing", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({ number: 20, head: "landrace/7", headSha: "abc", merged: false, threads: [], files: [] });
+    let thrown: unknown;
+    await apply(gh, review({ kind: "reviewed", findings: [{ file: "src/elsewhere.ts", line: 3, body: "caller not updated" }], resolved: [] }))
+      .catch((e: unknown) => { thrown = e; });
+
+    expect(isEffectRefused(thrown)).toBe(true);
+    expect(String(thrown)).toContain("src/elsewhere.ts:3");
+    expect(pull(gh).reviews ?? []).toEqual([]);
     expect(pull(gh).threads).toEqual([]);
-    expect(pull(gh).reviews?.[0]?.body).toContain("src/elsewhere.ts:3");
-    expect(pull(gh).reviews?.[0]?.body).toContain("caller not updated");
   });
 
   /*

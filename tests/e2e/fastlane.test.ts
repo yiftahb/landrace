@@ -439,6 +439,47 @@ describe("fastlane, end to end", () => {
     expect(state.item("1").labels).not.toContain("lr:awaiting");
   });
 
+  /*
+   * #120: code review's only finding was on a file the pull request did not
+   * touch. Listed in the review's text, it counted toward nothing, and the
+   * item went to ci and on to merge nine seconds later. Threaded on a changed
+   * file, it awaits a fix like any other.
+   */
+  it("7d. sends a review whose only finding is on a file the pull request does not touch to fix-review, not ci", async () => {
+    const { run } = road({
+      answers: {
+        "code-review": reviewer({
+          1: { findings: [{ file: "src/testing/harness.ts", line: 125, body: "Still fills the default branch." }] },
+          2: { resolved: ["T1"] },
+        }),
+        "fix-review": fixer,
+        retro: json({ kind: "nothing", reason: "The finding was this item's own." }),
+      },
+      during: ({ stage, round }, pull) => {
+        if (stage === "code-review" && round === 1) Object.assign(pull(), { files: CHANGED });
+      },
+    });
+    await run.converge();
+
+    expect(run.trail().slice(0, 5)).toEqual(["build", "publish", "code-review", "fix-review", "code-review"]);
+    expect(run.trail()).not.toContain("stuck");
+  });
+
+  it("7e. halts a review with a finding when the pull request changes no file to put it on, naming the finding", async () => {
+    const { state, run, merges } = road({
+      answers: { "code-review": reviewer({ 1: { findings: [{ file: "src/b.ts", line: 4, body: "Off by one." }] } }) },
+      during: ({ stage, round }, pull) => {
+        if (stage === "code-review" && round === 1) Object.assign(pull(), { files: [] });
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "blocked"]);
+    expect(r.result.settled).toBe("wait");
+    expect(merges()).toBe(0);
+    expect(state.comments("1").at(-1)).toContain("`src/b.ts:4`");
+  });
+
   it("7c. leaves the item stuck on the wording budget once a sixth review still finds only wording", async () => {
     const why: unknown[] = [];
     const { state, run, pr } = road({

@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createClient, GitLab } from "landrace/integrations/gitlab";
 import { branchHeads, compose, gitIn } from "landrace/kit";
-import { parseMarker, PULL_REQUEST_KIND } from "#conventions.js";
+import { isEffectRefused, parseMarker, PULL_REQUEST_KIND } from "#conventions.js";
 import type { Effect, Git, Graph, HookContext, Snapshot } from "#namespace.js";
 import { MemoryTracker } from "#testing/external-state.js";
 import { BASE, createFakeGitLab, type FakeGitLab, PROJECT, TOKEN } from "#tests/integrations/gitlab/fake-gitlab.js";
@@ -685,6 +685,36 @@ describe("GitLab composed as a project's forge", () => {
     }));
     const placed = gl.mrs.get(1)?.discussions.map((d) => [d.notes[0]?.position?.position_type, d.notes[0]?.position?.new_line, d.notes[0]?.position?.old_line]);
     expect(placed).toEqual([["file", undefined, undefined], ["text", 2, undefined], ["text", 3, 2], [undefined, undefined, undefined]]);
+  });
+
+  it("threads a finding on a file the merge request does not change on a changed file, naming its real path:line", async () => {
+    const { gl, apply, counts } = project();
+    await apply({ type: "pull.open", branch: "landrace/7" });
+    await apply(round("review:1", { findings: [{ file: "src/elsewhere.ts", line: 3, body: "caller not updated" }], resolved: [] }));
+    const [discussion] = gl.mrs.get(1)?.discussions ?? [];
+    expect(discussion?.notes[0]?.position).toMatchObject({ position_type: "file", new_path: "src/a.ts" });
+    expect(discussion?.notes[0]?.body).toMatch(/^`src\/elsewhere\.ts:3` — caller not updated/);
+    expect(await counts()).toEqual(["pr-1", 1, 1]);
+  });
+
+  /*
+   * A merge request just opened, its diff not worked out yet: there is no
+   * changed file to put the finding on so far, and the next tick may find
+   * one. Left for then, never refused for it.
+   */
+  it("leaves a review it has no changed file for to the next tick while GitLab is still working out the diff", async () => {
+    const { gl, apply } = project();
+    gl.diffsFor("landrace/7", []);
+    await apply({ type: "pull.open", branch: "landrace/7" });
+    const mr = gl.mrs.get(1);
+    if (mr) mr.changes_count = null;
+    let thrown: unknown;
+    await apply(round("review:1", { findings: [{ file: "src/a.ts", line: 2, body: "x" }], resolved: [] })).catch((e: unknown) => { thrown = e; });
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(isEffectRefused(thrown)).toBe(false);
+    expect(String(thrown)).toMatch(/still working out its changed files/);
+    expect(mr?.discussions).toEqual([]);
   });
 
   it("gates on the counts: 1/1 raised, 1/0 answered, 0/0 resolved — and 0/0 once closed with a thread open", async () => {
