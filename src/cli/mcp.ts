@@ -8,7 +8,7 @@ import { createTools } from "#mcp/tools.js";
 import { createActivityLog } from "#runner/activity.js";
 import { createChild } from "#runner/children.js";
 import { createLogger, scrubberOf } from "#runner/events.js";
-import { declaredOf, declaredTrackerFields, runPreflights } from "#runner/preflight.js";
+import { declaredOf, declaredTrackerFields, runPreflights, scopedPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { loadWorkspace, workflowById } from "#workflow/workspace.js";
@@ -88,7 +88,7 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
   // first paid step 403s with nothing durable recorded to show for it. Each
   // once, by identity, as `landrace start` runs them.
   await runPreflights(
-    [...new Set(hooked.flatMap(({ registry }) => registry.preflights))],
+    scopedPreflights(hooked.map(({ w, registry }) => ({ preflights: registry.preflights, workflow: w }))),
     { ...ctx, ...declaredOf(hooked.map(({ w }) => w)) },
   );
 

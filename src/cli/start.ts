@@ -24,7 +24,6 @@ import type {
   PairDeps,
   PreHook,
   ReadRoute,
-  Preflight,
   Problem,
   RedactingLogger,
   Registry,
@@ -52,7 +51,7 @@ import { createLogger, scrubberOf } from "#runner/events.js";
 import { createNotify, notifyProblems } from "#runner/notify.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { held } from "#runner/lock.js";
-import { declaredOf, declaredTrackerFields, runPreflights } from "#runner/preflight.js";
+import { declaredOf, declaredTrackerFields, runPreflights, scopedPreflights } from "#runner/preflight.js";
 import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { itemTag, oneLine } from "#runner/status.js";
@@ -571,10 +570,9 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // which runs no step and must write nothing.
   const activity = opts.readOnly ? undefined : createActivityLog(sandboxRoot(dir), scrubberOf(ctx.secrets, log.scrub));
 
-  const preflights: Preflight[] = [];
+  const preflights = scopedPreflights(hooked.map(({ loaded, registry }) => ({ preflights: registry.preflights, workflow: loaded })));
   const workflows: WorkflowRuntime[] = [];
   for (const { loaded: { id, workflow, steps }, registry, source } of hooked) {
-    for (const preflight of registry.preflights) if (!preflights.includes(preflight)) preflights.push(preflight);
     // An executor factory's own members, beyond what every hook gets: where its
     // repository is, a way to keep what its setup turns up out of every log
     // line from here on — an MCP server's env, say, which the configuration

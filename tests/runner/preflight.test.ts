@@ -1,6 +1,6 @@
 import { definePreflight } from "#hooks/contracts.js";
 import type { Preflight, RuntimeContext, Step, Workflow } from "#namespace.js";
-import { declaredCapabilities, declaredCreateFields, declaredOf, declaredTrackerFields, runPreflights } from "#runner/preflight.js";
+import { declaredCapabilities, declaredCreateFields, declaredOf, declaredTrackerFields, runPreflights, scopedPreflights } from "#runner/preflight.js";
 
 /**
  * The engine's *when* for a permission problem: run every registered
@@ -147,11 +147,26 @@ describe("declaredTrackerFields", () => {
     expect(declaredTrackerFields([{ workflow, steps }]).size).toBe(0);
   });
 
-  // What every caller hands its preflights: the ids beside their values.
-  it("is handed to the preflights by declaredOf, beside the capabilities and the create fields", () => {
-    const workflow = { stages: [stage("build", [{ type: "tracker.field", fields: { customfield_1: "R&D" } }])] } as unknown as Workflow;
-    const declared = declaredOf([{ workflow, steps: new Map() }]);
-    expect([...(declared.fieldValues ?? [])]).toEqual([["customfield_1", ["R&D"]]]);
-    expect(declared.capabilities?.size).toBe(0);
+  // Each tracker checks against its own project, so a preflight sees only the values of the workflows that load it.
+  it("is handed to each preflight by scopedPreflights, for the workflows that load it alone, once each", async () => {
+    const setting = (value: string) => ({
+      workflow: { stages: [stage("build", [{ type: "tracker.field", fields: { customfield_1: value } }])] } as unknown as Workflow,
+      steps: new Map<string, Step>(),
+    });
+    const handed: Array<[string, unknown]> = [];
+    const recording = (id: string): Preflight => definePreflight({
+      id, check: async (c) => { handed.push([id, Object.fromEntries(c.fieldValues ?? [])]); },
+    });
+    const shared = recording("shared");
+    const preflights = scopedPreflights([
+      { preflights: [shared, recording("eng")], workflow: setting("R&D") },
+      { preflights: [shared, recording("ops")], workflow: setting("Ops") },
+    ]);
+    await runPreflights(preflights, { ...ctx, ...declaredOf([]) });
+    expect(handed).toEqual([
+      ["shared", { customfield_1: ["R&D", "Ops"] }],
+      ["eng", { customfield_1: ["R&D"] }],
+      ["ops", { customfield_1: ["Ops"] }],
+    ]);
   });
 });

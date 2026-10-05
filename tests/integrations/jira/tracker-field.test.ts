@@ -5,6 +5,7 @@ import type { Effect, HookContext, Node, RuntimeContext, Snapshot, Step, Workflo
 import { converge } from "#runner/converge.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
+import { runPreflights, scopedPreflights } from "#runner/preflight.js";
 import {
   type Adf, AREAS, CATEGORY, createFakeJira, DUE, EMAIL, NOTES, OTHER, PERSON, POINTS, REVIEWER, SITE, SUMMARY_LINE, TOKEN, WATCHERS,
 } from "#tests/integrations/jira/fake-jira.js";
@@ -19,13 +20,13 @@ const SECRETS = { jiraBaseUrl: SITE, jiraEmail: EMAIL, jiraToken: TOKEN };
 const FIELD = "tracker.field";
 const ALL = [CATEGORY, AREAS, REVIEWER, WATCHERS, POINTS, SUMMARY_LINE, NOTES, DUE];
 
-function setup(options: Partial<JiraOptions> = {}) {
-  const fake = createFakeJira();
+function setup(options: Partial<JiraOptions> = {}, project = "KEY") {
+  const fake = createFakeJira(project);
   fake.fields.push(...ALL);
   fake.options[CATEGORY.id] = ["R&D", "Support"];
   fake.options[AREAS.id] = ["Billing", "Search", "Login"];
   for (const type of fake.issueTypes) type.fields.push(...ALL.map((f) => f.id));
-  const jira = new Jira({ project: "KEY", fetchImpl: fake.fetchImpl, ...options });
+  const jira = new Jira({ project, fetchImpl: fake.fetchImpl, ...options });
   const ctx: RuntimeContext = {
     config: {} as never, secrets: new Map(Object.entries(SECRETS)), signal: new AbortController().signal, log: () => {},
     trackerFields: new Set(ALL.map((f) => f.id)),
@@ -355,6 +356,34 @@ describe("the preflight checks each tracker.field value", () => {
     fake.add();
     await expect(jira.check({ ...ctx, fieldValues: values([[CATEGORY.id, ["R&D"]]]) }))
       .rejects.toThrow(/"Category" \(customfield_10123\).*"Task".*no allowed values.*"R&D".*cannot be told/);
+  });
+
+  /*
+   * Two workflows on two projects, each setting Category to an option only its
+   * own project offers. Each tracker's preflight is handed the values of the
+   * workflows that load it, so each passes; handed every workflow's, ENG's would
+   * refuse OPS's option, though both workflows are sound.
+   */
+  it("checks each project's values against its own screens, in a workspace of two", async () => {
+    const project = (key: string, options: string[]) => {
+      const { fake, jira, ctx } = setup({}, key);
+      fake.options[CATEGORY.id] = options;
+      fake.add();
+      return { jira, ctx };
+    };
+    const eng = project("ENG", ["R&D"]);
+    const ops = project("OPS", ["Ops"]);
+    const categorised = (option: string) => ({
+      workflow: { stages: [{ id: "build", on_enter: [set({ [CATEGORY.id]: [option] })] }] } as unknown as Workflow,
+      steps: new Map<string, Step>(),
+    });
+    const preflights = scopedPreflights([
+      { preflights: [compose({ tracker: eng.jira }).preflight], workflow: categorised("R&D") },
+      { preflights: [compose({ tracker: ops.jira }).preflight], workflow: categorised("Ops") },
+    ]);
+    await expect(runPreflights(preflights.slice(0, 1), eng.ctx)).resolves.toBeUndefined();
+    await expect(runPreflights(preflights.slice(1), ops.ctx)).resolves.toBeUndefined();
+    await expect(eng.jira.check({ ...eng.ctx, fieldValues: values([[CATEGORY.id, [["R&D"], ["Ops"]]]]) })).rejects.toThrow(/"Ops"/);
   });
 
   it("reads nothing more when no tracker.field is loaded", async () => {

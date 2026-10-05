@@ -1384,7 +1384,7 @@ export type PreflightContext = RuntimeContext & {
   capabilities?: ReadonlySet<string> | undefined;
   /** Project → the field ids a loaded route's `tracker.create` there fills from its answer (`fieldsFrom`). */
   createFields?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
-  /** Field id → every value a loaded `tracker.field`, in an on_enter or a route, sets it to. */
+  /** Field id → every value a `tracker.field` of a workflow loading this preflight, in an on_enter or a route, sets it to. */
   fieldValues?: ReadonlyMap<string, readonly TrackerFieldValue[]> | undefined;
 };
 
@@ -2337,7 +2337,8 @@ export interface WorkspaceRuntime {
    * `landrace status` builds a runtime the same way to enumerate items, and
    * must never make the one write a preflight can make while only trying to
    * read. Only `runStart` runs these, before the first tick. One each, by
-   * identity: two workflows loading one module share its preflight.
+   * identity: two workflows loading one module share its preflight, which is
+   * handed the `tracker.field` values of the workflows that load it.
    */
   preflights: Preflight[];
   intervalMs: number;

@@ -93,7 +93,24 @@ export function declaredTrackerFields(
 /** What the loaded workflows declare, as a preflight is handed it by every caller alike. */
 export function declaredOf(
   workflows: ReadonlyArray<{ workflow: Workflow; steps: ReadonlyMap<string, Step> }>,
-): Pick<PreflightContext, "capabilities" | "createFields" | "fieldValues"> {
+): Pick<PreflightContext, "capabilities" | "createFields"> {
   const steps = workflows.map((w) => w.steps);
-  return { capabilities: declaredCapabilities(steps), createFields: declaredCreateFields(steps), fieldValues: declaredTrackerFields(workflows) };
+  return { capabilities: declaredCapabilities(steps), createFields: declaredCreateFields(steps) };
+}
+
+/**
+ * Each preflight once, by identity and in load order, handed as `fieldValues`
+ * only what the workflows that load it set with `tracker.field`. A tracker
+ * checks a value against its own project's screens, so a second workflow's
+ * value, on another project, would refuse an option only that one offers.
+ */
+export function scopedPreflights(
+  loads: Iterable<{ preflights: readonly Preflight[]; workflow: { workflow: Workflow; steps: ReadonlyMap<string, Step> } }>,
+): Preflight[] {
+  const loadedBy = new Map<Preflight, Array<{ workflow: Workflow; steps: ReadonlyMap<string, Step> }>>();
+  for (const { preflights, workflow } of loads) for (const preflight of preflights) loadedBy.set(preflight, [...(loadedBy.get(preflight) ?? []), workflow]);
+  return [...loadedBy].map(([preflight, workflows]) => {
+    const fieldValues = declaredTrackerFields(workflows);
+    return { id: preflight.id, check: (ctx) => preflight.check({ ...ctx, fieldValues }) };
+  });
 }
