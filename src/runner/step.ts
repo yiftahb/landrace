@@ -423,9 +423,13 @@ const LANDRACE_LABEL = /^\s*lr:/i;
 /**
  * A route effect's fields that name output fields, resolved from the answer
  * onto the fields its hook reads: `addFrom` into `add`, `spentFrom` into
- * `seconds`. Here, so a hook never parses an agent's text, and whole or not
- * at all: a field missing, a label outside `allowed`, a duration that is not
- * one or is zero or over `max` is a broken contract, never trimmed to fit.
+ * `seconds`, `titleFrom` into `title` and `fieldsFrom` into `fields`. Here,
+ * so a hook never parses an agent's text, and whole or not at all: a field
+ * missing, a label outside `allowed`, a duration that is not one or is zero
+ * or over `max`, a title that is empty or more than one line, a mapped field
+ * that is not text, is a broken contract, never trimmed to fit. A mapped
+ * field the answer left empty is the one thing left out: the issue's field
+ * stays as its project makes it.
  *
  * The labels added leave `remove`, so a route that removes the whole set and
  * adds one back of it is satisfied once the item carries exactly that one.
@@ -474,6 +478,32 @@ export function resolveOutputFields(
     if (max === null) return { ok: false, reason: `the route's max is ${describeValue(effect.max)}, not a duration such as 4h` };
     if (ms > max) return { ok: false, reason: `the answer's "${field}" is ${String(got)}, over the ${String(effect.max)} the route allows` };
     out.seconds = ms / 1000;
+  }
+
+  if (effect.titleFrom !== undefined) {
+    const field = String(effect.titleFrom);
+    const got = answered(field);
+    if (got === undefined) return { ok: false, reason: `the answer's "${field}", which titleFrom names, is missing` };
+    const title = typeof got === "string" ? got.trim() : null;
+    if (title === null || /[\r\n]/.test(title)) return { ok: false, reason: `the answer's "${field}" must be one line of text, got ${describeValue(got)}` };
+    if (title === "") return { ok: false, reason: `the answer's "${field}", which titleFrom names, is empty, and an issue needs a title` };
+    out.title = title;
+  }
+
+  if (effect.fieldsFrom !== undefined) {
+    const map = effect.fieldsFrom;
+    if (map === null || typeof map !== "object" || Array.isArray(map)) {
+      return { ok: false, reason: "fieldsFrom must map field ids to output fields" };
+    }
+    const fields: Record<string, string> = {};
+    for (const [id, named] of Object.entries(map)) {
+      const field = String(named);
+      const got = answered(field);
+      if (got === undefined) return { ok: false, reason: `the answer's "${field}", which fieldsFrom names for ${id}, is missing` };
+      if (typeof got !== "string") return { ok: false, reason: `the answer's "${field}" must be text for ${id}, got ${describeValue(got)}` };
+      if (got.trim() !== "") fields[id] = got;
+    }
+    out.fields = fields;
   }
 
   return { ok: true, effect: out };

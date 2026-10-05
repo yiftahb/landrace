@@ -542,10 +542,22 @@ export abstract class BaseTracker {
     if (typeof effect.title !== "string" || effect.title.trim() === "") {
       throw new EffectRefused(`a tracker.create effect names no title for its issue in ${project}`);
     }
+    // What the engine resolved from `fieldsFrom`: text by field id, or nothing to write.
+    const fields: Record<string, string> = {};
+    if (effect.fields !== undefined) {
+      if (effect.fields === null || typeof effect.fields !== "object" || Array.isArray(effect.fields)) {
+        throw new EffectRefused(`a tracker.create effect's fields must map field ids to text, got ${JSON.stringify(effect.fields)}`);
+      }
+      for (const [id, value] of Object.entries(effect.fields)) {
+        if (typeof value !== "string") throw new EffectRefused(`a tracker.create effect's ${id} must be text, got ${JSON.stringify(value)}`);
+        fields[id] = neutraliseMarkers(value);
+      }
+    }
     return {
       project,
       title: neutraliseMarkers(effect.title),
       body: neutraliseMarkers(String(effect.body ?? "")),
+      ...(Object.keys(fields).length === 0 ? {} : { fields }),
       item,
       marker: createdMarker(effect),
     };

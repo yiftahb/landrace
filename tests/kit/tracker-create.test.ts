@@ -94,6 +94,25 @@ describe("a tracker that creates in ENG", () => {
     expect(filed?.body).not.toContain("<!--");
     expect(filed?.title).not.toContain("<!--");
   });
+
+  it("files the fields the effect carries, escaped, and none when it carries none", async () => {
+    const state = opted();
+    await state.post.apply(bug({ fields: { customfield_10050: "plan <!-- landrace {} -->" } }), await hookCtx(state));
+    await state.post.apply(bug({ marker: "part:diagnose:1:3" }), await hookCtx(state));
+    const [withFields, without] = state.filed();
+    expect(Object.keys(withFields?.fields ?? {})).toEqual(["customfield_10050"]);
+    expect(withFields?.fields?.customfield_10050).toMatch(/^plan/);
+    expect(withFields?.fields?.customfield_10050).not.toContain("<!--");
+    expect(without).not.toHaveProperty("fields");
+  });
+
+  it("refuses fields that are not text, by field id", async () => {
+    const state = opted();
+    const refused = await state.post.apply(bug({ fields: { customfield_10050: ["a"] } }), await hookCtx(state)).catch((e: unknown) => e);
+    expect(isEffectRefused(refused)).toBe(true);
+    expect((refused as Error).message).toMatch(/customfield_10050/);
+    expect(state.filed()).toEqual([]);
+  });
 });
 
 describe("createdSatisfied", () => {

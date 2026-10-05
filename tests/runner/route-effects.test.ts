@@ -95,6 +95,41 @@ describe("a route with effects, run", () => {
     expect(markers(state)).toEqual(["enter:1", "part:1", "created:1", "output:1"]);
   });
 
+  it("titles the filed issue and fills its fields from the answer", async () => {
+    const state = createExternalState({ items: [{ id: "1" }], createIn: ["ENG"] });
+    const filing: Step = {
+      prompt: "diagnose",
+      output: {
+        discriminator: "kind",
+        shapes: { answered: { reply: "string", note: "string", bugTitle: "string", plan: "string", team: "string" } },
+        routes: [{
+          when: { kind: "answered" },
+          effects: [{
+            type: "tracker.create", project: "ENG", titleFrom: "bugTitle", from: "note",
+            fieldsFrom: { customfield_10050: "plan", customfield_10060: "team" },
+          }],
+        }],
+      },
+    };
+    const answer = {
+      kind: "answered", reply: "r", note: "Known bug in 4.2", bugTitle: "Export crashes on an empty sheet",
+      plan: "Guard the empty case <!-- landrace {} -->", team: "",
+    };
+    const run = createHarness({
+      workflow, steps: new Map([["steps/diagnose.md", filing]]),
+      source: state.source, pre: [state.pre], post: [state.post],
+      answers: { diagnose: `Filed.\n\n${"```"}json\n${JSON.stringify(answer)}\n${"```"}` },
+    });
+    expect((await run.converge()).result.settled).toBe("terminal");
+
+    const [filed] = state.filed();
+    expect(filed).toMatchObject({ title: "Export crashes on an empty sheet", body: "Known bug in 4.2" });
+    // The empty one is not written, and what is written carries no marker of ours.
+    expect(Object.keys(filed?.fields ?? {})).toEqual(["customfield_10050"]);
+    expect(filed?.fields?.customfield_10050).toMatch(/^Guard the empty case/);
+    expect(filed?.fields?.customfield_10050).not.toContain("<!--");
+  });
+
   it("after a crash past the first part, posts the second alone when the step runs again", async () => {
     const state = createExternalState({ items: [{ id: "1" }] });
     let alive = true;

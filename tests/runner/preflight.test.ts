@@ -1,6 +1,6 @@
 import { definePreflight } from "#hooks/contracts.js";
 import type { Preflight, RuntimeContext, Step } from "#namespace.js";
-import { declaredCapabilities, runPreflights } from "#runner/preflight.js";
+import { declaredCapabilities, declaredCreateFields, runPreflights } from "#runner/preflight.js";
 
 /**
  * The engine's *when* for a permission problem: run every registered
@@ -77,5 +77,31 @@ describe("declaredCapabilities", () => {
     expect([...declaredCapabilities([build, breakdown])].sort()).toEqual(["items:create", "repo:read", "repo:write"]);
     expect(declaredCapabilities([build]).has("items:create")).toBe(false);
     expect(declaredCapabilities([]).size).toBe(0);
+  });
+});
+
+describe("declaredCreateFields", () => {
+  const filing = (routes: NonNullable<Step["output"]>["routes"]): Step =>
+    ({ output: { discriminator: "kind", shapes: { bug: {} }, routes } }) as unknown as Step;
+
+  // A route's one effect and its list both file issues, so both are read.
+  it("is each project's fields any route's tracker.create maps, from either form of route", () => {
+    const support = new Map([
+      ["one.md", filing([{ when: { kind: "bug" }, effect: { type: "tracker.create", project: "ENG", title: "t", fieldsFrom: { customfield_1: "a" } } }])],
+      ["many.md", filing([{
+        when: { kind: "bug" },
+        effects: [
+          { type: "tracker.comment" },
+          { type: "tracker.create", project: "ENG", title: "t", fieldsFrom: { customfield_2: "b" } },
+          { type: "tracker.create", project: "OPS", title: "t", fieldsFrom: { customfield_3: "c" } },
+          { type: "tracker.create", project: "OPS", title: "t" },
+        ],
+      }])],
+    ]);
+    const fields = declaredCreateFields([support]);
+    expect([...fields.keys()].sort()).toEqual(["ENG", "OPS"]);
+    expect([...(fields.get("ENG") ?? [])].sort()).toEqual(["customfield_1", "customfield_2"]);
+    expect([...(fields.get("OPS") ?? [])]).toEqual(["customfield_3"]);
+    expect(declaredCreateFields([]).size).toBe(0);
   });
 });
