@@ -1539,10 +1539,10 @@ export class Jira extends BaseTracker {
         ctx.log("jira.service-desk", { project: this.project, comments: "internal, unless a route's tracker.comment says visibility: public" });
       }
     }
-    // A clause Jira cannot parse would fail every tick's list: asked once, for no issues, it fails here instead.
+    // A clause Jira cannot parse would fail every tick's list: asked once, for one issue (Jira refuses to be asked for none), it fails here instead.
     if (this.jql !== undefined) {
       try {
-        await jira.call("POST", "/rest/api/3/search/jql", { jql: `project = "${this.project}" AND (${this.jql})`, fields: ["id"], maxResults: 0 });
+        await jira.call("POST", "/rest/api/3/search/jql", { jql: `project = "${this.project}" AND (${this.jql})`, fields: ["key"], maxResults: 1 });
       } catch (e) {
         problems.push(`jql ${JSON.stringify(this.jql)} does not run in ${this.project}: ${messageOf(e)}`);
       }
