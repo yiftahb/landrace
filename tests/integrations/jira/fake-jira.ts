@@ -607,6 +607,11 @@ export function createFakeJira(project = "KEY") {
       const matches = typeof b.jql === "string" ? matcher(b.jql) : null;
       if (!matches) return errors(400, [`Error in the JQL Query: ${String(b.jql)}`]);
       const fields = Array.isArray(b.fields) ? (b.fields as string[]) : [];
+      // Measured live: the enhanced search refuses 0, and answers `key: null` when `id` is the only field asked for.
+      if (b.maxResults !== undefined && (typeof b.maxResults !== "number" || b.maxResults < 1 || b.maxResults > 5000)) {
+        return errors(400, ["The max results parameter has to be between 1 and 5,000."]);
+      }
+      const keyed = fields.some((f) => f !== "id");
       const reconcile = b.reconcileIssues ?? [];
       if (!Array.isArray(reconcile) || reconcile.length > 50 || !reconcile.every((n) => typeof n === "number")) {
         return errors(400, ["reconcileIssues takes at most 50 issue ids, as numbers"]);
@@ -617,7 +622,7 @@ export function createFakeJira(project = "KEY") {
       const found = [...issues.values()].filter((i) => indexed(i) && matches(i))
         .sort((x, y) => (direction === "DESC" ? -1 : 1) * (at(x) - at(y)) || Number(x.id) - Number(y.id));
       const { items, next } = page(found, b.nextPageToken, b.maxResults);
-      return json({ issues: items.map((i) => issueJson(i, fields)), ...(next === null ? {} : { nextPageToken: next }), isLast: next === null });
+      return json({ issues: items.map((i) => ({ ...issueJson(i, fields), ...(keyed ? {} : { key: null }) })), ...(next === null ? {} : { nextPageToken: next }), isLast: next === null });
     }
 
     if (method === "POST" && path === "/rest/api/3/changelog/bulkfetch") {
