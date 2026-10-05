@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **A configurable item branch.** `branch` in `landrace.yaml` sets the branch each item's work is on, such as `lr-{item}` for CI that cannot take a `/` in a branch name. The default stays `landrace/{item}`. `{item}` is the tracker's id, unchanged. The GitHub, GitLab and in-memory forges tie a pull request to its item only by this branch. `validate` holds every workflow's stage `branch` and `branch.push` and `pull.*` effect to it, naming both. `validate` and `start` refuse a template that names `{item}` other than once, has no fixed text before it, names another placeholder, or that git would refuse. Change it only when no item has a pull request open: one on the old branch is no longer the item's. See [Configuration](docs/configuration.md#landraceyaml) and [Workflows](docs/workflows.md#the-items-branch).
+
 ## [1.2.1] - 2026-10-05
 
 ### Fixed

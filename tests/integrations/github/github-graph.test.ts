@@ -146,6 +146,18 @@ describe("the GitHub source", () => {
     expect(JSON.stringify(brief)).not.toContain("OUTSIDER");
   });
 
+  // #120: the item branch landrace.yaml names is the one head that ties, asked of GitHub by name.
+  it("ties a pull request on the item branch the config names to its item, and none on landrace/{item}", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({ number: 20, head: "lr-7", headSha: "a", merged: false, threads: [] });
+    gh.openPull({ number: 21, head: "landrace/7", headSha: "b", merged: false, threads: [] });
+    const lr = { ...ctx(gh), config: { ...ctx(gh).config, branch: "lr-{item}" } };
+    for (const g of [await sourceOf(gh).read("7", lr), await sourceOf(gh).list(lr)]) {
+      expect(g.relationships.filter((r) => r.type === "implements").map((r) => r.from)).toEqual(["pr-20"]);
+    }
+    expect(operations(gh, "LandraceItem").map((q) => q.variables.head)).toEqual(["lr-7"]);
+  });
+
   it("stamps an issue and a pull request with when GitHub says each was opened, in every query that reads one", async () => {
     const gh = createFakeTracker([{ number: 7, createdAt: "2026-09-20T10:00:00Z" }]);
     gh.openPull({ number: 20, head: "landrace/7", headSha: "a", merged: false, threads: [], createdAt: "2026-09-21T12:30:00Z" });

@@ -335,7 +335,7 @@ describe("an item whose workflow names two branches", () => {
     expect(run.trail()).toEqual(["api", "publish-api"]);
     expect(r.result.settled).toBe("wait");
     expect(state.pull("pr-1").branch).toBe("api/1");
-    expect((await state.source.read("1", {} as never)).relationships.filter((rel) => rel.type === "implements")).toEqual([]);
+    expect((await state.source.read("1", { config: {} } as never)).relationships.filter((rel) => rel.type === "implements")).toEqual([]);
   });
 });
 

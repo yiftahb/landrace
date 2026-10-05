@@ -3,6 +3,7 @@ import {
   EffectRefused,
   effectBranch,
   entriesFromComments,
+  ITEM_BRANCH,
   PULL_OPEN_EFFECT,
   PULL_REQUEST_KIND,
   PULL_REVIEW_EFFECT,
@@ -14,7 +15,7 @@ import {
 import { defineSource } from "#hooks/contracts.js";
 import { compose } from "#kit/compose.js";
 import { BaseDocs } from "#kit/docs.js";
-import { BaseForge, prBranch } from "#kit/forge.js";
+import { BaseForge, itemBranchOf, prBranch } from "#kit/forge.js";
 import { BaseTracker, commentSatisfied, createdSatisfied } from "#kit/tracker.js";
 import type {
   BranchHeads,
@@ -39,6 +40,7 @@ import type {
   PullRecord,
   RelationDecl,
   ReviewThread,
+  RuntimeContext,
   Source,
   ThreadCounts,
   ItemPatch,
@@ -337,8 +339,8 @@ export class MemoryTracker extends BaseTracker {
 }
 
 /**
- * A pull request as the forge reads it out: tied to an item by its
- * `landrace/{item}` head, as the shipped forges tie one, or by the items a
+ * A pull request as the forge reads it out: tied to an item by its head on
+ * the item branch, as the shipped forges tie one, or by the items a
  * test seeded — never by the item it was added for alone.
  */
 const pullRecordOf = (p: ExternalPull): PullRecord => ({
@@ -387,7 +389,8 @@ export class MemoryForge extends BaseForge {
   /**
    * Open a pull request for `item`, numbered from 1 in creation order, from
    * the item's own `landrace/{item}` branch unless the test names another —
-   * which ties it to nothing, unless `items` says. Merged means closed as
+   * which ties it to nothing, unless `items` says or the test's context
+   * configures that branch as `config.branch`. Merged means closed as
    * done unless `closed` says otherwise, and `awaitingFix` defaults to
    * `openThreads`: a thread nobody answered awaits a fix — a behaviour fix,
    * `awaitingWordingFix` being 0 unless the test says. Its head is
@@ -398,7 +401,7 @@ export class MemoryForge extends BaseForge {
     const closed = pr.closed !== undefined ? pr.closed : pr.merged ? "done" : null;
     const pull: ExternalPull = {
       id: `pr-${number}`, number, item, merged: false, openThreads: 0, awaitingFix: pr.openThreads ?? 0, awaitingWordingFix: 0,
-      headSha: `sha-${number}`, checks: "none", failed: [], branch: prBranch(item), ...pr, closed,
+      headSha: `sha-${number}`, checks: "none", failed: [], branch: prBranch(item, ITEM_BRANCH), ...pr, closed,
     };
     this.rows.set(pull.id, pull);
     return pull.id;
@@ -423,8 +426,9 @@ export class MemoryForge extends BaseForge {
     return [...this.rows.values()].map(pullRecordOf);
   }
 
-  async pullsNaming(item: string): Promise<PullRecord[]> {
-    return [...this.rows.values()].filter((p) => p.branch === prBranch(item) || (p.items ?? []).includes(item)).map(pullRecordOf);
+  async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
+    const branch = prBranch(item, itemBranchOf(ctx.config));
+    return [...this.rows.values()].filter((p) => p.branch === branch || (p.items ?? []).includes(item)).map(pullRecordOf);
   }
 
   // ponytail: counts, not threads — briefed as none open, whatever the count says; hold thread text here if a test ever briefs it.

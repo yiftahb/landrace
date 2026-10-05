@@ -41,7 +41,7 @@ log:
 - `tracker.bot` is the login Landrace posts as. A GitHub App token needs it, since it cannot look up its own login; logins compare ignoring case and a trailing `[bot]`. With a user token, the login is resolved from the token at startup.
 - Built with no client, each role builds one from `tracker.repo`, the `githubToken` secret and `tracker.bot` — one per configuration, shared by all three, so one `GET /user` resolves the login they post as.
 - The forge runs git in the repository of the file that constructs it, never the directory the process was started from.
-- `closingRefs` says the tracker beside the forge is GitHub's own issues. On, a pull request it opens says `Closes #n`, so the merge closes the issue. Off — beside another vendor's tracker, where `#7` would be somebody else's GitHub issue — it writes none. Either way it reads none: the `landrace/{item}` branch is the only tie between a pull request and an item.
+- `closingRefs` says the tracker beside the forge is GitHub's own issues. On, a pull request it opens says `Closes #n`, so the merge closes the issue. Off — beside another vendor's tracker, where `#7` would be somebody else's GitHub issue — it writes none. Either way it reads none: the item's branch, `landrace/{item}` unless [`branch`](configuration.md#landraceyaml) sets another, is the only tie between a pull request and an item.
 - `reviewers` and `pull` are the [forge options](#forge-options) both forges take. With `reviewers` named, the checks are read from the head's check runs (one page of 100) and commit statuses instead of GitHub's rollup, which would count a reviewer's. A list GitHub did not give whole never reads as `success`, and a reviewer missing from one is refused, never read as not posted.
 
 ### What it reads
@@ -146,7 +146,7 @@ On GitLab a reviewer is a commit status by its name. With `reviewers` set, the e
 
 **What it writes.**
 
-- An item's work is a merge request from `landrace/{item}` into the project's default branch, its node `pr-{iid}`. A fork's merge request is never an item's.
+- An item's work is a merge request from the item's branch (`landrace/{item}` unless [`branch`](configuration.md#landraceyaml) sets another) into the project's default branch, its node `pr-{iid}`. A fork's merge request is never an item's.
 - A review's findings become diff discussions — on an added line by its new number, on a context line by both, and on the file when the line is outside every hunk — and its prose a plain note, which nobody can resolve and no count includes. Only a resolvable discussion somebody started is a thread.
 - Everything it posts is made inert to GitLab's quick actions first: a line starting `/close` or `/merge` in a finding, a reply or a merge request's description is an agent's or an item's text, and GitLab would run it as the token's user. A backslash before the slash renders as the slash alone.
 - A round's note is recognised by both the token's login and its marker, so a marker pasted into somebody else's note cannot skip one.

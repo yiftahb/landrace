@@ -147,12 +147,20 @@ export function placeFindings(findings: unknown[], changed: ChangedFile[], stage
 }
 
 /**
+ * The item branch template a forge reads: `branch` in landrace.yaml, which
+ * `validate` holds every workflow's branch to. A context built by hand
+ * rather than from landrace.yaml — a test's — carries none, and reads the
+ * default every parsed one does.
+ */
+export const itemBranchOf = (config: { branch?: string | undefined }): string => config.branch ?? ITEM_BRANCH;
+
+/**
  * Derived from the item, never stored — the same rule the spec's path
  * follows. There is no PR id to remember and nothing to repair: the branch
  * names the item, and every pull request with that head is its work. The
- * template a workflow writes, `ITEM_BRANCH`, filled for one item.
+ * template, `itemBranchOf`, filled for one item.
  */
-export const prBranch = (item: string): string => ITEM_BRANCH.replace("{item}", item);
+export const prBranch = (item: string, template: string): string => template.replace("{item}", item);
 
 /**
  * The one mapping from a pull request, as an integration reads its forge's,
@@ -459,27 +467,35 @@ export function pushSatisfied(snapshot: Snapshot, effect: Effect): boolean {
   return head === undefined || headIn(remote, branch) === head;
 }
 
-/** What follows `landrace/` in a pull request's head, whether or not it is an item. */
-const headOf = (pull: Pick<PullRecord, "branch">): string | undefined => {
-  const ours = prBranch("");
-  return pull.branch?.startsWith(ours) ? pull.branch.slice(ours.length) : undefined;
+/**
+ * What stands for `{item}` in a pull request's head, read between the
+ * template's fixed text, whether or not it is an item. `start` refuses a
+ * template with no fixed text before `{item}`, without which `main` would
+ * read as an item called "main".
+ */
+const headOf = (pull: Pick<PullRecord, "branch">, template: string): string | undefined => {
+  const [before = "", after = ""] = template.split("{item}");
+  const branch = pull.branch;
+  if (branch === undefined || branch.length <= before.length + after.length) return undefined;
+  return branch.startsWith(before) && branch.endsWith(after) ? branch.slice(before.length, branch.length - after.length) : undefined;
 };
 
 /**
- * Every item a pull request is tied to: the one a `landrace/{item}` head is
- * for, when that is one of the `known` items, and any an integration ties it
- * to itself — none, for the forges landrace ships. Not what its own text
- * says it closes: anybody can write `Closes #7`, from a fork on a public
- * repository too, and what that tied to an item was briefed to the agents of
- * a workflow that merges with no person. A branch named any other way —
- * `api/{item}`, a fork's — names nothing: anybody can call a branch after any
- * item, and only our own head convention is ours. Nor does a `landrace/` head
- * that is no item's — `landrace/7-api` — which a tracker whose ids may carry
- * a "-" could not otherwise tell from an item called "7-api".
+ * Every item a pull request is tied to: the one a head on the item branch
+ * `template` is for, when that is one of the `known` items, and any an
+ * integration ties it to itself — none, for the forges landrace ships. Not
+ * what its own text says it closes: anybody can write `Closes #7`, from a
+ * fork on a public repository too, and what that tied to an item was briefed
+ * to the agents of a workflow that merges with no person. A branch named any
+ * other way — `api/{item}`, a fork's — names nothing: anybody can call a
+ * branch after any item, and only our own head convention is ours. Nor does
+ * a head on the template that is no item's — `landrace/7-api` — which a
+ * tracker whose ids may carry a "-" could not otherwise tell from an item
+ * called "7-api".
  */
-export function itemsNamedBy(pull: Pick<PullRecord, "branch" | "items">, known: ReadonlySet<string>): Set<string> {
+export function itemsNamedBy(pull: Pick<PullRecord, "branch" | "items">, known: ReadonlySet<string>, template: string): Set<string> {
   const named = new Set(pull.items);
-  const head = headOf(pull);
+  const head = headOf(pull, template);
   if (head !== undefined && known.has(head)) named.add(head);
   return named;
 }
@@ -661,8 +677,8 @@ export abstract class BaseForge {
   /** Every open pull request, and any closed one the board should still show. */
   abstract pulls(ctx: RuntimeContext): Promise<PullRecord[]>;
   /**
-   * Every pull request on the item's `landrace/{item}` head in this
-   * repository, merged and closed ones too — never a fork's, and never one
+   * Every pull request on the item's branch — `prBranch(item,
+   * itemBranchOf(ctx.config))` — as its head in this repository, merged and closed ones too — never a fork's, and never one
    * that only says it closes the item.
    */
   abstract pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]>;
@@ -837,8 +853,9 @@ export abstract class BaseForge {
   async list(items: ReadonlySet<string>, ctx: RuntimeContext): Promise<Graph> {
     const nodes: Node[] = [];
     const relationships: Relationship[] = [];
+    const template = itemBranchOf(ctx.config);
     for (const pull of await this.pulls(ctx)) {
-      const [only, ...more] = itemsNamedBy(pull, items);
+      const [only, ...more] = itemsNamedBy(pull, items, template);
       if (only === undefined || more.length > 0 || !items.has(only)) continue;
       const node = this.node(pull);
       nodes.push(node);
@@ -851,7 +868,7 @@ export abstract class BaseForge {
    * Every pull request tied to any of these items, merged and closed ones
    * included — "every pull request is merged" is a count over all of them.
    * One tied to two items halts: which it implements is not a guess. A
-   * `landrace/` head counts for an item in this read, and for one outside
+   * head on the item branch counts for an item in this read, and for one outside
    * it when `isItem` — the tracker — says it is one: #12's branch an
    * integration also ties to #8 is tied to both, whichever is read.
    *
@@ -866,10 +883,11 @@ export abstract class BaseForge {
     const nodes = new Map<number, Node>();
     const relationships: Relationship[] = [];
     const known = new Set(items);
+    const template = itemBranchOf(ctx.config);
     for (const item of items) {
       for (const pull of await this.pullsNaming(item, ctx)) {
-        const named = itemsNamedBy(pull, known);
-        const head = headOf(pull);
+        const named = itemsNamedBy(pull, known, template);
+        const head = headOf(pull, template);
         if (head !== undefined && !named.has(head) && (await isItem(head))) named.add(head);
         if (named.size > 1) {
           throw new Error(

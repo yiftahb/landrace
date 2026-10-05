@@ -386,6 +386,32 @@ describe("buildWorkspaceRuntime", () => {
     await expect(buildMain(dir, { readOnly: true })).resolves.toBeDefined();
   });
 
+  /*
+   * The item branch landrace.yaml names is the one every stage's branch is
+   * held to, before any hook loads and again beside the hooks' coverage; and
+   * a template that is none is refused with the configuration.
+   */
+  it("holds a stage's branch to the one landrace.yaml names, and refuses one that is no template", async () => {
+    const branched = async (config: string, branch: string): Promise<string> => {
+      const { dir } = await fixture({ configExtra: config });
+      await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+      await writeFile(join(workflowIn(dir), "steps", "build.md"), [
+        "---", "capabilities: [repo:read, repo:write]", "output:", "  discriminator: kind", "  shapes: { done: {} }",
+        "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+        "---", "", "build", "",
+      ].join("\n"));
+      await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW
+        .replace("    terminal: true\n", `    step: steps/build.md\n    branch: "${branch}"\n`)
+        .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+      return dir;
+    };
+
+    await expect(buildMain(await branched('branch: "lr-{item}"\n', "landrace/{item}"), {}))
+      .rejects.toThrow(/branch: stage "spec" works on branch "landrace\/\{item\}"; it must be lr-\{item\}, the branch landrace\.yaml names/);
+    await expect(buildMain(await branched('branch: "lr-{item}"\n', "lr-{item}"), {})).resolves.toBeDefined();
+    await expect(buildMain(await branched('branch: "{item}"\n', "{item}"), {})).rejects.toThrow(/branch: .*fixed text before \{item\}/);
+  });
+
   // `validate` names it in the same words.
   it("refuses an issue filed in a project the loaded tracker does not create in", async () => {
     const { dir } = await fixture();

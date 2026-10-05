@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { executorFor, screenerFor } from "#cli/start.js";
 import { configProblems, loadConfig } from "#config/load.js";
+import { ITEM_BRANCH } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
@@ -60,12 +61,12 @@ async function isEnvExposed(dir: string): Promise<boolean> {
  * because calling every path in the workflow uncovered would bury the one
  * problem that is real.
  */
-async function coverage(ws: Workspace, { dir, workflow, steps }: LoadedWorkflow): Promise<{ problems: Problem[]; registry: Registry | null }> {
+async function coverage(ws: Workspace, { dir, workflow, steps }: LoadedWorkflow, branch: string): Promise<{ problems: Problem[]; registry: Registry | null }> {
   try {
     const registry = await loadHooks({ dir, modules: workflow.hooks ?? [], workspace: ws.dir });
     return {
       problems: [
-        ...validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined),
+        ...validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined, branch),
         // Where the loaded tracker files issues: `start` refuses the same.
         ...createProblems(workflow, steps, registry.post),
       ],
@@ -225,10 +226,13 @@ async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: Loade
    * workflow, and running the user's code against it anyway would be a
    * surprise nobody asked for.
    */
-  const graph: Problem[] = validate(workflow, steps);
+  // With no landrace.yaml to read — a workflow checked alone, in CI — the
+  // branch is the default one, as it is for a landrace.yaml that sets none.
+  const branch = loaded?.config.branch ?? ITEM_BRANCH;
+  const graph: Problem[] = validate(workflow, steps, undefined, branch);
   let registry: Registry | null = null;
   if (graph.length === 0) {
-    const result = await coverage(ws, wf);
+    const result = await coverage(ws, wf, branch);
     own.push(...result.problems);
     registry = result.registry;
   } else {
