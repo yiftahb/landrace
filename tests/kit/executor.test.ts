@@ -64,11 +64,16 @@ class Tiny extends BaseExecutor<{ colour: string }> {
   }
 }
 
-/** A binary that leaves `spawned` in its cwd the moment it starts, and answers. */
+/**
+ * A binary that leaves `spawned` in its cwd the moment it starts, reads its
+ * prompt, and answers. It reads the prompt as a real agent does: one that
+ * exited without reading left the executor's write to raise EPIPE whenever
+ * the exit won the race, which failed this suite on a loaded CI runner.
+ */
 const markingBin = (): string => {
   const dir = tempDir("tiny-bin-");
   const bin = join(dir, "tiny");
-  writeFileSync(bin, "#!/bin/sh\ntouch \"$PWD/spawned\"\necho '{\"answer\":\"ok\"}'\n", { mode: 0o755 });
+  writeFileSync(bin, "#!/bin/sh\ntouch \"$PWD/spawned\"\ncat >/dev/null\necho '{\"answer\":\"ok\"}'\n", { mode: 0o755 });
   return bin;
 };
 
@@ -85,9 +90,11 @@ describe("BaseExecutor", () => {
     expect(hookKindOf(new Tiny("tiny"))).toBe("executor");
   });
 
+  // A prompt past the pipe buffer, so a fake that stops reading its input
+  // fails here every time rather than on a slow machine now and then.
   it("runs the binary and answers with what the integration read", async () => {
     const cwd = tempDir("tiny-cwd-");
-    const r = await new Tiny(markingBin()).build(settings).run("p", { round: 1, cwd, signal: new AbortController().signal });
+    const r = await new Tiny(markingBin()).build(settings).run("p".repeat(1 << 20), { round: 1, cwd, signal: new AbortController().signal });
     expect(r).toEqual({ text: "ok", sessionId: "s-1" });
   });
 

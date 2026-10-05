@@ -570,6 +570,233 @@ describe("a branch origin has moved on", () => {
   });
 });
 
+/*
+ * Where a worktree with nothing of its own to start from starts: origin's
+ * default branch, fetched first, never the operator's checkout. Found on an
+ * item whose spec ran on a local main a day behind origin's, and asked about
+ * code that had merged that morning.
+ */
+describe("a new worktree's base", () => {
+  const git = async (cwd: string, ...args: string[]): Promise<string> =>
+    (await run("git", args, { cwd })).stdout.trim();
+
+  /** The operator's checkout and a bare origin it pushed main to, with origin's HEAD left unset, as a push leaves it. */
+  async function withOrigin(): Promise<{ root: string; origin: string }> {
+    const root = await repo();
+    const origin = await mkdtemp(join(tmpdir(), "lr-wt-origin-"));
+    roots.push(origin);
+    await git(origin, "init", "-q", "--bare", "-b", "main");
+    await git(root, "remote", "add", "origin", `file://${origin}`);
+    await git(root, "push", "-q", "origin", "main");
+    return { root, origin };
+  }
+
+  /** A commit on origin's main from a clone of someone else's, which the operator's checkout has not fetched. */
+  async function mergedElsewhere(origin: string): Promise<string> {
+    const theirs = await mkdtemp(join(tmpdir(), "lr-wt-theirs-"));
+    roots.push(theirs);
+    await run("git", ["clone", "-q", `file://${origin}`, theirs]);
+    await git(theirs, "config", "user.email", "them@example.com");
+    await git(theirs, "config", "user.name", "them");
+    await writeFile(join(theirs, "merged.ts"), "export const merged = 1;\n");
+    await git(theirs, "add", "-A");
+    await git(theirs, "commit", "-qm", "merged");
+    await git(theirs, "push", "-q", "origin", "main");
+    return git(theirs, "rev-parse", "HEAD");
+  }
+
+  /** Each kind of worktree that needs a base, and the commit each started at. */
+  async function cut(item: string, root: string): Promise<string[]> {
+    const plain = await ensureWorktree(item, root);
+    const read = await ensureWorktree(item, root, { branch: `landrace/${item}r`, write: false }, `${item}r`);
+    const write = await ensureWorktree(item, root, { branch: `landrace/${item}`, write: true }, keptSlot(item));
+    const heads = await Promise.all([plain, read, write].map((p) => git(p, "rev-parse", "HEAD")));
+    await removeWorktree(item, root);
+    await removeWorktree(item, root, `${item}r`);
+    await removeWorktree(item, root, keptSlot(item));
+    return heads;
+  }
+
+  it("starts at origin's tip when the operator's checkout is behind it", async () => {
+    const { root, origin } = await withOrigin();
+    const local = await git(root, "rev-parse", "HEAD");
+    const tip = await mergedElsewhere(origin);
+    expect(tip).not.toBe(local);
+
+    expect(await cut("110", root)).toEqual([tip, tip, tip]);
+    // Fetched, never pulled: the operator's checkout is where it was.
+    expect(await git(root, "rev-parse", "HEAD")).toBe(local);
+    expect(await git(root, "rev-parse", "refs/heads/main")).toBe(local);
+    expect(await git(root, "status", "--porcelain")).toBe("");
+  });
+
+  it("starts at origin's default branch while the operator has another branch out", async () => {
+    const { root, origin } = await withOrigin();
+    const tip = await mergedElsewhere(origin);
+    await git(root, "checkout", "-q", "-b", "feature");
+    await writeFile(join(root, "feature.ts"), "export const feature = 1;\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "feature");
+
+    expect(await cut("111", root)).toEqual([tip, tip, tip]);
+    expect(await git(root, "branch", "--show-current")).toBe("feature");
+  });
+
+  /*
+   * The fetch runs in the operator's own repository, so it leaves what is
+   * theirs alone, as the forge's fetch of the same origin does: their
+   * FETCH_HEAD, which a `git merge FETCH_HEAD` of theirs would read, their
+   * tags, their hooks.
+   */
+  it("fetches only origin's default branch: no FETCH_HEAD, no tags, no hooks", async () => {
+    const { root, origin } = await withOrigin();
+    await git(root, "remote", "set-head", "origin", "main");
+    const theirs = `${await git(root, "rev-parse", "HEAD")}\t\tbranch 'main' of somewhere\n`;
+    await writeFile(join(root, ".git", "FETCH_HEAD"), theirs);
+    const tip = await mergedElsewhere(origin);
+    await git(origin, "tag", "v9", tip);
+    const hooks = join(root, ".git", "hooks");
+    // Every ref update the hook sees; the worktree's own branch is not the fetch's.
+    await writeFile(join(hooks, "reference-transaction"), `#!/bin/sh\ncat >> "${join(hooks, "ran")}"\n`, { mode: 0o755 });
+
+    expect(await cut("120", root)).toEqual([tip, tip, tip]);
+    expect(await readFile(join(root, ".git", "FETCH_HEAD"), "utf8")).toBe(theirs);
+    expect(await git(root, "tag", "--list")).toBe("");
+    expect(await readFile(join(hooks, "ran"), "utf8").catch(() => "")).not.toContain("refs/remotes/origin/main");
+  });
+
+  it("does not fetch into an initialised submodule whose commit origin moved", async () => {
+    const sub = await repo();
+    const { root, origin } = await withOrigin();
+    await git(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", `file://${sub}`, "sub");
+    await git(root, "commit", "-qm", "sub");
+    await git(root, "push", "-q", "origin", "main");
+    await git(root, "remote", "set-head", "origin", "main");
+    // Origin's main moves the submodule to a commit only `sub` has, and `sub` then goes away.
+    await writeFile(join(sub, "more.ts"), "export const more = 1;\n");
+    await git(sub, "add", "-A");
+    await git(sub, "commit", "-qm", "more");
+    const moved = await git(sub, "rev-parse", "HEAD");
+    const theirs = await mkdtemp(join(tmpdir(), "lr-wt-theirs-"));
+    roots.push(theirs);
+    await run("git", ["clone", "-q", `file://${origin}`, theirs]);
+    await git(theirs, "update-index", "--cacheinfo", `160000,${moved},sub`);
+    await git(theirs, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "bump sub");
+    await git(theirs, "push", "-q", "origin", "main");
+    const tip = await git(theirs, "rev-parse", "HEAD");
+    await rm(sub, { recursive: true, force: true });
+
+    const path = await ensureWorktree("121", root);
+    expect(await git(path, "rev-parse", "HEAD")).toBe(tip);
+    await removeWorktree("121", root);
+  });
+
+  it("reads the default branch from origin's HEAD, not from main", async () => {
+    const { root, origin } = await withOrigin();
+    await git(root, "push", "-q", "origin", "main:trunk");
+    await git(origin, "symbolic-ref", "HEAD", "refs/heads/trunk");
+    const theirs = await mkdtemp(join(tmpdir(), "lr-wt-theirs-"));
+    roots.push(theirs);
+    await run("git", ["clone", "-q", `file://${origin}`, theirs]);
+    await git(theirs, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "trunk");
+    await git(theirs, "push", "-q", "origin", "trunk");
+    const tip = await git(theirs, "rev-parse", "HEAD");
+
+    expect(await cut("112", root)).toEqual([tip, tip, tip]);
+  });
+
+  it("starts at HEAD in a repository with no origin", async () => {
+    const root = await repo();
+    await git(root, "checkout", "-q", "-b", "feature");
+    await writeFile(join(root, "feature.ts"), "export const feature = 1;\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "feature");
+    const head = await git(root, "rev-parse", "HEAD");
+
+    expect(await cut("113", root)).toEqual([head, head, head]);
+  });
+
+  it("fails with git's own error when origin cannot be reached, and cuts nothing", async () => {
+    const { root, origin } = await withOrigin();
+    await git(root, "remote", "set-head", "origin", "main");
+    await rm(origin, { recursive: true, force: true });
+
+    await expect(ensureWorktree("114", root)).rejects.toThrow(/#114[\s\S]*does not appear to be a git repository/);
+    await expect(ensureWorktree("114", root, { branch: "landrace/114", write: true }))
+      .rejects.toThrow(/does not appear to be a git repository/);
+    expect(await git(root, "branch", "--list", "landrace/114")).toBe("");
+    expect(await worktrees(root)).toHaveLength(1);
+  });
+
+  it("names `git remote set-head origin --auto` when origin's default branch cannot be found", async () => {
+    const { root, origin } = await withOrigin();
+    await rm(origin, { recursive: true, force: true });
+
+    await expect(ensureWorktree("115", root)).rejects.toThrow(/git remote set-head origin --auto/);
+  });
+
+  /**
+   * An origin that is `script`, reached through git's `ext::` transport and
+   * run with git's own environment — a stand-in for a remote that asks for a
+   * password or stops answering. Not ssh: a sandbox may set `GIT_SSH_COMMAND`
+   * itself, and jest hands a test a copy of `process.env` that a child never
+   * sees. With `head`, origin's default branch is already known, so the fetch
+   * is what reaches origin; without it, `git remote set-head origin --auto` is.
+   */
+  async function reaching(script: string, head: boolean): Promise<{ root: string; dir: string }> {
+    const root = await repo();
+    const dir = await mkdtemp(join(tmpdir(), "lr-wt-ext-"));
+    roots.push(dir);
+    const remote = join(dir, "remote.sh");
+    await writeFile(remote, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    await git(root, "config", "protocol.ext.allow", "always");
+    await git(root, "remote", "add", "origin", `ext::${remote}`);
+    if (head) {
+      await git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+      await git(root, "remote", "set-head", "origin", "main");
+    }
+    return { root, dir };
+  }
+
+  it.each([true, false])("asks origin with git's prompting off (default branch known: %s)", async (head) => {
+    const { root, dir } = await reaching(`printf '%s' "$GIT_TERMINAL_PROMPT" > "$(dirname "$0")/prompt"; exit 1`, head);
+
+    await expect(ensureWorktree("117", root)).rejects.toThrow(/#117/);
+    expect(await readFile(join(dir, "prompt"), "utf8")).toBe("0");
+  });
+
+  it.each([true, false])("stops asking an origin that does not answer, at the timeout (default branch known: %s)", async (head) => {
+    const { root } = await reaching("exec sleep 20", head);
+    const started = Date.now();
+
+    await expect(ensureWorktree("118", root, undefined, "118", { timeoutMs: 500 }))
+      .rejects.toThrow(head ? /#118[\s\S]*git fetch did not finish within/ : /#118[\s\S]*git remote did not finish within/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(await worktrees(root)).toHaveLength(1);
+  });
+
+  it.each([true, false])("stops asking an origin that does not answer when the run is aborted (default branch known: %s)", async (head) => {
+    const { root } = await reaching("exec sleep 20", head);
+    const started = Date.now();
+
+    await expect(ensureWorktree("119", root, undefined, "119", { signal: AbortSignal.timeout(500) }))
+      .rejects.toThrow(/#119[\s\S]*aborted/);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+
+  it("keeps an existing item branch where it is, however far origin's default has moved", async () => {
+    const { root, origin } = await withOrigin();
+    const local = await git(root, "rev-parse", "HEAD");
+    await git(root, "branch", "landrace/116", local);
+    await mergedElsewhere(origin);
+
+    const path = await ensureWorktree("116", root, { branch: "landrace/116", write: true });
+
+    expect(await git(path, "rev-parse", "HEAD")).toBe(local);
+    await removeWorktree("116", root);
+  });
+});
+
 /**
  * Where a sandbox lives, and what is allowed to be deleted there.
  *
