@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-05
+
 ### Fixed
 
 - **Jira's enhanced search.** `JiraField`'s preflight and `published()`, and the tracker's `jql` check, now work against Jira's enhanced search. It returns no `key` for `fields: ["id"]`, so the preflight found no open issue of any type and refused start, and the board lost its spec documents. It refuses `maxResults: 0`, so every `jql` refused start. Each search now asks for `key`, and the `jql` check for one issue.
@@ -78,7 +80,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Versions and updates.** `landrace version` (and `--version`) prints the version and whether npm has a newer one; `landrace update` updates the project's own dependency with its package manager, or the global install; `landrace start` says when a newer version is out. The check asks npm's registry once, gives up after two seconds, and is off in CI or with `LANDRACE_NO_UPDATE_CHECK=1`.
 - **Notifications and telemetry.** A `notify` block tells a person, through a notifier hook, when an item comes to rest needing them. `--telemetry` exports the engine's events as OpenTelemetry log records.
 
-[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/yiftahb/landrace/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/yiftahb/landrace/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/yiftahb/landrace/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/yiftahb/landrace/releases/tag/v1.0.0
