@@ -668,7 +668,7 @@ const TEMPLATE_LEFT = /\{[^{}]*\}/;
 
 /**
  * What is wrong with a `tracker.field`: `fields` a non-empty map of field id
- * to a string, a number or a non-empty list of strings, none holding a `{…}`
+ * to a string, a number or a non-empty list of strings, none blank and none holding a `{…}`
  * after load — the plan fills no template in `fields`, so one left would be
  * written as it stands — and `onlyIfEmpty` a boolean when it is there.
  */
@@ -687,6 +687,11 @@ function fieldEffectProblems(effect: Effect): string[] {
     }
     if (Array.isArray(value) && value.length === 0) {
       problems.push(`${id} is an empty list; a ${FIELD_EFFECT} sets a value, and never clears one`);
+      continue;
+    }
+    // A blank string writes nothing a person can see over what the field held, and reads back as empty, so it is never satisfied.
+    if ((strings ?? []).some((s) => s.trim() === "")) {
+      problems.push(`${id} is ${JSON.stringify(value)}, a blank value; a ${FIELD_EFFECT} sets a value, and never clears one`);
       continue;
     }
     const templated = (strings ?? []).map((s) => TEMPLATE_LEFT.exec(s)?.[0]).find((t) => t !== undefined);
