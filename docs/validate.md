@@ -28,6 +28,7 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 | Rule | Catches |
 |---|---|
 | `config` | A `landrace.yaml` that exists but cannot be read or does not match the schema |
+| `branch` | A `branch` in `landrace.yaml` that is no item branch template: `{item}` other than exactly once, no fixed text before `{item}`, any other `{placeholder}`, or a name git would refuse once `{item}` is filled — see [`branch`](configuration.md#landraceyaml) |
 | `secret` | A secret whose `$VAR` does not resolve; a `.env` that exists and git does not ignore |
 | `vars` | A var that does not resolve or resolves to an empty value; a `{vars.x}` nothing defines; a declared var nothing references; a var holding a secret's value |
 | `layout` | A workspace that is not one: the old single `workflow.yaml` at its root, no workflows, a workflow id that is not usable (lowercase letters, digits and `-`, starting with a letter or digit), a `workflows` folder or a workflow folder that is a symbolic link, a `workflows:` list in `landrace.yaml` that does not name exactly the folders |
