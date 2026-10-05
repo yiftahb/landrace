@@ -846,4 +846,31 @@ describe("effect-fields", () => {
     expect(routed(NOTE, [WORKLOG])).toEqual([expect.stringMatching(/spentFrom.*on_enter/)]);
     expect(routed(NOTE, [{ type: "tracker.worklog", marker: "w", max: "1h" }])).toEqual([expect.stringMatching(/worklog.*on_enter/)]);
   });
+
+  // #113: an issue's title and fields from the answer.
+  const CREATE = { type: "tracker.create", project: "ENG", titleFrom: "class", fieldsFrom: { customfield_10050: "spent" } };
+
+  it("accepts titleFrom and fieldsFrom on a route's tracker.create", () => {
+    expect(routed(CREATE)).toEqual([]);
+  });
+
+  it.each([
+    ["titleFrom on another effect", { ...NOTE, titleFrom: "class" }, /titleFrom.*tracker\.create/],
+    ["fieldsFrom on another effect", { ...NOTE, fieldsFrom: { customfield_1: "class" } }, /fieldsFrom.*tracker\.create/],
+    ["a titleFrom naming nothing", { ...CREATE, titleFrom: "" }, /titleFrom must name an output field/],
+    ["a fieldsFrom that is a list", { ...CREATE, fieldsFrom: ["class"] }, /fieldsFrom must map/],
+    ["a fieldsFrom mapping nothing", { ...CREATE, fieldsFrom: {} }, /fieldsFrom must map/],
+    ["a fieldsFrom naming no output field", { ...CREATE, fieldsFrom: { customfield_1: "" } }, /fieldsFrom must map/],
+    ["a titleFrom the shape does not declare", { ...CREATE, titleFrom: "title" }, /"title".*"done"/],
+    ["a fieldsFrom the shape does not declare", { ...CREATE, fieldsFrom: { customfield_1: "plan" } }, /"plan".*"done"/],
+  ])("refuses %s", (_, effect, message) => {
+    expect(routed(effect)).toEqual([expect.stringMatching(message)]);
+  });
+
+  it("refuses titleFrom and fieldsFrom in on_enter, where there is no answer to read", () => {
+    expect(routed(NOTE, [{ ...CREATE, marker: "bug:{round}" }])).toEqual([
+      expect.stringMatching(/titleFrom.*on_enter/),
+      expect.stringMatching(/fieldsFrom.*on_enter/),
+    ]);
+  });
 });

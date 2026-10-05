@@ -128,7 +128,17 @@ describe("tracker-create", () => {
   it("asks a project and a title of every tracker.create", () => {
     expect(problems(filing({ type: "tracker.create", project: "ENG", title: "Bug", from: "note" }), "tracker-create")).toEqual([]);
     expect(problems(filing({ type: "tracker.create", title: "Bug" }), "tracker-create")).toEqual([expect.stringMatching(/names no project/)]);
-    expect(problems(filing({ type: "tracker.create", project: "ENG" }), "tracker-create")).toEqual([expect.stringMatching(/names no title/)]);
+    expect(problems(filing({ type: "tracker.create", project: "ENG" }), "tracker-create")).toEqual([
+      expect.stringMatching(/names neither a title nor a titleFrom/),
+    ]);
+  });
+
+  it("takes a title from the answer in place of a template, never beside one", () => {
+    const fromAnswer = filing({ type: "tracker.create", project: "ENG", titleFrom: "note", from: "reply" });
+    expect(validate(fromAnswer.w, fromAnswer.steps)).toEqual([]);
+    expect(problems(filing({ type: "tracker.create", project: "ENG", title: "Bug", titleFrom: "note" }), "tracker-create")).toEqual([
+      expect.stringMatching(/names both a title and a titleFrom; it takes one/),
+    ]);
   });
 
   it("refuses one outside a route's effects with no marker of its own", () => {

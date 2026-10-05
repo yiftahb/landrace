@@ -1200,14 +1200,16 @@ export interface HistoryItem {
 
 /**
  * What a `tracker.create` asks a tracker to file: an issue in another of its
- * projects, linked to the item it is filed for. The title and body are
- * already escaped; `marker` is the effect's, stamped on the issue as who
+ * projects, linked to the item it is filed for. The title, body and fields
+ * are already escaped; `marker` is the effect's, stamped on the issue as who
  * created it, so a crash between filing it and recording it never files two.
  */
 export interface CreateRequest {
   project: string;
   title: string;
   body: string;
+  /** Field id → text, from a route's `fieldsFrom`: written in the same request. Absent when nothing is mapped, or every mapped answer was empty. */
+  fields?: Record<string, string> | undefined;
   item: string;
   marker: string;
 }
@@ -1364,6 +1366,8 @@ export interface Preflight {
 export type PreflightContext = RuntimeContext & {
   /** Every capability any step of a loaded workflow declares. */
   capabilities?: ReadonlySet<string> | undefined;
+  /** Project → the field ids a loaded route's `tracker.create` there fills from its answer (`fieldsFrom`). */
+  createFields?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 };
 
 /**

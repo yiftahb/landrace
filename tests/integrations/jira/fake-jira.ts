@@ -558,11 +558,14 @@ export function createFakeJira(project = "KEY") {
       }
       const type = fake.issueTypes.find((t) => t.id === m?.[2]);
       if (!type) return errors(404, ["Issue type with id '" + m[2] + "' does not exist."]);
-      const fields = type.fields.slice(startAt, startAt + maxResults).map((id) => ({
-        required: id === "summary" || id === "issuetype" || id === "project",
-        schema: { type: id === "labels" ? "array" : "string", system: id },
-        name: id[0]?.toUpperCase() + id.slice(1), key: id, fieldId: id, hasDefaultValue: false, operations: ["set"],
-      }));
+      const fields = type.fields.slice(startAt, startAt + maxResults).map((id) => {
+        const custom = fake.fields.find((c) => c.id === id);
+        return {
+          required: id === "summary" || id === "issuetype" || id === "project",
+          schema: custom === undefined ? { type: id === "labels" ? "array" : "string", system: id } : custom.schema,
+          name: custom?.name ?? id[0]?.toUpperCase() + id.slice(1), key: id, fieldId: id, hasDefaultValue: false, operations: ["set"],
+        };
+      });
       return json({ maxResults, startAt, total: type.fields.length, fields });
     }
 
@@ -672,9 +675,16 @@ export function createFakeJira(project = "KEY") {
       if (elsewhere !== undefined && elsewhere.CREATE_ISSUES !== true) return errors(403, ["You do not have permission to create issues in this project."]);
       const type = fake.issueTypes.find((t) => t.name === (f.issuetype as { name?: string } | undefined)?.name);
       if (!type) return errors(400, [], { issuetype: "Specify an issue type" });
+      const custom: Record<string, unknown> = {};
       for (const field of Object.keys(f)) {
         if (!type.fields.includes(field)) return errors(400, [], { [field]: `Field '${field}' cannot be set. It is not on the appropriate screen, or unknown.` });
+        const declared = fake.fields.find((c) => c.id === field);
+        if (declared === undefined) continue;
+        const problem = customProblem(declared, f[field], fake.plainText);
+        if (problem) return errors(400, [], { [field]: problem });
+        custom[field] = f[field];
       }
+      if (String(f.summary ?? "").length > 255) return errors(400, [], { summary: "Summary must be less than 255 characters." });
       const parent = (f.parent as { key?: string } | undefined)?.key;
       if (type.subtask && parent === undefined) return errors(400, [], { parent: "Given parent work item does not belong to appropriate hierarchy." });
       if (parent !== undefined && !issues.has(parent)) return errors(400, [], { parent: "Parent not found" });
@@ -706,6 +716,7 @@ export function createFakeJira(project = "KEY") {
         parent: parent ?? null,
         priority: priority ?? "3",
         assignee,
+        custom,
         ...(Array.isArray(b.properties)
           ? { properties: Object.fromEntries((b.properties as Array<{ key: string; value: unknown }>).map((p) => [p.key, p.value])) }
           : {}),
@@ -752,20 +763,8 @@ export function createFakeJira(project = "KEY") {
           const custom = fake.fields.find((c) => c.id === field);
           if (custom !== undefined && type?.fields.includes(field)) {
             const value = f[field];
-            if (custom.schema.custom === TEXTAREA && fake.plainText.has(field)) {
-              if (typeof value !== "string") return errors(400, [], { [field]: "Operation value must be a string" });
-              if (value.length > 32_767) return errors(400, [], { [field]: "The entered text is too long. It exceeds the allowed limit of 32,767 characters." });
-            } else if (custom.schema.custom === TEXTAREA) {
-              if (typeof value === "string") return errors(400, [], { [field]: "Operation value must be an Atlassian Document (see the Atlassian Document Format)" });
-              const problem = adfProblem(value as Adf);
-              if (problem) return errors(400, [], { [field]: `Operation value must be an Atlassian Document (see the Atlassian Document Format): ${problem}` });
-              if (JSON.stringify(value).length > 32_767) return errors(400, [], { [field]: "The entered text is too long. It exceeds the allowed limit of 32,767 characters." });
-            } else if (custom.schema.custom === TEXTFIELD) {
-              if (typeof value !== "string") return errors(400, [], { [field]: "Operation value must be a string" });
-              if (value.length > 255) return errors(400, [], { [field]: "The entered text is too long. It exceeds the allowed limit of 255 characters." });
-            } else {
-              return errors(400, [], { [field]: "Specify a valid value" });
-            }
+            const problem = customProblem(custom, value, fake.plainText);
+            if (problem) return errors(400, [], { [field]: problem });
             issue.custom[field] = value;
             continue;
           }
@@ -930,6 +929,26 @@ const MARKS = new Set(["code", "strong", "em", "link"]);
  * with a paragraph or code, a mark it does not know or code beside any mark
  * but a link, a heading level outside 1–6.
  */
+/** Why Jira refuses `value` for a custom field, by its type and renderer, or null when it takes it — on create and on edit alike. */
+function customProblem(custom: FakeField, value: unknown, plainText: ReadonlySet<string>): string | null {
+  const tooLong = (limit: string): string => `The entered text is too long. It exceeds the allowed limit of ${limit} characters.`;
+  if (custom.schema.custom === TEXTAREA && plainText.has(custom.id)) {
+    if (typeof value !== "string") return "Operation value must be a string";
+    return value.length > 32_767 ? tooLong("32,767") : null;
+  }
+  if (custom.schema.custom === TEXTAREA) {
+    if (typeof value === "string") return "Operation value must be an Atlassian Document (see the Atlassian Document Format)";
+    const problem = adfProblem(value as Adf);
+    if (problem) return `Operation value must be an Atlassian Document (see the Atlassian Document Format): ${problem}`;
+    return JSON.stringify(value).length > 32_767 ? tooLong("32,767") : null;
+  }
+  if (custom.schema.custom === TEXTFIELD) {
+    if (typeof value !== "string") return "Operation value must be a string";
+    return value.length > 255 ? tooLong("255") : null;
+  }
+  return "Specify a valid value";
+}
+
 function adfProblem(doc: Adf | undefined): string | null {
   if (doc?.type !== "doc" || doc.version !== 1 || !Array.isArray(doc.content)) return "Comment body is not valid ADF";
   const check = (node: Adf): string | null => {

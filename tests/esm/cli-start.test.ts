@@ -703,7 +703,56 @@ describe("the startup preflight", () => {
     expect(await capabilities("repo:read, items:create")).toEqual([{ capabilities: ["items:create", "repo:read"] }]);
     expect(await capabilities("repo:read")).toEqual([{ capabilities: ["repo:read"] }]);
   });
+
+  /**
+   * The tracker names a field a `tracker.create` maps that its issues cannot
+   * hold, and it learns which fields are mapped only from what runStart hands
+   * it: absent, nothing is checked and the first bug filed is refused.
+   */
+  it("hands the preflights each project's fields the loaded routes' tracker.create maps", async () => {
+    const { dir, record } = await fixture({ items: [], workflow: stepped(false), hookExtra: CREATE_FIELDS });
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), FILING_STEP);
+    await runStart(dir, { once: true });
+    expect(await applied(record)).toEqual([{ createFields: { ENG: ["customfield_10050"] } }]);
+  });
 });
+
+/** `stepped`'s step, filing an ENG bug whose design field is the answer's plan. */
+const FILING_STEP = `---
+capabilities: [repo:read]
+model: opus
+output:
+  discriminator: kind
+  shapes:
+    done: { bugTitle: string, plan: string }
+  routes:
+    - when: { kind: done }
+      effects:
+        - { type: tracker.create, project: ENG, titleFrom: bugTitle, fieldsFrom: { customfield_10050: plan } }
+---
+
+File the bug.
+`;
+
+/** A post hook that files in ENG, and a preflight that writes down the fields it was handed, or that it was handed none. */
+const CREATE_FIELDS = `
+export const filer = brand("post", {
+  id: "filer",
+  handles: ["tracker.create"],
+  creates: ["ENG"],
+  satisfied: (): boolean => false,
+  apply: async (): Promise<void> => {},
+});
+
+export const createFields = brand("preflight", {
+  id: "create-fields",
+  check: async (ctx: Ctx & { createFields?: Map<string, Set<string>> }): Promise<void> => {
+    const fields = ctx.createFields ? Object.fromEntries([...ctx.createFields].map(([p, f]) => [p, [...f].sort()])) : null;
+    await appendFile(ctx.config.tracker.record, JSON.stringify({ createFields: fields }) + "\\n");
+  },
+});
+`;
 
 /** A stage that runs a step, `steps/breakdown.md`, written by the test; one that `creates` children closes the last round's. */
 const stepped = (creates: boolean): string => `version: 1

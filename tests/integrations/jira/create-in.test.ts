@@ -1,7 +1,7 @@
 import { Jira, type JiraOptions } from "landrace/integrations/jira";
 import { isEffectRefused, parseMarker } from "#conventions.js";
 import type { Effect, HookContext, RuntimeContext, Snapshot } from "#namespace.js";
-import { createFakeJira, EMAIL, PERSON, SITE, TOKEN } from "#tests/integrations/jira/fake-jira.js";
+import { createFakeJira, DESIGN, EMAIL, PERSON, SITE, TEXTFIELD, TOKEN } from "#tests/integrations/jira/fake-jira.js";
 
 /*
  * `createIn`: a support desk's tracker filing an ENG bug for a ticket — one
@@ -27,6 +27,13 @@ const bug: Effect = {
 };
 
 const on = (ctx: RuntimeContext, item: string, snapshot: Snapshot = {}): HookContext => ({ ...ctx, item, snapshot });
+
+/** A single-line text field, "Root cause", on a Task's screens. */
+const ROOT_CAUSE = "customfield_10060";
+function withRootCause(fake: ReturnType<typeof createFakeJira>): void {
+  fake.fields.push({ id: ROOT_CAUSE, name: "Root cause", custom: true, schema: { type: "string", custom: TEXTFIELD, customId: 10060 } });
+  fake.issueTypes.find((t) => t.name === "Task")?.fields.push(ROOT_CAUSE);
+}
 
 describe("Jira, filing an issue in another project", () => {
   it("creates in what createIn names, and nowhere unless named", () => {
@@ -92,6 +99,46 @@ describe("Jira, filing an issue in another project", () => {
     expect(parseMarker(comments.at(-1)?.body ?? "")).toMatchObject({ kind: "created", marker: "created:part:diagnose:1:1" });
   });
 
+  it("fills each field in the shape it takes, in the one request: a document for a rich textarea, a string for a text field", async () => {
+    const { fake, jira, ctx, ticket } = setup();
+    withRootCause(fake);
+    await jira.effects()["tracker.create"]?.apply(
+      { ...bug, fields: { [DESIGN]: "## Plan\n\nGuard the **empty** case", [ROOT_CAUSE]: "No guard" } },
+      on(ctx, ticket.key),
+    );
+    expect(fake.writes().filter((c) => c.method === "POST" && c.path === "/rest/api/3/issue")).toHaveLength(1);
+    const { custom } = fake.issue("ENG-1");
+    expect(custom[DESIGN]).toMatchObject({ type: "doc", version: 1 });
+    expect(JSON.stringify(custom[DESIGN])).toContain("Guard the ");
+    expect(custom[ROOT_CAUSE]).toBe("No guard");
+  });
+
+  it("writes a plain-text textarea as a string, when Jira refuses it the document", async () => {
+    const { fake, jira, ctx, ticket } = setup();
+    fake.plainText.add(DESIGN);
+    await jira.effects()["tracker.create"]?.apply({ ...bug, fields: { [DESIGN]: "Guard the empty case" } }, on(ctx, ticket.key));
+    expect(fake.issue("ENG-1").custom[DESIGN]).toBe("Guard the empty case");
+    expect(fake.writes().filter((c) => c.method === "POST" && c.path === "/rest/api/3/issue")).toHaveLength(2);
+  });
+
+  it("refuses a text field's value past its bound before asking Jira, filing nothing", async () => {
+    const { fake, jira, ctx, ticket } = setup();
+    withRootCause(fake);
+    const refused = await jira.effects()["tracker.create"]?.apply({ ...bug, fields: { [ROOT_CAUSE]: "x".repeat(256) } }, on(ctx, ticket.key))
+      .catch((e: unknown) => e);
+    expect(isEffectRefused(refused)).toBe(true);
+    expect((refused as Error).message).toMatch(/256-character customfield_10060: a text field holds at most 255/);
+    expect(fake.writes().filter((c) => c.method === "POST" && c.path === "/rest/api/3/issue")).toHaveLength(0);
+  });
+
+  it("cuts a title past Jira's summary bound to fit", async () => {
+    const { fake, jira, ctx, ticket } = setup();
+    const long = `${"word ".repeat(60)}end`;
+    expect(long.length).toBeGreaterThan(255);
+    await jira.effects()["tracker.create"]?.apply({ ...bug, title: long }, on(ctx, ticket.key));
+    expect(fake.issue("ENG-1").summary).toBe(long.slice(0, 255));
+  });
+
   it("leaves a filed issue out of the tracker's own items", async () => {
     const { jira, ctx, ticket } = setup();
     await jira.effects()["tracker.create"]?.apply(bug, on(ctx, ticket.key));
@@ -116,6 +163,32 @@ describe("Jira's preflight, for createIn", () => {
   it("names an issue type the project lacks, and a link type the site lacks", async () => {
     const { jira, ctx } = setup({ createType: "Epic", createLinkType: "Mentions" });
     await expect(jira.check(ctx)).rejects.toThrow(/ENG has no issue type "Epic" \(createType\)[\s\S]*no issue link type "Mentions" \(createLinkType\)/);
+  });
+
+  const mapped = (ctx: RuntimeContext, ...fields: string[]) => ({ ...ctx, createFields: new Map([["ENG", new Set(fields)]]) });
+
+  it("passes a mapped text or textarea field on createType's create screen", async () => {
+    const { fake, jira, ctx } = setup();
+    withRootCause(fake);
+    await expect(jira.check(mapped(ctx, DESIGN, ROOT_CAUSE))).resolves.toBeUndefined();
+  });
+
+  it("names a mapped field off createType's create screen, and one that is not text, for each createIn project", async () => {
+    const { fake, jira, ctx } = setup({ createType: "Bug" });
+    const bugType = fake.issueTypes.find((t) => t.name === "Bug");
+    if (bugType) bugType.fields = bugType.fields.filter((f) => f !== DESIGN);
+    bugType?.fields.push("customfield_10051");
+    await expect(jira.check(mapped(ctx, DESIGN, "customfield_10051"))).rejects.toThrow(
+      /ENG's "Bug" issues have no customfield_10050 on their create screen, and a tracker\.create fills it[\s\S]*"Team" \(customfield_10051\) is a com\.atlassian\.jira\.plugin\.system\.customfieldtypes:select field, not a text or textarea one/,
+    );
+  });
+
+  it("asks nothing of the create screen when no route maps a field", async () => {
+    const { fake, jira, ctx } = setup({ createType: "Bug" });
+    const bugType = fake.issueTypes.find((t) => t.name === "Bug");
+    if (bugType) bugType.fields = bugType.fields.filter((f) => f !== DESIGN);
+    await expect(jira.check(ctx)).resolves.toBeUndefined();
+    await expect(jira.check({ ...ctx, createFields: new Map() })).resolves.toBeUndefined();
   });
 
   it("asks nothing of a project when createIn names none", async () => {

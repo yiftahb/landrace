@@ -15,7 +15,7 @@ import {
   ITEM_PAGE, type ItemRecord, type OpenRelations, type RelatedRecord, statusSatisfied, type TrackerComment, type WorklogRecord,
 } from "landrace/kit";
 import { type AdfDoc, type AdfNode, fromAdf, type Mention, mentionsIn, plainAdf, splitMarker, toAdf } from "./adf.js";
-import { type Client, clientFor, isMissing } from "./client.js";
+import { type Client, clientFor, isMissing, refusesField } from "./client.js";
 
 export interface JiraOptions {
   /** The project's key: `KEY` in `KEY-12`. Only its issues are items. */
@@ -69,6 +69,38 @@ export interface JiraOptions {
    */
   jql?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
+}
+
+const TEXTAREA = "com.atlassian.jira.plugin.system.customfieldtypes:textarea";
+const TEXTFIELD = "com.atlassian.jira.plugin.system.customfieldtypes:textfield";
+
+/** Jira's bound on a single-line text field, and on an issue's summary. */
+export const MAX_TEXTFIELD = 255;
+
+/** A field as `GET /field` lists it, or a create screen does under `fieldId`. */
+export interface Field { id?: unknown; name?: unknown; schema?: { type?: unknown; custom?: unknown } | null }
+
+/**
+ * What a field takes by its type — a textarea a document unless its renderer
+ * says a string, a text field a string — or why it cannot be written from
+ * text: what `JiraField` keeps a spec in, and what a `tracker.create` fills.
+ */
+export function shapeOf(field: Field): "adf" | "string" | string {
+  const custom = field.schema?.custom;
+  if (custom === TEXTAREA) return "adf";
+  if (custom === TEXTFIELD) return "string";
+  return `"${String(field.name)}" (${String(field.id)}) is a ${typeof custom === "string" ? custom : String(field.schema?.type)} field, not a text or textarea one`;
+}
+
+/**
+ * A title cut to Jira's summary bound: an issue filed with the start of a
+ * long title beats a refusal, which no retry would get past. Never inside a
+ * surrogate pair, which would leave half a character.
+ */
+function summaryOf(title: string): string {
+  if (title.length <= MAX_TEXTFIELD) return title;
+  const cut = title.slice(0, MAX_TEXTFIELD);
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
 }
 
 /** Jira's own bound on a comment or a description, counted on the document it is sent as. */
@@ -1069,19 +1101,34 @@ export class Jira extends BaseTracker {
     const item = this.keyOf(request.item);
     const jira = this.jira(ctx);
     const assignee = await assigneeOf(jira, ctx);
+    const fields = await this.fieldsOf(jira, request);
+    const send = (plain: ReadonlySet<string>) => jira.call<{ key?: unknown } | null>("POST", "/rest/api/3/issue", {
+      fields: {
+        project: { key: request.project },
+        summary: summaryOf(request.title),
+        issuetype: { name: this.createType },
+        description: adfOf(request.body, `description for a new ${request.project} issue`),
+        ...Object.fromEntries(fields.map(({ id, text, doc }) => [id, doc === null || plain.has(id) ? text : doc])),
+        ...(assignee === null ? {} : { assignee: { accountId: assignee } }),
+      },
+      update: { issuelinks: [{ add: { type: { name: this.createLinkType }, outwardIssue: { key: item } } }] },
+      properties: [{ key: CREATED_BY, value: { item, marker: request.marker } }],
+    });
     let created: { key?: unknown } | null;
     try {
-      created = await jira.call<{ key?: unknown } | null>("POST", "/rest/api/3/issue", {
-        fields: {
-          project: { key: request.project },
-          summary: request.title,
-          issuetype: { name: this.createType },
-          description: adfOf(request.body, `description for a new ${request.project} issue`),
-          ...(assignee === null ? {} : { assignee: { accountId: assignee } }),
-        },
-        update: { issuelinks: [{ add: { type: { name: this.createLinkType }, outwardIssue: { key: item } } }] },
-        properties: [{ key: CREATED_BY, value: { item, marker: request.marker } }],
-      });
+      try {
+        created = await send(new Set());
+      } catch (asDocs) {
+        /*
+         * A textarea's renderer is in its field configuration, which only an
+         * account with "Administer Jira" may read, so Jira's refusal of the
+         * document by name says it takes a string, as `JiraField` learns it.
+         * A 400 filed nothing, so asking again files one issue.
+         */
+        const plain = new Set(fields.filter((f) => f.doc !== null && refusesField(asDocs, f.id)).map((f) => f.id));
+        if (plain.size === 0) throw asDocs;
+        created = await send(plain);
+      }
     } catch (e) {
       const status = (e as { status?: unknown } | null)?.status;
       if (status === 400 || isRefused(e)) throw new EffectRefused(`Jira refused to file an issue in ${request.project}: ${messageOf(e)}`);
@@ -1092,6 +1139,30 @@ export class Jira extends BaseTracker {
       throw new Error(`Jira filed an issue but answered no ${request.project} key for it: ${JSON.stringify(created)}`);
     }
     return key;
+  }
+
+  /**
+   * Each field a `tracker.create` fills, in the shape it takes: a textarea a
+   * document, as `JiraField` writes a spec — the string beside it, for a
+   * plain-text renderer — and a text field a string of at most 255
+   * characters. A field the site lacks, one that is not text, or a value past
+   * its bound is refused before the request: no retry makes it fit.
+   */
+  private async fieldsOf(jira: Client, request: CreateRequest): Promise<Array<{ id: string; text: string; doc: AdfDoc | null }>> {
+    const asked = Object.entries(request.fields ?? {});
+    if (asked.length === 0) return [];
+    const all = await jira.call<Field[] | null>("GET", "/rest/api/3/field") ?? [];
+    return asked.map(([id, text]) => {
+      const field = all.find((f) => f.id === id);
+      if (field === undefined) throw new EffectRefused(`the site has no field ${id}, which a tracker.create fills in ${request.project}`);
+      const shape = shapeOf(field);
+      if (shape === "adf") return { id, text, doc: adfOf(text, `${id} for a new ${request.project} issue`) };
+      if (shape !== "string") throw new EffectRefused(shape);
+      if (text.length > MAX_TEXTFIELD) {
+        throw new EffectRefused(`refusing to write a ${text.length}-character ${id}: a text field holds at most ${MAX_TEXTFIELD}`);
+      }
+      return { id, text, doc: null };
+    });
   }
 
   /**
@@ -1404,7 +1475,8 @@ export class Jira extends BaseTracker {
    * want of "Browse users and groups", or that the project cannot assign
    * issues to, "Assign Issues", and each type without an assignee field too. For each `createIn` project, the
    * same of filing an issue there: "Browse projects", "Create issues" and "Link issues", the assignee,
-   * `createType`, and `createLinkType` on the site. Reads only: every write shows in the
+   * `createType`, `createLinkType` on the site, and each field a loaded route's `tracker.create` there
+   * fills (`fieldsFrom`) on `createType`'s create screen and a text or textarea one. Reads only: every write shows in the
    * project's history, so the preflight makes none.
    */
   async check(ctx: PreflightContext): Promise<void> {
@@ -1513,10 +1585,21 @@ export class Jira extends BaseTracker {
         problems.push(`${there} has no issue type "${this.createType}" (createType); it has ${types.map((t) => `"${t.name}"`).join(", ") || "none"}`);
         continue;
       }
-      if (scoped) {
-        const fields = await everyPage<{ fieldId?: string }>(jira, `${path}/${encodeURIComponent(type.id)}`);
-        if (!fields.some((f) => f.fieldId === "assignee")) {
+      // The fields the loaded routes' tracker.create fills here, each on the create screen and each text.
+      const mapped = [...(ctx.createFields?.get(there) ?? [])];
+      if (scoped || mapped.length > 0) {
+        const fields = await everyPage<{ fieldId?: string; name?: unknown; schema?: Field["schema"] }>(jira, `${path}/${encodeURIComponent(type.id)}`);
+        if (scoped && !fields.some((f) => f.fieldId === "assignee")) {
           problems.push(`${there}'s "${this.createType}" issues have no assignee field, and jiraAssignee assigns each one filed`);
+        }
+        for (const id of mapped) {
+          const field = fields.find((f) => f.fieldId === id);
+          if (field === undefined) {
+            problems.push(`${there}'s "${this.createType}" issues have no ${id} on their create screen, and a tracker.create fills it`);
+            continue;
+          }
+          const shape = shapeOf({ id, name: field.name, schema: field.schema ?? null });
+          if (shape !== "adf" && shape !== "string") problems.push(shape);
         }
       }
     }

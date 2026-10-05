@@ -1501,3 +1501,56 @@ describe("fields a route resolves from the answer", () => {
     expect(r.reason).toMatch(/lr:/);
   });
 });
+
+/*
+ * An issue's title and fields from a step's answer (#113): `titleFrom` into
+ * `title`, `fieldsFrom` into `fields`, resolved here as `addFrom` is.
+ */
+describe("a tracker.create's title and fields from the answer", () => {
+  const filing: Step = {
+    prompt: "go",
+    output: {
+      discriminator: "kind",
+      shapes: { bug: { bugTitle: "string", report: "string", bugPlan: "string", team: "string" } },
+      routes: [{
+        when: { kind: "bug" },
+        effects: [{
+          type: "tracker.create", project: "ENG", titleFrom: "bugTitle", from: "report",
+          fieldsFrom: { customfield_10050: "bugPlan", customfield_10060: "team" },
+        }],
+      }],
+    },
+  };
+  const settle = (answer: Record<string, unknown>) =>
+    settleOutput({
+      step: filing, item: "1", stageId: "diagnose", round: 1,
+      text: `done\n\n${"```"}json\n${JSON.stringify({ kind: "bug", ...answer })}\n${"```"}`, sessionId: null, by: "agent",
+    });
+  const FULL = { bugTitle: "Export crashes on empty sheet", report: "Stack trace", bugPlan: "Guard the empty case", team: "Data" };
+
+  it("titles the issue and fills each mapped field from the answer", () => {
+    const r = settle(FULL) as Ok;
+    expect(r.effects[0]).toMatchObject({
+      type: "tracker.create", title: "Export crashes on empty sheet", body: "Stack trace",
+      fields: { customfield_10050: "Guard the empty case", customfield_10060: "Data" },
+    });
+  });
+
+  it("leaves out a mapped field the answer left empty", () => {
+    const r = settle({ ...FULL, team: "  " }) as Ok;
+    expect(r.effects[0]?.fields).toEqual({ customfield_10050: "Guard the empty case" });
+  });
+
+  it.each([
+    [{ ...FULL, bugTitle: undefined }, /"bugTitle", which titleFrom names, is missing/],
+    [{ ...FULL, bugTitle: "  " }, /"bugTitle".*empty/],
+    [{ ...FULL, bugTitle: "one\ntwo" }, /"bugTitle".*one line/],
+    [{ ...FULL, bugTitle: 7 }, /"bugTitle".*one line/],
+    [{ ...FULL, bugPlan: undefined }, /"bugPlan", which fieldsFrom names for customfield_10050, is missing/],
+    [{ ...FULL, team: ["Data"] }, /"team".*text/],
+  ])("refuses %j as a broken contract", (answer, reason) => {
+    const r = settle(answer) as Fail;
+    expect(r).toMatchObject({ ok: false, kind: "contract" });
+    expect(r.reason).toMatch(reason);
+  });
+});

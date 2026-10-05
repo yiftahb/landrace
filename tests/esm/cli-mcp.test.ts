@@ -332,7 +332,49 @@ describe("buildMcpTools and the startup preflight", () => {
     expect(await capabilities("repo:read, items:create")).toEqual([{ capabilities: ["items:create", "repo:read"] }]);
     expect(await capabilities("repo:read")).toEqual([{ capabilities: ["repo:read"] }]);
   });
+
+  // The tracker learns which fields a tracker.create maps only from what it is handed.
+  it("hands the preflights each project's fields the loaded routes' tracker.create maps", async () => {
+    const { dir, order } = await fixture({ screen: false, hookExtra: CREATE_FIELDS });
+    await writeFile(join(dir, "workflows", "main", "steps", "spec.md"), `---
+capabilities: [repo:read]
+model: haiku
+output:
+  discriminator: kind
+  shapes:
+    done: { bugTitle: string, plan: string }
+  routes:
+    - when: { kind: done }
+      effects:
+        - { type: tracker.create, project: ENG, titleFrom: bugTitle, fieldsFrom: { customfield_10050: plan } }
+---
+
+Write the spec.
+`);
+    await buildMcpTools(dir);
+    const handed = (await posted(order)).filter((line) => typeof line === "object" && line !== null && "createFields" in line);
+    expect(handed).toEqual([{ createFields: { ENG: ["customfield_10050"] } }]);
+  });
 });
+
+/** A post hook that files in ENG, and a preflight that writes down the fields it was handed, or that it was handed none. */
+const CREATE_FIELDS = `
+export const filer = brand("post", {
+  id: "filer",
+  handles: ["tracker.create"],
+  creates: ["ENG"],
+  satisfied: (): boolean => false,
+  apply: async (): Promise<void> => {},
+});
+
+export const createFields = brand("preflight", {
+  id: "create-fields",
+  check: async (ctx: { config: { tracker: { order: string } }; createFields?: Map<string, Set<string>> }): Promise<void> => {
+    const fields = ctx.createFields ? Object.fromEntries([...ctx.createFields].map(([p, f]) => [p, [...f].sort()])) : null;
+    await appendFile(ctx.config.tracker.order, JSON.stringify({ createFields: fields }) + "\\n");
+  },
+});
+`;
 
 // stdout is the MCP protocol here, and the console exporter writes to it.
 describe("buildMcpTools and telemetry", () => {

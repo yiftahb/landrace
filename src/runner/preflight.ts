@@ -1,3 +1,4 @@
+import { TRACKER_CREATE_EFFECT } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
 import type { Preflight, PreflightContext, Step } from "#namespace.js";
 
@@ -27,4 +28,35 @@ export function declaredCapabilities(workflows: Iterable<ReadonlyMap<string, Ste
   const declared = new Set<string>();
   for (const steps of workflows) for (const step of steps.values()) for (const capability of step.capabilities ?? []) declared.add(capability);
   return declared;
+}
+
+/**
+ * Each project's field ids a route's `tracker.create` fills from its answer,
+ * for the tracker's preflight to find on the issue type it files: a field off
+ * its create screen would refuse the first bug, after the step was paid for.
+ * Routes only — `fieldsFrom` reads an answer, and `validate` refuses it
+ * anywhere else — whether a route has one effect or a list of them.
+ */
+export function declaredCreateFields(workflows: Iterable<ReadonlyMap<string, Step>>): Map<string, Set<string>> {
+  const declared = new Map<string, Set<string>>();
+  for (const steps of workflows) {
+    for (const step of steps.values()) {
+      for (const route of step.output?.routes ?? []) {
+        for (const effect of [...(route.effect ? [route.effect] : []), ...(route.effects ?? [])]) {
+          const { project, fieldsFrom } = effect as { project?: unknown; fieldsFrom?: unknown };
+          if (effect.type !== TRACKER_CREATE_EFFECT || typeof project !== "string") continue;
+          if (fieldsFrom === null || typeof fieldsFrom !== "object" || Array.isArray(fieldsFrom)) continue;
+          const fields = declared.get(project) ?? new Set<string>();
+          for (const field of Object.keys(fieldsFrom)) fields.add(field);
+          declared.set(project, fields);
+        }
+      }
+    }
+  }
+  return declared;
+}
+
+/** What the loaded workflows' steps declare, as a preflight is handed it by every caller alike. */
+export function declaredOf(workflows: ReadonlyArray<ReadonlyMap<string, Step>>): Pick<PreflightContext, "capabilities" | "createFields"> {
+  return { capabilities: declaredCapabilities(workflows), createFields: declaredCreateFields(workflows) };
 }

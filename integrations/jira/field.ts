@@ -10,7 +10,7 @@ import type { RuntimeContext } from "landrace/hooks";
 import { BaseDocs, EffectRefused } from "landrace/kit";
 import { fromAdf } from "./adf.js";
 import { type Client, clientFor, isMissing, refusesField } from "./client.js";
-import { adfOf, type Jira, scopeOf, search } from "./tracker.js";
+import { adfOf, type Field, type Jira, MAX_TEXTFIELD, scopeOf, search, shapeOf } from "./tracker.js";
 
 export interface JiraFieldOptions {
   /**
@@ -23,18 +23,6 @@ export interface JiraFieldOptions {
   field: string;
   fetchImpl?: typeof fetch | undefined;
 }
-
-const TEXTAREA = "com.atlassian.jira.plugin.system.customfieldtypes:textarea";
-const TEXTFIELD = "com.atlassian.jira.plugin.system.customfieldtypes:textfield";
-
-/** Jira's bound on a single-line text field. */
-const MAX_TEXTFIELD = 255;
-
-/** A field as `GET /field` lists it. */
-interface Field { id?: unknown; name?: unknown; schema?: { type?: unknown; custom?: unknown } | null }
-
-/** What the field takes by its type: a textarea a document unless its renderer says a string, a text field a string. */
-type Shape = "adf" | "string";
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -90,14 +78,6 @@ export class JiraField extends BaseDocs {
     return known;
   }
 
-  /** What the field takes, or why it cannot hold a spec. */
-  private static shapeOf(field: Field): Shape | string {
-    const custom = field.schema?.custom;
-    if (custom === TEXTAREA) return "adf";
-    if (custom === TEXTFIELD) return "string";
-    return `"${String(field.name)}" (${String(field.id)}) is a ${typeof custom === "string" ? custom : String(field.schema?.type)} field, not a text or textarea one`;
-  }
-
   /**
    * The field's text, or null when it is empty. A textarea answers in ADF or
    * as a plain string, by its renderer, so both are read: ADF as Markdown,
@@ -136,7 +116,7 @@ export class JiraField extends BaseDocs {
     const jira = this.jira(ctx);
     const field = await this.meta(jira);
     if (field === null) throw new Error(`the site has no field ${this.field}`);
-    const shape = JiraField.shapeOf(field);
+    const shape = shapeOf(field);
     if (shape !== "adf" && shape !== "string") throw new Error(shape);
     if (shape === "string" && content.length > MAX_TEXTFIELD) {
       throw new EffectRefused(`refusing to write a ${content.length}-character spec to ${this.field}: a text field holds at most ${MAX_TEXTFIELD}`);
@@ -210,7 +190,7 @@ export class JiraField extends BaseDocs {
     const jira = this.jira(ctx);
     const field = await this.meta(jira);
     if (field === null) throw new Error(`the site has no field ${this.field}, which the spec is kept in (JiraField's field)`);
-    const shape = JiraField.shapeOf(field);
+    const shape = shapeOf(field);
     if (shape !== "adf" && shape !== "string") throw new Error(shape);
     const scoped = await search(
       jira, `project = "${this.project}" AND statusCategory != Done${await scopeOf(jira, ctx, this.jql)} ORDER BY created ASC`, { fields: ["issuetype"] },

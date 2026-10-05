@@ -390,8 +390,8 @@ function createsOf(stage: Stage, steps: Map<string, Step>): Array<{ effect: Reco
 }
 
 /**
- * `tracker-create`, from the files: an issue names its project and its
- * title, and is marked — a route's `effects` marks each one; anywhere else it
+ * `tracker-create`, from the files: an issue names its project and exactly
+ * one of a `title` template and a `titleFrom` answer field, and is marked — a route's `effects` marks each one; anywhere else it
  * names its own `marker`, or its record could never be read back and it
  * would be filed on every tick.
  */
@@ -402,8 +402,12 @@ function createShapeProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
       if (typeof effect.project !== "string" || effect.project === "") {
         problems.push({ rule: "tracker-create", message: `stage "${stage.id}" files an issue from ${where} that names no project` });
       }
-      if (typeof effect.title !== "string" || effect.title.trim() === "") {
-        problems.push({ rule: "tracker-create", message: `stage "${stage.id}" files an issue from ${where} that names no title` });
+      // A title template or the answer's field, never both: with both, which one names the issue is a guess.
+      const titled = typeof effect.title === "string" && effect.title.trim() !== "";
+      if (effect.title !== undefined && effect.titleFrom !== undefined) {
+        problems.push({ rule: "tracker-create", message: `stage "${stage.id}" files an issue from ${where} that names both a title and a titleFrom; it takes one` });
+      } else if (!titled && effect.titleFrom === undefined) {
+        problems.push({ rule: "tracker-create", message: `stage "${stage.id}" files an issue from ${where} that names neither a title nor a titleFrom` });
       }
       if (!marked && (typeof effect.marker !== "string" || effect.marker === "")) {
         problems.push({
@@ -565,7 +569,8 @@ const nonEmptyStrings = (value: unknown): value is string[] =>
  * name output fields, so only a route has an answer to read them from:
  * `addFrom` on a `tracker.label` with a non-empty `allowed` list holding no
  * `lr:` label, `spentFrom` on a `tracker.worklog` — which needs it, a marker,
- * and a `max` that is a duration above zero.
+ * and a `max` that is a duration above zero. #113's `titleFrom` and
+ * `fieldsFrom` are a route's `tracker.create`'s alone.
  */
 function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
   const problems: Problem[] = [];
@@ -589,7 +594,7 @@ function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
       };
       /*
        * settleOutput cuts the answer down to the matched shape's fields before
-       * addFrom or spentFrom is read, so a field no shape declares never
+       * a field a route names is read, so a field no shape declares never
        * arrives and every round fails as missing, after the agent was paid.
        */
       const undeclared = (field: string): void => {
@@ -624,6 +629,20 @@ function effectFieldProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
       if (effect.spentFrom !== undefined) {
         if (!route) say("spentFrom names an output field, and on_enter has no answer to read it from; it belongs on a step's route");
         else if (effect.type !== WORKLOG_EFFECT) say(`a ${effect.type} has spentFrom; only a ${WORKLOG_EFFECT} logs time`);
+      }
+      if (effect.titleFrom !== undefined) {
+        if (!route) say("titleFrom names an output field, and on_enter has no answer to read it from; it belongs on a step's route");
+        else if (effect.type !== TRACKER_CREATE_EFFECT) say(`a ${effect.type} has titleFrom; only a ${TRACKER_CREATE_EFFECT} takes its title from an answer`);
+        else if (typeof effect.titleFrom !== "string" || effect.titleFrom.trim() === "") say("titleFrom must name an output field");
+        else undeclared(effect.titleFrom);
+      }
+      if (effect.fieldsFrom !== undefined) {
+        const map = effect.fieldsFrom;
+        const named = map !== null && typeof map === "object" && !Array.isArray(map) ? Object.values(map) : [];
+        if (!route) say("fieldsFrom names output fields, and on_enter has no answer to read them from; it belongs on a step's route");
+        else if (effect.type !== TRACKER_CREATE_EFFECT) say(`a ${effect.type} has fieldsFrom; only a ${TRACKER_CREATE_EFFECT} fills an issue's fields from an answer`);
+        else if (!nonEmptyStrings(named)) say("fieldsFrom must map field ids to output fields, such as { customfield_10050: plan }");
+        else named.forEach(undeclared);
       }
       if (effect.type === WORKLOG_EFFECT && route) {
         if (typeof effect.spentFrom !== "string" || effect.spentFrom === "") say(`a ${WORKLOG_EFFECT} needs spentFrom, the output field its time is read from`);
