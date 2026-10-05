@@ -1867,7 +1867,8 @@ export class Jira extends BaseTracker {
    * issues to, "Assign Issues", and each type without an assignee field too. For each `createIn` project, the
    * same of filing an issue there: "Browse projects", "Create issues" and "Link issues", the assignee,
    * `createType`, `createLinkType` on the site, and each field a loaded route's `tracker.create` there
-   * fills (`fieldsFrom`) on `createType`'s create screen and a text or textarea one. Reads only: every write shows in the
+   * fills (`fieldsFrom`) on `createType`'s create screen and a text or textarea one. Each value a loaded
+   * `tracker.field` sets, as `fieldProblems` checks it. Reads only: every write shows in the
    * project's history, so the preflight makes none.
    */
   async check(ctx: PreflightContext): Promise<void> {

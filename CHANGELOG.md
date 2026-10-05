@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Jira fields a transition needs.** A `tracker.field` effect, in `on_enter` or on a route, sets issue fields from the workflow file, such as `{ type: tracker.field, fields: { customfield_10123: ["R&D"] }, onlyIfEmpty: true }`. Listed before a stage's `tracker.status`, it sets the Category or Reviewer that the transition's condition or validator needs, so the status follows the stage. Each field is written in its own shape: a select, a multi-select, a user (an account id, or an email looked up as `jiraAssignee` is), several users, a number or text. `onlyIfEmpty` leaves a field a person filled. Reads fetch the fields into `node.state.fields`, where `satisfied()` judges them. `start` refuses a field the site lacks or cannot set, a user that is not exactly one account, and an option the field does not offer, naming the options it has. `validate` refuses any other shape, and a value still holding a `{…}` after load. See [Workflows](docs/workflows.md#effects) and [Integrations](docs/integrations.md#jira).
+
 ## [1.2.1] - 2026-10-05
 
 ### Fixed
