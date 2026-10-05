@@ -355,7 +355,49 @@ Write the spec.
     const handed = (await posted(order)).filter((line) => typeof line === "object" && line !== null && "createFields" in line);
     expect(handed).toEqual([{ createFields: { ENG: ["customfield_10050"] } }]);
   });
+
+  // A tracker reads `node.state.fields` only for the ids its context names, and checks only the values it is handed.
+  it("hands its context the fields the loaded tracker.field effects set, and the preflights their values", async () => {
+    const { dir, order } = await fixture({ screen: false, hookExtra: FIELD_VALUES });
+    await writeFile(join(dir, "workflows", "main", "steps", "spec.md"), `---
+capabilities: [repo:read]
+model: haiku
+output:
+  discriminator: kind
+  shapes:
+    done: {}
+  routes:
+    - when: { kind: done }
+      effect: { type: tracker.field, fields: { customfield_10123: ["R&D"] } }
+---
+
+Write the spec.
+`);
+    await buildMcpTools(dir);
+    const handed = (await posted(order)).filter((line) => typeof line === "object" && line !== null && "trackerFields" in line);
+    expect(handed).toEqual([{ trackerFields: ["customfield_10123"], fieldValues: { customfield_10123: [["R&D"]] } }]);
+  });
 });
+
+/** A post hook that sets fields, and a preflight that writes down the field ids its context carries and the values it was handed. */
+const FIELD_VALUES = `
+export const fielder = brand("post", {
+  id: "fielder",
+  handles: ["tracker.field"],
+  satisfied: (): boolean => false,
+  apply: async (): Promise<void> => {},
+});
+
+export const fieldValues = brand("preflight", {
+  id: "field-values",
+  check: async (ctx: { config: { tracker: { order: string } }; trackerFields?: Set<string>; fieldValues?: Map<string, unknown[]> }): Promise<void> => {
+    await appendFile(ctx.config.tracker.order, JSON.stringify({
+      trackerFields: ctx.trackerFields ? [...ctx.trackerFields].sort() : null,
+      fieldValues: ctx.fieldValues ? Object.fromEntries(ctx.fieldValues) : null,
+    }) + "\\n");
+  },
+});
+`;
 
 /** A post hook that files in ENG, and a preflight that writes down the fields it was handed, or that it was handed none. */
 const CREATE_FIELDS = `

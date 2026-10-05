@@ -99,6 +99,13 @@ describe("planEffects", () => {
     });
   });
 
+  // A field's value is the workflow file's: not even the round, the stage or the item fills one, and `validate` refuses one left.
+  it("fills nothing in a tracker.field's fields", () => {
+    const setting: Stage = { id: "s", on_enter: [{ type: "tracker.field", fields: { customfield_1: "{item} {round}", customfield_2: ["{stage}"] } }] };
+    expect(planEffects({ action: "transition", to: setting, round: 2 }, {}, "7")[0]?.fields)
+      .toEqual({ customfield_1: "{item} {round}", customfield_2: ["{stage}"] });
+  });
+
   it("plans nothing while waiting", () => {
     expect(planEffects({ action: "wait" }, {}, "1")).toEqual([]);
   });

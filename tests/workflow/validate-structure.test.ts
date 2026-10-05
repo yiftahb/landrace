@@ -873,4 +873,32 @@ describe("effect-fields", () => {
       expect.stringMatching(/fieldsFrom.*on_enter/),
     ]);
   });
+
+  // #119: issue fields set from the workflow file.
+  const FIELD = { type: "tracker.field", fields: { customfield_10123: ["R&D"], customfield_10124: "mia@acme.example", customfield_10125: 3 } };
+
+  it("accepts a tracker.field in on_enter and on a route, with onlyIfEmpty or without", () => {
+    expect(routed(FIELD)).toEqual([]);
+    expect(routed(NOTE, [{ ...FIELD, onlyIfEmpty: true }])).toEqual([]);
+    expect(routed({ ...FIELD, onlyIfEmpty: false })).toEqual([]);
+  });
+
+  it.each([
+    ["no fields", { type: "tracker.field" }, /needs fields/],
+    ["fields that are a list", { type: "tracker.field", fields: ["customfield_1"] }, /needs fields/],
+    ["fields that map nothing", { type: "tracker.field", fields: {} }, /needs fields/],
+    ["a value that is an object", { type: "tracker.field", fields: { customfield_1: { value: "R&D" } } }, /customfield_1.*a string, a number or a list of strings/],
+    ["a value that is a boolean", { type: "tracker.field", fields: { customfield_1: true } }, /customfield_1.*a string, a number or a list of strings/],
+    ["a value that is null", { type: "tracker.field", fields: { customfield_1: null } }, /customfield_1.*a string, a number or a list of strings/],
+    ["a list holding a number", { type: "tracker.field", fields: { customfield_1: ["R&D", 2] } }, /customfield_1.*a string, a number or a list of strings/],
+    ["an empty list", { type: "tracker.field", fields: { customfield_1: [] } }, /customfield_1.*empty list/],
+    ["a value still holding a template", { type: "tracker.field", fields: { customfield_1: "round {round}" } }, /customfield_1.*\{round\}/],
+    ["a list value still holding a template", { type: "tracker.field", fields: { customfield_1: ["{item.title}"] } }, /customfield_1.*\{item\.title\}/],
+    ["an onlyIfEmpty that is not a boolean", { ...FIELD, onlyIfEmpty: "yes" }, /onlyIfEmpty/],
+    ["fields on another effect", { ...NOTE, fields: { customfield_1: "x" } }, /fields.*tracker\.field/],
+    ["onlyIfEmpty on another effect", { ...NOTE, onlyIfEmpty: true }, /onlyIfEmpty.*tracker\.field/],
+  ])("refuses %s", (_, effect, message) => {
+    expect(routed(effect)).toEqual([expect.stringMatching(message)]);
+    expect(routed(NOTE, [effect])).toEqual([expect.stringMatching(message)]);
+  });
 });

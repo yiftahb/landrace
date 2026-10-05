@@ -8,7 +8,7 @@ import { createTools } from "#mcp/tools.js";
 import { createActivityLog } from "#runner/activity.js";
 import { createChild } from "#runner/children.js";
 import { createLogger, scrubberOf } from "#runner/events.js";
-import { declaredOf, runPreflights } from "#runner/preflight.js";
+import { declaredOf, declaredTrackerFields, runPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
 import { loadWorkspace, workflowById } from "#workflow/workspace.js";
@@ -78,6 +78,8 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
     // vocabulary — otherwise adding an event to a hook would mean editing the
     // engine's EventName union.
     log: (event, data) => events(event as EventName, data),
+    // What every list and read fetches for `tracker.field`'s `satisfied`, as `landrace start` asks.
+    trackerFields: new Set(declaredTrackerFields(hooked.map(({ w }) => w)).keys()),
   };
 
   // Before anything else the hooks might do, including the very next check
@@ -87,7 +89,7 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
   // once, by identity, as `landrace start` runs them.
   await runPreflights(
     [...new Set(hooked.flatMap(({ registry }) => registry.preflights))],
-    { ...ctx, ...declaredOf(hooked.map(({ w }) => w.steps)) },
+    { ...ctx, ...declaredOf(hooked.map(({ w }) => w)) },
   );
 
   /*

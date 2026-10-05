@@ -1,6 +1,6 @@
 import { definePreflight } from "#hooks/contracts.js";
-import type { Preflight, RuntimeContext, Step } from "#namespace.js";
-import { declaredCapabilities, declaredCreateFields, runPreflights } from "#runner/preflight.js";
+import type { Preflight, RuntimeContext, Step, Workflow } from "#namespace.js";
+import { declaredCapabilities, declaredCreateFields, declaredOf, declaredTrackerFields, runPreflights } from "#runner/preflight.js";
 
 /**
  * The engine's *when* for a permission problem: run every registered
@@ -103,5 +103,55 @@ describe("declaredCreateFields", () => {
     expect([...(fields.get("ENG") ?? [])].sort()).toEqual(["customfield_1", "customfield_2"]);
     expect([...(fields.get("OPS") ?? [])]).toEqual(["customfield_3"]);
     expect(declaredCreateFields([]).size).toBe(0);
+  });
+});
+
+describe("declaredTrackerFields", () => {
+  const stage = (id: string, onEnter: Array<Record<string, unknown>>) => ({ id, on_enter: onEnter });
+  const routed = (effects: Array<Record<string, unknown>>): Step => ({
+    output: {
+      discriminator: "kind", shapes: { done: {} },
+      routes: [{ when: { kind: "done" }, effect: effects[0] }, { when: { kind: "done" }, effects: effects.slice(1) }],
+    },
+  }) as unknown as Step;
+
+  // A field an on_enter sets and one a route sets are both asked for in every read, and each value is checked at start.
+  it("is every field id a tracker.field names, in on_enter and in either form of route, with each value it is set to", () => {
+    const workflow = {
+      stages: [
+        stage("build", [{ type: "tracker.comment" }, { type: "tracker.field", fields: { customfield_1: ["R&D"], customfield_2: "mia@acme.example" } }]),
+        { id: "review", step: "review.md" },
+      ],
+    } as unknown as Workflow;
+    const steps = new Map([["review.md", routed([
+      { type: "tracker.field", fields: { customfield_1: ["Ops"] } },
+      { type: "tracker.comment" },
+      { type: "tracker.field", fields: { customfield_3: 2 } },
+    ])]]);
+    const other = {
+      workflow: { stages: [stage("spec", [{ type: "tracker.field", fields: { customfield_1: ["R&D"] }, onlyIfEmpty: true }])] } as unknown as Workflow,
+      steps: new Map<string, Step>(),
+    };
+    const fields = declaredTrackerFields([{ workflow, steps }, other]);
+    expect([...fields.keys()].sort()).toEqual(["customfield_1", "customfield_2", "customfield_3"]);
+    expect(fields.get("customfield_1")).toEqual([["R&D"], ["Ops"], ["R&D"]]);
+    expect(fields.get("customfield_2")).toEqual(["mia@acme.example"]);
+    expect(fields.get("customfield_3")).toEqual([2]);
+    expect(declaredTrackerFields([]).size).toBe(0);
+  });
+
+  // A step file no stage runs is never run, so what it would set is nobody's to check.
+  it("reads a route only through the stage that runs its step", () => {
+    const workflow = { stages: [{ id: "idle" }] } as unknown as Workflow;
+    const steps = new Map([["unused.md", routed([{ type: "tracker.field", fields: { customfield_9: "x" } }])]]);
+    expect(declaredTrackerFields([{ workflow, steps }]).size).toBe(0);
+  });
+
+  // What every caller hands its preflights: the ids beside their values.
+  it("is handed to the preflights by declaredOf, beside the capabilities and the create fields", () => {
+    const workflow = { stages: [stage("build", [{ type: "tracker.field", fields: { customfield_1: "R&D" } }])] } as unknown as Workflow;
+    const declared = declaredOf([{ workflow, steps: new Map() }]);
+    expect([...(declared.fieldValues ?? [])]).toEqual([["customfield_1", ["R&D"]]]);
+    expect(declared.capabilities?.size).toBe(0);
   });
 });

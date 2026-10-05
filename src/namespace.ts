@@ -612,7 +612,16 @@ export interface HookContext {
   secrets: ReadonlyMap<string, string>;
   signal: AbortSignal;
   log: (event: string, data?: Record<string, unknown>) => void;
+  /**
+   * The field ids the loaded workflows' `tracker.field` effects set, for a
+   * tracker's `list` and `read` to fetch into `node.state.fields`, where
+   * `satisfied` reads them. Absent when the caller cannot say.
+   */
+  trackerFields?: ReadonlySet<string> | undefined;
 }
+
+/** What a `tracker.field` sets one field to, from the workflow file: text, a number, or a list of strings. */
+export type TrackerFieldValue = string | number | string[];
 
 /** Observe. Fetch or compute; the engine does not care which. */
 export interface PreHook {
@@ -1164,6 +1173,13 @@ export interface ItemRecord {
    * before its end, or held one it could not read. Absent is whole.
    */
   relatedComplete?: boolean | undefined;
+  /**
+   * The issue fields asked for in `trackerFields`, by id, as `node.state.fields`
+   * carries them: an option as its value, a multi-select as a list of values,
+   * a user as an account id, text as text, a number as a number, empty as
+   * null. A field not read is left out, never null: not read is not empty.
+   */
+  fields?: Record<string, Json> | undefined;
 }
 
 /**
@@ -1368,6 +1384,8 @@ export type PreflightContext = RuntimeContext & {
   capabilities?: ReadonlySet<string> | undefined;
   /** Project → the field ids a loaded route's `tracker.create` there fills from its answer (`fieldsFrom`). */
   createFields?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+  /** Field id → every value a loaded `tracker.field`, in an on_enter or a route, sets it to. */
+  fieldValues?: ReadonlyMap<string, readonly TrackerFieldValue[]> | undefined;
 };
 
 /**

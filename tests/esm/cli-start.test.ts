@@ -716,7 +716,86 @@ describe("the startup preflight", () => {
     await runStart(dir, { once: true });
     expect(await applied(record)).toEqual([{ createFields: { ENG: ["customfield_10050"] } }]);
   });
+
+  /**
+   * `tracker.field`'s `satisfied` reads `node.state.fields`, which a tracker
+   * fills only with the ids the runtime's context names — the one context
+   * every list, read and preflight is handed — and its preflight checks only
+   * the values it is handed. Absent, every field reads as not read, and is
+   * written again on every entry.
+   */
+  it("hands the runtime's context the fields the loaded tracker.field effects set, and the preflights their values", async () => {
+    const { dir, record } = await fixture({ items: [], workflow: FIELDS_WORKFLOW, hookExtra: FIELD_VALUES });
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), FIELD_STEP);
+    await runStart(dir, { once: true });
+    expect(await applied(record)).toEqual([{
+      trackerFields: ["customfield_10123", "customfield_10124"],
+      fieldValues: { customfield_10123: [["R&D"]], customfield_10124: [3] },
+    }]);
+  });
 });
+
+/** A stage setting a field as it is entered, whose step sets another on its route. */
+const FIELDS_WORKFLOW = `version: 1
+name: e2e
+description: test
+hooks: [../../hooks/fake.ts, ../../hooks/claude.ts]
+eligible:
+  - when: { "node.state.labels": { $in: ["lr:auto"] } }
+    else: "no lr:auto label"
+stages:
+  - id: breakdown
+    entry: true
+    step: steps/breakdown.md
+    triggers:
+      - name: fresh item
+        when: { "run.stage": null }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Breaking it down, round {round}." }
+      - { type: tracker.field, fields: { customfield_10123: ["R&D"] }, onlyIfEmpty: true }
+  - id: done
+    terminal: true
+    triggers:
+      - name: broken down
+        when: { "run.stage": breakdown, "run.outputs.breakdown.kind": done }
+`;
+
+const FIELD_STEP = `---
+capabilities: [repo:read]
+model: opus
+output:
+  discriminator: kind
+  shapes:
+    done: {}
+  routes:
+    - when: { kind: done }
+      effects:
+        - { type: tracker.field, fields: { customfield_10124: 3 } }
+---
+
+Break it down.
+`;
+
+/** A post hook that sets fields, and a preflight that writes down the field ids its context carries and the values it was handed. */
+const FIELD_VALUES = `
+export const fielder = brand("post", {
+  id: "fielder",
+  handles: ["tracker.field"],
+  satisfied: (): boolean => false,
+  apply: async (): Promise<void> => {},
+});
+
+export const fieldValues = brand("preflight", {
+  id: "field-values",
+  check: async (ctx: Ctx & { trackerFields?: Set<string>; fieldValues?: Map<string, unknown[]> }): Promise<void> => {
+    await appendFile(ctx.config.tracker.record, JSON.stringify({
+      trackerFields: ctx.trackerFields ? [...ctx.trackerFields].sort() : null,
+      fieldValues: ctx.fieldValues ? Object.fromEntries(ctx.fieldValues) : null,
+    }) + "\\n");
+  },
+});
+`;
 
 /** `stepped`'s step, filing an ENG bug whose design field is the answer's plan. */
 const FILING_STEP = `---
