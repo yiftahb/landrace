@@ -479,6 +479,29 @@ describe("the toggle button's title, kept in step with its label", () => {
   });
 });
 
+// A row's menu is z-10, as the sticky top bar is, and later in the document,
+// so scrolled up under the top bar it would draw over the tick controls.
+describe("an open menu while the page scrolls", () => {
+  const scroll = (openMenuKey: string | null): number => {
+    let closes = 0;
+    runInNewContext(`${fnSource("onPageScroll")}onPageScroll()`, { openMenuKey, closeMenu: () => { closes++; } });
+    return closes;
+  };
+
+  it("closes a row's menu, which would otherwise scroll up over the top bar", () => {
+    expect(scroll("19")).toBe(1);
+  });
+
+  it("leaves the panel's menu open, since the panel is fixed and never scrolls with the page, and does nothing with none open", () => {
+    expect(scroll("panel")).toBe(0);
+    expect(scroll(null)).toBe(0);
+  });
+
+  it("listens on the page's own scroll, passively", () => {
+    expect(APP_JS).toContain(`window.addEventListener("scroll", onPageScroll, { passive: true });`);
+  });
+});
+
 describe("the 'c' keyboard shortcut for Collapse all / Expand all", () => {
   const run = (opts: {
     key?: string; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean;
@@ -1356,7 +1379,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, and the bell's — no more, no less", () => {
+  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the scroll that closes a row menu, the item panel's and pairing's, the message box's shortcut, and the bell's — no more, no less", () => {
     // Pins the count deliberately: the tick button, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
     // button (each wired once, outside anything a render rebuilds), the
@@ -1368,7 +1391,7 @@ describe("the page", () => {
     // writeItem, shared by Retry and every Go to step… target, and built
     // only where the server offered one), and one document listener each for
     // outside-click and Escape (both defined once, so re-rendering never
-    // multiplies them). And the item panel's: an item row's title button
+    // multiplies them), and the window's scroll that closes it. And the item panel's: an item row's title button
     // and the row itself (each defined once, in itemRowFor), ✕, ⤢, Reply,
     // Ask the step, Resolve, and the window's hashchange. And pairing's: the
     // row menu's Pairing…, the panel header's ⋯ and its Pairing… item, and
@@ -1378,7 +1401,7 @@ describe("the page", () => {
     // notification's (defined once, in notifyOf). And the message box's
     // Ctrl/⌘+Enter.
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(30);
+    expect(listeners).toHaveLength(31);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {

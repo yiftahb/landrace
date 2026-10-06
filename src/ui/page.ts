@@ -461,6 +461,13 @@ function onDocumentClick(e) {
   resetIdleTimer();
 }
 document.addEventListener("click", onDocumentClick);
+// A row's menu is z-10, as the sticky top bar is, and comes later in the
+// document, so scrolled up under the top bar it draws over the tick controls.
+// The panel's menu stays: the panel is fixed and never moves with the page.
+function onPageScroll() {
+  if (openMenuKey !== null && openMenuKey !== "panel") closeMenu();
+}
+window.addEventListener("scroll", onPageScroll, { passive: true });
 // Whether focus is somewhere a "c" is a letter someone is typing, not a
 // shortcut — the search box above all, but any field or contenteditable
 // reads the same way.
