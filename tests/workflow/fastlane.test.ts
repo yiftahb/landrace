@@ -602,6 +602,8 @@ interface Facts {
   openThreads?: number;
   ciPending?: number;
   ciFailed?: number;
+  /** Pull requests that conflict with the default branch: 0 unless the facts say; null when no pull request reports it, so the sum is absent. */
+  conflicts?: number | null;
   /** Items it is blocked by that are still open: `rel.blocked-by.out.not.closed`. */
   notClosed?: number;
   /** Items it is blocked by that are done: closed as completed. */
@@ -655,6 +657,7 @@ function snapshotOf(f: Facts): Snapshot {
       sum: {
         awaitingFix: f.awaitingFix ?? 0, awaitingBehaviourFix: f.awaitingBehaviourFix ?? f.awaitingFix ?? 0,
         openThreads: f.openThreads ?? 0, ciPending: f.ciPending ?? 0, ciFailed: f.ciFailed ?? 0,
+        ...(f.conflicts === null ? {} : { conflicts: f.conflicts ?? 0 }),
       },
     };
   const none = { total: 0, dropped: 0, is: {}, not: {}, sum: {}, stage: {}, open: [] };
@@ -692,7 +695,14 @@ function grid(stage: string | null, axes: Record<string, readonly unknown[]>, ba
 
 /** Thread counts a forge can report: a behaviour fix is a fix awaited, and a fix awaited is on an open thread. */
 const possible = (f: Facts): boolean =>
-  n(f.awaitingBehaviourFix, n(f.awaitingFix, 0)) <= n(f.awaitingFix, 0) && n(f.awaitingFix, 0) <= n(f.openThreads, 0);
+  n(f.awaitingBehaviourFix, n(f.awaitingFix, 0)) <= n(f.awaitingFix, 0) && n(f.awaitingFix, 0) <= n(f.openThreads, 0) &&
+  conflictsPossible(f);
+
+/** A merged pull request conflicts with nothing and says so: only an open one conflicts, or leaves it unknown. */
+const conflictsPossible = (f: Facts): boolean => {
+  const open = n(f.notMerged, n(f.total, 1));
+  return f.conflicts === null ? open > 0 : n(f.conflicts, 0) <= open;
+};
 
 const count = (f: Facts, stage: string): number => f.counters?.[stage] ?? 0;
 const friction = (f: Facts): boolean => count(f, "build") > 1 || count(f, "fix-review") > 0 || count(f, "triage") > 0;
@@ -727,7 +737,8 @@ const unwritten = (f: Facts, path: string): boolean =>
   path.startsWith("run.counters.") ||
   (path === "rel.blocked-by.out.not.closed" && n(f.notClosed, 0) + n(f.doneBlockers, 0) === 0) ||
   (path === "node.state.dependencyCycle" && f.dependencyCycle === undefined) ||
-  (path === "node.state.relatedUnreadable" && f.relatedUnreadable === undefined);
+  (path === "node.state.relatedUnreadable" && f.relatedUnreadable === undefined) ||
+  (path === "rel.implements.in.sum.conflicts" && f.conflicts === null);
 
 /** Each stage, the boundary values its exits read, and where the plan sends an item with those facts — null for a wait. */
 const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => string | null]> = [
@@ -758,16 +769,18 @@ const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => s
   }],
   ["fix-review", { total: [0, 1], "counters.fix-review": [7, 8] }, (f) =>
     (n(f.total, 1) === 0 ? "stuck" : count(f, "fix-review") < 8 ? "code-review" : "stuck")],
-  // Checks still running is the one wait here. A thread opened while they ran goes to review first.
+  // Checks still running is one wait here, and conflicts no forge has
+  // worked out the other. A thread opened while they ran goes to review
+  // first; a conflict goes back to build as red checks do (#126).
   ["ci", {
-    total: [0, 1], openThreads: [0, 1], ciPending: [0, 1], ciFailed: [0, 1], notMerged: [0, 1],
+    total: [0, 1], openThreads: [0, 1], ciPending: [0, 1], ciFailed: [0, 1], conflicts: [null, 0, 1], notMerged: [0, 1],
     "counters.code-review": [3, 4], "counters.build": [1, 2, 3], "counters.fix-review": [0, 1],
     "counters.triage": [0, 1], "counters.retro": [0, 1],
   }, (f) => {
     if (n(f.total, 1) === 0) return "stuck";
     if (n(f.openThreads, 0) > 0) return count(f, "code-review") < 4 ? "code-review" : "stuck";
-    if (n(f.ciFailed, 0) > 0) return count(f, "build") < 3 ? "build" : "stuck";
-    if (n(f.ciPending, 0) > 0) return null;
+    if (n(f.ciFailed, 0) > 0 || (f.conflicts ?? 0) > 0) return count(f, "build") < 3 ? "build" : "stuck";
+    if (n(f.ciPending, 0) > 0 || f.conflicts === null) return null;
     return count(f, "retro") < 1 && friction(f) && n(f.notMerged, 1) > 0 ? "retro" : "merge";
   }],
   ["retro", { total: [0, 1] }, (f) => (n(f.total, 1) === 0 ? "stuck" : "code-review")],
