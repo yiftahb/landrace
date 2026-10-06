@@ -331,6 +331,20 @@ describe("the ci briefing", () => {
     expect(asked).not.toHaveBeenCalled();
   });
 
+  it("says a pull request that conflicts with the default branch does, and puts the count on its node", async () => {
+    const s = state();
+    const conflicting = s.openPull("7", { checks: "success", conflicts: true });
+    const unknown = s.openPull("7", { checks: "success", conflicts: null });
+    const clean = s.openPull("7", { checks: "success" });
+    const ci = await ciBrief(s);
+    expect(ci).toContain("### pr-1: checks success\n\npr-1 conflicts with the default branch");
+    expect(ci).not.toContain("pr-2 conflicts");
+    expect(ci).not.toContain("pr-3 conflicts");
+    expect(await stateOf(s, conflicting)).toMatchObject({ conflicts: 1 });
+    expect(await stateOf(s, unknown)).not.toHaveProperty("conflicts");
+    expect(await stateOf(s, clean)).toMatchObject({ conflicts: 0 });
+  });
+
   it("says when a failing pull request names no failed check", async () => {
     const s = state();
     s.openPull("7", { checks: "failure" });

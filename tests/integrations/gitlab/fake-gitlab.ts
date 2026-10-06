@@ -98,6 +98,8 @@ export interface FakeMr {
   branchRefusal?: 406 | 422;
   /** What GitLab says of its mergeability, on a read of the merge request: `checking` while it works it out. */
   detailed_merge_status?: string;
+  /** Whether it conflicts with its target branch, as GitLab lists it: false unless a test says. */
+  has_conflicts?: boolean;
   /**
    * How many files GitLab says it changes: the diff's length unless said —
    * "1000+" past GitLab's diff limits, null while it is still working the
@@ -215,6 +217,7 @@ export function createFakeGitLab(): FakeGitLab {
       ...(mr.mayMerge === undefined ? {} : { mayMerge: mr.mayMerge }),
       ...(mr.branchRefusal === undefined ? {} : { branchRefusal: mr.branchRefusal }),
       ...(mr.detailed_merge_status === undefined ? {} : { detailed_merge_status: mr.detailed_merge_status }),
+      has_conflicts: mr.has_conflicts ?? false,
       ...(mr.changes_count === undefined ? {} : { changes_count: mr.changes_count }),
     };
     mrs.set(iid, created);

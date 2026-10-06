@@ -13,7 +13,7 @@ const noGit: Git = async () => "";
 const forgeOver = (gl: FakeGitLab): GitLab => new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git: noGit });
 
 const recordOf = (mr: FakeMr): PullRecord =>
-  ({ number: mr.iid, title: "t", link: "", merged: mr.state === "merged", closed: mr.state === "closed", headSha: mr.sha, branch: mr.source_branch, createdAt: undefined, items: [] });
+  ({ number: mr.iid, title: "t", link: "", merged: mr.state === "merged", closed: mr.state === "closed", headSha: mr.sha, conflicts: false, branch: mr.source_branch, createdAt: undefined, items: [] });
 
 /** The context a merge is asked in: for #1, the item whose refusal it names. */
 const forItem = (gl: FakeGitLab): HookContext => ({ ...gl.ctx(), item: "1", snapshot: {} });
@@ -666,5 +666,50 @@ describe("pull.merge through compose", () => {
     expect(opened.state).toBe("opened");
     const next = ((await snapshot()).graph as Graph).nodes.find((n) => n.id === "pr-8");
     expect(next?.state.headSha).toBe("def5678");
+  });
+});
+
+/*
+ * Whether a merge request conflicts with its target, as `has_conflicts`
+ * says — but not while `detailed_merge_status` says GitLab is still working
+ * it out, which the node leaves out so a workflow never routes on a guess.
+ */
+describe("a merge request's conflicts", () => {
+  const conflictsOf = async (seed: Partial<FakeMr>): Promise<unknown> => {
+    const gl = createFakeGitLab();
+    gl.open({ source_branch: "landrace/1", iid: 10, ...seed });
+    const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "1", title: "t" }] }), forge: forgeOver(gl) });
+    const graph = await hooks.source.read("1", gl.ctx());
+    const state = graph.nodes.find((n) => n.id === "pr-10")?.state ?? {};
+    return Object.hasOwn(state, "conflicts") ? state.conflicts : "absent";
+  };
+
+  it.each<[Partial<FakeMr>, unknown]>([
+    [{ has_conflicts: true, detailed_merge_status: "conflict" }, 1],
+    [{ has_conflicts: false, detailed_merge_status: "mergeable" }, 0],
+    [{ has_conflicts: true, detailed_merge_status: "ci_still_running" }, 1],
+    [{ has_conflicts: false }, 0],
+    [{ has_conflicts: true, detailed_merge_status: "checking" }, "absent"],
+    [{ has_conflicts: false, detailed_merge_status: "unchecked" }, "absent"],
+    [{ has_conflicts: true, state: "merged" }, 0],
+    [{ has_conflicts: true, state: "closed", detailed_merge_status: "checking" }, 0],
+  ])("reads %j as conflicts %s", async (seed, conflicts) => {
+    expect(await conflictsOf(seed)).toBe(conflicts);
+  });
+
+  it("asks GitLab to work mergeability out again as it reads the item's merge requests", async () => {
+    const gl = createFakeGitLab();
+    gl.open({ source_branch: "landrace/1", iid: 10 });
+    await forgeOver(gl).pullsNaming("1", gl.ctx());
+    const listed = gl.requests.filter((r) => r.path.endsWith("/merge_requests"));
+    expect(listed.map((r) => r.query.get("with_merge_status_recheck"))).toEqual(["true"]);
+  });
+
+  it("says so in the ci briefing", async () => {
+    const gl = createFakeGitLab();
+    gl.open({ source_branch: "landrace/1", iid: 5, has_conflicts: true, detailed_merge_status: "conflict" });
+    const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "1", title: "t" }] }), forge: forgeOver(gl) });
+    const briefed = await hooks.source.brief?.({ ...gl.ctx(), item: "1", snapshot: {} } as HookContext);
+    expect(briefed?.ci).toContain("pr-5 conflicts with the default branch");
   });
 });

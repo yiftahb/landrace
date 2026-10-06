@@ -139,6 +139,8 @@ export interface FakePull {
   jobLogs?: Map<number, string>;
   /** Whether `PUT /pulls/{n}/merge` can merge it. Absent means it can; null is GitHub still working it out, which refuses too. */
   mergeable?: boolean | null;
+  /** GraphQL's `mergeable`, whether it conflicts with its base: MERGEABLE unless a test says. */
+  graphqlMergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 }
 
 /** A published Pages site, as `GET /repos/{owner}/{repo}/pages` describes one. */
@@ -534,6 +536,7 @@ export function createFakeTracker(
     merged: p.merged,
     headRefName: p.head,
     headRefOid: p.headSha,
+    mergeable: p.graphqlMergeable ?? "MERGEABLE",
     isCrossRepository: p.crossRepository ?? false,
     ...(p.createdAt === undefined ? {} : { createdAt: p.createdAt }),
     ...(p.updatedAt === undefined ? {} : { updatedAt: p.updatedAt }),
@@ -1190,6 +1193,7 @@ export function createFakeTracker(
         ...(pull.statuses === undefined ? {} : { statuses: pull.statuses }),
         ...(pull.jobLogs === undefined ? {} : { jobLogs: pull.jobLogs }),
         ...(pull.mergeable === undefined ? {} : { mergeable: pull.mergeable }),
+        ...(pull.graphqlMergeable === undefined ? {} : { graphqlMergeable: pull.graphqlMergeable }),
       };
       pulls.set(number, created);
       nextPull = Math.max(nextPull, number + 1);

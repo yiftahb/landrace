@@ -13,7 +13,7 @@ const forgeOf = (gh: FakeTracker): GitHubForge =>
   new GitHubForge({ closingRefs: true, client: createClient({ repo: "acme/widgets", token: "test-token", fetchImpl: gh.fetchImpl }) });
 
 const recordOf = (pull: FakePull): PullRecord =>
-  ({ number: pull.number, title: "t", link: "", merged: pull.merged, closed: false, headSha: pull.headSha, branch: pull.head, createdAt: undefined, items: [] });
+  ({ number: pull.number, title: "t", link: "", merged: pull.merged, closed: false, headSha: pull.headSha, conflicts: false, branch: pull.head, createdAt: undefined, items: [] });
 
 /** The context a merge is asked in: for #1, the item whose refusal it names. */
 const forItem = (gh: FakeTracker): HookContext => ({ ...gh.ctx, item: "1", snapshot: {} });
@@ -469,5 +469,42 @@ describe("a token refused Checks", () => {
     const said = await forgeOf(gh).check(gh.ctx).then(() => "", (e: unknown) => (e as Error).message);
     expect(said).toContain('token needs "Commit statuses: Read"');
     expect(said).not.toMatch(where);
+  });
+});
+
+/*
+ * Whether a pull request conflicts with its base, as GraphQL's `mergeable`
+ * says: UNKNOWN while GitHub works it out, which the node leaves out so a
+ * workflow never routes on a guess.
+ */
+describe("a pull request's conflicts", () => {
+  it.each([["CONFLICTING", 1], ["MERGEABLE", 0], ["UNKNOWN", undefined]] as const)(
+    "reads GraphQL's mergeable %s as conflicts %s",
+    async (mergeable, conflicts) => {
+      const gh = createFakeTracker([{ number: 1 }]);
+      gh.openPull({ head: "landrace/1", number: 10, graphqlMergeable: mergeable });
+      const graph = await gh.registry.source?.read("1", gh.ctx);
+      const state = graph?.nodes.find((n) => n.id === "pr-10")?.state ?? {};
+      expect(state.conflicts).toBe(conflicts);
+      expect(Object.hasOwn(state, "conflicts")).toBe(conflicts !== undefined);
+      expect(gh.graphql.some((q) => /\bmergeable\b/.test(q.query))).toBe(true);
+    },
+  );
+
+  it("reads a merged or closed one as conflicting with nothing", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ head: "landrace/1", number: 10, merged: true, graphqlMergeable: "CONFLICTING" });
+    gh.openPull({ head: "landrace/1", number: 11, state: "CLOSED", graphqlMergeable: "UNKNOWN" });
+    const graph = await gh.registry.source?.read("1", gh.ctx);
+    const state = (id: string) => graph?.nodes.find((n) => n.id === id)?.state;
+    expect(state("pr-10")).toMatchObject({ conflicts: 0 });
+    expect(state("pr-11")).toMatchObject({ conflicts: 0 });
+  });
+
+  it("says so in the ci briefing", async () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    gh.openPull({ head: "landrace/1", number: 5, checks: "SUCCESS", graphqlMergeable: "CONFLICTING" });
+    const briefed = await gh.registry.source?.brief?.({ ...gh.ctx, item: "1", snapshot: {} } as HookContext);
+    expect(briefed?.ci).toContain("pr-5 conflicts with the default branch");
   });
 });
