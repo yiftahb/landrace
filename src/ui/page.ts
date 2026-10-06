@@ -95,7 +95,7 @@ const MARK = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" clas
 export const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><style>path { fill: #111111 } @media (prefers-color-scheme: dark) { path { fill: #f5f5f5 } }</style><path d="${MARK_PATH}"/></svg>`;
 
 export const PAGE_HTML = `<!doctype html>
-<html lang="en">
+<html lang="en" class="scroll-pt-[var(--header-h)]">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

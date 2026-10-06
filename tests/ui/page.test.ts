@@ -100,6 +100,13 @@ describe("the top bar and the sidebar while the page scrolls", () => {
     ]));
   });
 
+  // stepFocus scrolls a row into view with block "nearest", which would land
+  // it at the window's top edge, behind the sticky bar, without this padding.
+  it("keeps a row scrolled into view clear of the top bar", () => {
+    expect(classesOf(/<html[^>]*class="([^"]*)"/)).toContain("scroll-pt-[var(--header-h)]");
+    expect(APP_CSS).toContain(".scroll-pt-\\[var\\(--header-h\\)\\]{");
+  });
+
   it("leaves the sidebar unstuck below sm", () => {
     expect(sidebar.filter((c) => !c.includes(":") && /sticky|top-|max-h-|overflow/.test(c))).toEqual([]);
   });
