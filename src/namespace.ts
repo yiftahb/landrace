@@ -2778,6 +2778,8 @@ export interface BoardRelated {
   link: string;
   /** `unreadable` where its source knew which item it is but not what state it is in. */
   state: "open" | "done" | "dropped" | "unreadable";
+  /** Its tracker's status for it, one line, where the tracker keeps one beside the stage label: shown in place of `state`. */
+  status?: string;
 }
 
 /** The item panel's routes for one item. */

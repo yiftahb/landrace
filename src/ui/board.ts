@@ -251,7 +251,11 @@ export function boardView(input: {
       const other = dir === null ? undefined : nodes.get(dir === "in" ? r.from : r.to);
       if (dir === null || other === undefined || other.kind !== ITEM_KIND) return [];
       const state = other.unreadable === true ? "unreadable" : other.closed ?? "open";
-      return [{ type: r.type, dir, id: other.id, title: oneLine(other.title), link: safeUrl(other.link), state }];
+      const status = other.state.status;
+      return [{
+        type: r.type, dir, id: other.id, title: oneLine(other.title), link: safeUrl(other.link), state,
+        ...(typeof status === "string" && status.trim() !== "" ? { status: oneLine(status) } : {}),
+      }];
     }).sort(byRelation);
 
   /** The item's own relationship facts, each its source reports true, in words: read off the shared vocabulary, never a type. */

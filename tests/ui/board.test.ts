@@ -193,6 +193,17 @@ describe("boardView: every relationship of an item", () => {
     expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => r.id)).toEqual(["10"]);
   });
 
+  // A tracker that keeps a status beside the stage label says it of the other end too: "Pending R&D Fix" says more than open.
+  it("carries the other end's status, on one line, where its tracker gave one", () => {
+    const g = graph(
+      [item("12"), item("ENG-5", { placeholder: true, state: { labels: [], assignees: [], status: "In\nProgress" } })],
+      [edge("12", "ENG-5", "relates")],
+    );
+    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related).toEqual([
+      { type: "relates", dir: "out", id: "ENG-5", title: "tENG-5", link: "https://x/ENG-5", state: "open", status: "In Progress" },
+    ]);
+  });
+
   it("says a related item it could not read is unreadable, not open", () => {
     const g = graph([item("12"), item("x.o.r.1", { placeholder: true, unreadable: true })], [edge("12", "x.o.r.1", "blocked-by")]);
     expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => [r.id, r.state])).toEqual([["x.o.r.1", "unreadable"]]);
