@@ -61,6 +61,22 @@ export interface JiraOptions {
   /** The link type between the item and an issue filed for it, by its exact name: "Relates" unless named. Never `blockedByLinkType`. */
   createLinkType?: string | undefined;
   /**
+   * Other issue link types read as relationships, by a name of the
+   * project's choosing to the type's exact name — `{ relates: "Relates",
+   * duplicates: "Duplicate" }` — each `rel.<name>.out` for a link whose
+   * outward words are the item's ("this duplicates that") and
+   * `rel.<name>.in` for one whose inward words are, to an issue in any
+   * project on the site. A type that reads the same both ways, as "Relates"
+   * does, is `out` from either end. Read only, off the links the list
+   * already asks for: a related issue elsewhere is a placeholder with its
+   * key, title, link, status and closed state, closed as dropped only when
+   * its status carries the dropped transition's name, since a link carries
+   * no resolution. A name is lowercase, none of the engine's own
+   * relationship types, and maps neither `blockedByLinkType` nor a type
+   * another name maps.
+   */
+  relations?: Record<string, string> | undefined;
+  /**
    * A JQL clause ANDed into every search the tracker runs — the open list,
    * the Done lane, the cycle walk — and `JiraField`'s listing, beside
    * `jiraAssignee`: `created >= "2026-10-05"`, say, so a first start does not
@@ -417,8 +433,13 @@ interface Status { name?: string; statusCategory?: { key?: string } }
 /** The issue at a link's other end, as an issue's `issuelinks` names it: its key, and a few of its fields — never its resolution. */
 interface LinkEnd { id?: unknown; key?: unknown; fields?: { summary?: unknown; status?: Status } | null }
 
-/** One entry of an issue's `issuelinks`: the link, its type, and the other end, in one slot of two. */
-interface LinkEntry { id?: unknown; type?: { name?: unknown } | null; inwardIssue?: LinkEnd | null; outwardIssue?: LinkEnd | null }
+/** One entry of an issue's `issuelinks`: the link, its type with its words each way, and the other end, in one slot of two. */
+interface LinkEntry {
+  id?: unknown; type?: { name?: unknown; inward?: unknown; outward?: unknown } | null; inwardIssue?: LinkEnd | null; outwardIssue?: LinkEnd | null;
+}
+
+/** An issue a mapped link type relates an issue to, as its link names it: the relationship, which way, and what the link says of the other end. */
+interface Linked { type: string; direction: "in" | "out"; key: string; title: string; status: Status | undefined }
 
 /**
  * A blocker as an issue's own links name it: the link's id, which deletes
@@ -535,6 +556,53 @@ function blockersIn(issuelinks: unknown, type: string): { blockers: Blocker[]; w
   return { blockers, whole };
 }
 
+/**
+ * The issues an issue's links of the mapped types relate it to, and whether
+ * that was all of them. An entry holding the other end as `outwardIssue` is
+ * labelled with the type's outward words — "duplicates" — so this issue
+ * relates to it outward; one holding it as `inwardIssue`, inward. A type
+ * whose two sides read the same, as "Relates" does, is outward from either
+ * end: a link one person made from this end and another from that one are
+ * the same relationship. An entry of a mapped type that cannot be read — both
+ * ends or neither, no usable key, a type not saying its words each way — is
+ * left out and the rest said not to be whole, as `blockersIn` says it.
+ */
+function relatedIn(issuelinks: unknown, mapped: ReadonlyMap<string, string>): { related: Linked[]; whole: boolean } {
+  if (mapped.size === 0) return { related: [], whole: true };
+  if (!Array.isArray(issuelinks)) return { related: [], whole: false };
+  const related: Linked[] = [];
+  let whole = true;
+  for (const entry of issuelinks as Array<LinkEntry | null>) {
+    const name = entry?.type?.name;
+    const type = typeof name === "string" ? mapped.get(name) : undefined;
+    // A nameless entry is `blockersIn`'s to count as unread.
+    if (type === undefined) continue;
+    const { inward: inWords, outward: outWords } = entry?.type ?? {};
+    const inward = entry?.inwardIssue ?? null;
+    const outward = entry?.outwardIssue ?? null;
+    const end = outward ?? inward;
+    if ((inward === null) === (outward === null) || typeof inWords !== "string" || typeof outWords !== "string" ||
+      typeof end?.key !== "string" || !SITE_KEY.test(end.key)) {
+      whole = false;
+      continue;
+    }
+    related.push({
+      type,
+      direction: outward !== null || same(inWords, outWords) ? "out" : "in",
+      key: end.key,
+      title: typeof end.fields?.summary === "string" ? end.fields.summary : "",
+      status: end.fields?.status ?? undefined,
+    });
+  }
+  return { related, whole };
+}
+
+/** An issue's status by name and its category's key, as `node.state` carries them: each only where Jira gave one. */
+const statusFields = (status: Status | undefined): Pick<ItemRecord, "status" | "statusCategory"> => ({
+  ...(typeof status?.name === "string" ? { status: status.name } : {}),
+  ...(typeof status?.statusCategory?.key === "string" ? { statusCategory: status.statusCategory.key } : {}),
+});
+
 /** Each client's assignee, resolved once: its account id, or null when the tracker is not scoped. */
 const assignees = new WeakMap<Client, string | null>();
 
@@ -633,6 +701,31 @@ export async function search(
   return { issues, complete: false };
 }
 
+/** The relationship types the engine gives a meaning of its own: a `relations` name is none of them. */
+const RESERVED: readonly string[] = Object.values(RELATIONS);
+
+/**
+ * `relations`, checked and turned round — link type to name — or refused,
+ * before anything is read: a name a path could not spell, one the engine
+ * means something else by, a type read as blocked-by already, or two names
+ * for one type, which would count each link twice under different names.
+ */
+function mappedRelations(relations: Record<string, string>, blockedBy: string): Map<string, string> {
+  const mapped = new Map<string, string>();
+  for (const [name, type] of Object.entries(relations)) {
+    if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error(`relations name "${name}" must be lowercase: a letter, then letters, digits or "-"`);
+    if (RESERVED.includes(name)) {
+      throw new Error(`relations name "${name}" is one of the engine's own relationship types (${RESERVED.join(", ")}); name it something else`);
+    }
+    if (typeof type !== "string" || type.trim() === "") throw new Error(`relations.${name} must name an issue link type, got ${JSON.stringify(type)}`);
+    if (type === blockedBy) throw new Error(`relations.${name} maps "${type}", which is blockedByLinkType: its links are read as blocked-by already`);
+    const had = mapped.get(type);
+    if (had !== undefined) throw new Error(`relations.${had} and relations.${name} both map "${type}"; one name reads one link type`);
+    mapped.set(type, name);
+  }
+  return mapped;
+}
+
 /**
  * The closed blockers' own fields, for their resolutions: those the answer
  * holds, by key, and those fetched, by issue id — or by key, for one whose
@@ -675,11 +768,13 @@ export class Jira extends BaseTracker {
   private readonly createProjects: readonly string[];
   private readonly createType: string;
   private readonly createLinkType: string;
+  /** The link types read as relationships beside blocked-by, each to the name it is read as: `relations`, turned round. */
+  private readonly mapped: ReadonlyMap<string, string>;
   /** Each `tracker.field` user value resolved, by field and value: the account `satisfied` compares an email as. */
   private readonly accounts = new Map<string, string>();
 
   constructor({
-    project, issueType, childType, transitions, blockedByLinkType, statuses, jql, createIn, createType, createLinkType, fetchImpl,
+    project, issueType, childType, transitions, blockedByLinkType, statuses, jql, createIn, createType, createLinkType, relations, fetchImpl,
   }: JiraOptions) {
     super();
     // Spelled into every JQL query and URL, so nothing but a key's own characters.
@@ -712,6 +807,7 @@ export class Jira extends BaseTracker {
     if (this.createProjects.length > 0 && this.createLinkType === this.linkType) {
       throw new Error(`createLinkType "${this.createLinkType}" is blockedByLinkType too: an issue filed for an item would read as blocking it`);
     }
+    this.mapped = mappedRelations(relations ?? {}, this.linkType);
   }
 
   private jira(ctx: RuntimeContext): Client {
@@ -892,10 +988,37 @@ export class Jira extends BaseTracker {
       const { closed, unreadable } = this.blockerState(blocker, resolutions, key, ctx);
       return {
         type: RELATIONS.blockedBy, to: blocker.key, title: blocker.title, link: `${jira.baseUrl}/browse/${blocker.key}`, closed,
+        ...statusFields(blocker.status),
         ...(unreadable ? { unreadable: true as const } : {}),
       };
     });
     return { related, relatedComplete: whole };
+  }
+
+  /**
+   * An issue's blockers and the issues its mapped links relate it to, as the
+   * kit reads relationships. A related issue's state is its link's status
+   * alone — a done one is done unless its name is the dropped transition's —
+   * since a link carries no resolution and these are read with no request of
+   * their own; one whose link names no status is unreadable.
+   */
+  private relatedOf(
+    jira: Client, key: string, own: { blockers: Blocker[]; whole: boolean }, others: { related: Linked[]; whole: boolean },
+    resolutions: Resolutions, ctx: RuntimeContext,
+  ): Pick<ItemRecord, "related" | "relatedComplete"> {
+    const blockers = this.blockersOf(jira, key, own, resolutions, ctx);
+    if (!others.whole) this.sayUnreadable(ctx, key, "a link", `Jira answered ${key}'s issue links with one of a relations type this integration cannot read`);
+    const related = others.related.map((r): RelatedRecord => {
+      const category = r.status?.statusCategory?.key;
+      if (typeof category !== "string") this.sayUnreadable(ctx, key, r.key, "Jira's link names it with no status");
+      const closed: Closed = category !== "done" ? null : same(r.status?.name, this.dropped) ? "dropped" : "done";
+      return {
+        type: r.type, to: r.key, title: r.title, link: `${jira.baseUrl}/browse/${r.key}`, closed, direction: r.direction,
+        ...statusFields(r.status),
+        ...(typeof category === "string" ? {} : { unreadable: true as const }),
+      };
+    });
+    return { related: [...(blockers.related ?? []), ...related], relatedComplete: blockers.relatedComplete !== false && others.whole };
   }
 
   /**
@@ -908,12 +1031,14 @@ export class Jira extends BaseTracker {
     const editors = await this.editors(jira, issues.map((i) => i.id));
     const priorities = await this.priorityIds(jira);
     const parsed = new Map(links ? issues.map((i) => [i.key, blockersIn(i.fields.issuelinks, this.linkType)]) : []);
+    const linked = new Map(links ? issues.map((i) => [i.key, relatedIn(i.fields.issuelinks, this.mapped)]) : []);
     const wanted = [...parsed.values()].flatMap((p) => p.blockers).filter((b) => this.needsResolution(b));
     const resolutions = await this.resolutions(jira, issues, wanted);
     const records: ItemRecord[] = [];
     for (const issue of issues) {
       const { id, key, fields } = issue;
       const own = parsed.get(key);
+      const others = linked.get(key);
       const parent = fields.parent?.key;
       const priority = fields.priority?.id === undefined ? -1 : priorities.indexOf(fields.priority.id);
       records.push({
@@ -933,7 +1058,8 @@ export class Jira extends BaseTracker {
         // A parent in another project is no item of this tracker's.
         parent: parent !== undefined && this.keyPattern.test(parent) ? parent : null,
         priority: priority === -1 ? null : priority,
-        ...(own === undefined ? {} : this.blockersOf(jira, key, own, resolutions, ctx)),
+        ...statusFields(fields.status),
+        ...(own === undefined || others === undefined ? {} : this.relatedOf(jira, key, own, others, resolutions, ctx)),
         ...fieldsRead(fields, ctx),
       });
     }
@@ -1741,6 +1867,11 @@ export class Jira extends BaseTracker {
     return [RELATIONS.blockedBy];
   }
 
+  /** The `relations` names, read off the same `issuelinks` both ways; never written. */
+  protected override readBothWays(): string[] {
+    return [...this.mapped.values()];
+  }
+
   protected override writableRelations(): string[] {
     return [RELATIONS.blockedBy];
   }
@@ -2027,6 +2158,15 @@ export class Jira extends BaseTracker {
         );
       } else {
         ctx.log("jira.blocked-by.link-type", { linkType: this.linkType, blocker: "inward", inward: type.inward, outward: type.outward });
+      }
+      // A mapped type the site lacks would read every item as related to nothing of it.
+      for (const [type, name] of this.mapped) {
+        if (!issueLinkTypes.some((t) => t.name === type)) {
+          problems.push(
+            `the site has no issue link type "${type}" (relations.${name}), which ${name} is read from; ` +
+            `it has ${issueLinkTypes.map((t) => `"${t.name}"`).join(", ") || "none"}`,
+          );
+        }
       }
       if (this.createProjects.length > 0 && !issueLinkTypes.some((t) => t.name === this.createLinkType)) {
         problems.push(

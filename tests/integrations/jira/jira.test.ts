@@ -111,6 +111,8 @@ describe("reading items", () => {
       updatedAt: "2026-09-01T12:01:00.000Z",
       parent: null,
       priority: 1,
+      status: "In Progress",
+      statusCategory: "indeterminate",
       related: [],
       relatedComplete: true,
     });
