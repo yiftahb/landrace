@@ -188,6 +188,20 @@ describe("boardView: every relationship of an item", () => {
     }
   });
 
+  // SD's tracker reports SD-1 relates ENG-5, ENG's the same link from its own end: one link, listed once on each.
+  it("lists a symmetric edge two sources report from opposite ends once on each end", () => {
+    const sd = graph([item("SD-1"), item("ENG-5", { placeholder: true })], [{ from: "SD-1", to: "ENG-5", type: "relates", symmetric: true }]);
+    const eng = graph([item("ENG-5"), item("SD-1", { placeholder: true })], [{ from: "ENG-5", to: "SD-1", type: "relates", symmetric: true }]);
+    const graphs = [sd, eng];
+    const both = view(sd, {
+      workflows: [{ id: "t", workflow }, { id: "u", workflow }],
+      listing: { graphs, sourceOf: new Map([["t", 0], ["u", 1]]), claims: claimItems([], graphs) },
+    });
+    for (const [id, other] of [["SD-1", "ENG-5"], ["ENG-5", "SD-1"]]) {
+      expect(flatten(both.rows).find((r) => r.id === id)?.related.map((r) => [r.type, r.dir, r.id])).toEqual([["relates", "out", other]]);
+    }
+  });
+
   it("lists none for an item nothing relates to", () => {
     expect(view(graph([item("12")])).rows[0]?.related).toEqual([]);
   });

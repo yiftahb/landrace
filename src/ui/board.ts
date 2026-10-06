@@ -35,7 +35,12 @@ function unionOf(graphs: readonly Graph[]): Graph {
       const drawn = nodes.get(node.id);
       if (!drawn || over(drawn, node)) nodes.set(node.id, node);
     }
-    for (const edge of graph.relationships) edges.set(JSON.stringify([edge.from, edge.to, edge.type]), edge);
+    // A symmetric edge is one link whichever end reported it: two trackers each
+    // reporting it from their own end listed it twice on both items' panels.
+    for (const edge of graph.relationships) {
+      const key = edge.symmetric === true ? [...[edge.from, edge.to].sort(), edge.type, "symmetric"] : [edge.from, edge.to, edge.type];
+      edges.set(JSON.stringify(key), edge);
+    }
   }
   return { nodes: [...nodes.values()], relationships: [...edges.values()] };
 }
