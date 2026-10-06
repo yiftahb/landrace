@@ -1203,6 +1203,13 @@ export interface ItemRecord {
    */
   relatedComplete?: boolean | undefined;
   /**
+   * The types of relationship it could not read all of, where `relatedComplete`
+   * holds for the rest: the item's own relationships are not all read, yet a
+   * walk of another type — the blocker cycle's — reads them as whole, so one
+   * broken link of a type it never follows does not cloud every item it passes.
+   */
+  relatedIncomplete?: string[] | undefined;
+  /**
    * The issue fields asked for in `trackerFields`, by id, as `node.state.fields`
    * carries them: an option as its value, a multi-select as a list of values,
    * a user as an account id, text as text, a number as a number, empty as

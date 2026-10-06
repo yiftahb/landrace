@@ -170,6 +170,30 @@ describe("relations, as issue links of the types a project maps", () => {
       expect(g.relationships.filter((r) => r.type === "duplicates" && (r.from === item.key || r.to === item.key))).toEqual([]);
     }
   });
+
+  // The blocker walk reads blocked-by links alone: a list that judged it from
+  // every link would call the waiting item unreadable where a read does not.
+  it("keeps a blocker's unreadable mapped link its own, never its waiters', in a list and a read alike", async () => {
+    const { fake, ctx } = setup();
+    const a = fake.add();
+    const blocker = fake.add();
+    const item = fake.add();
+    link(fake, "Duplicate", blocker.key, a.key);
+    link(fake, "Blocks", blocker.key, item.key);
+    const strip = (async (input: string | URL, init?: RequestInit) => {
+      const res = await fake.fetchImpl(input, init);
+      const text = await res.text();
+      return new Response(text === "" ? null : text.replaceAll('"inward":"is duplicated by",', ""), {
+        status: res.status, headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+    const blind = new Jira({ project: "KEY", fetchImpl: strip, relations: MAPPED });
+    for (const [how, g] of await both(blind, ctx, item.key)) {
+      expect([how, nodeOf(g, item.key)?.state]).not.toEqual([how, expect.objectContaining({ relatedUnreadable: true })]);
+      expect(relOf(g, item.key, "blocked-by")).toMatchObject({ out: { total: 1, open: [blocker.key] } });
+    }
+    for (const [, g] of await both(blind, ctx, blocker.key)) expect(nodeOf(g, blocker.key)?.state.relatedUnreadable).toBe(true);
+  });
 });
 
 describe("the item's status", () => {

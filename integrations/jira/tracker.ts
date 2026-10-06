@@ -570,13 +570,14 @@ function blockersIn(issuelinks: unknown, type: string): { blockers: Blocker[]; w
  * end: a link one person made from this end and another from that one are
  * the same relationship. An entry of a mapped type that cannot be read — both
  * ends or neither, no usable key, a type not saying its words each way — is
- * left out and the rest said not to be whole, as `blockersIn` says it.
+ * left out and its type named as not read whole — by type, so the blocker
+ * walk, which follows none of these, is not clouded by one.
  */
-function relatedIn(issuelinks: unknown, mapped: ReadonlyMap<string, string>): { related: Linked[]; whole: boolean } {
-  if (mapped.size === 0) return { related: [], whole: true };
-  if (!Array.isArray(issuelinks)) return { related: [], whole: false };
+function relatedIn(issuelinks: unknown, mapped: ReadonlyMap<string, string>): { related: Linked[]; incomplete: string[] } {
+  if (mapped.size === 0) return { related: [], incomplete: [] };
+  if (!Array.isArray(issuelinks)) return { related: [], incomplete: [...new Set(mapped.values())] };
   const related: Linked[] = [];
-  let whole = true;
+  const incomplete = new Set<string>();
   for (const entry of issuelinks as Array<LinkEntry | null>) {
     const name = entry?.type?.name;
     const type = typeof name === "string" ? mapped.get(name) : undefined;
@@ -588,7 +589,7 @@ function relatedIn(issuelinks: unknown, mapped: ReadonlyMap<string, string>): { 
     const end = outward ?? inward;
     if ((inward === null) === (outward === null) || typeof inWords !== "string" || typeof outWords !== "string" ||
       typeof end?.key !== "string" || !SITE_KEY.test(end.key)) {
-      whole = false;
+      incomplete.add(type);
       continue;
     }
     const symmetric = same(inWords, outWords);
@@ -601,7 +602,7 @@ function relatedIn(issuelinks: unknown, mapped: ReadonlyMap<string, string>): { 
       status: end.fields?.status ?? undefined,
     });
   }
-  return { related, whole };
+  return { related, incomplete: [...incomplete] };
 }
 
 /** An issue's status by name and its category's key, as `node.state` carries them: each only where Jira gave one. */
@@ -1010,11 +1011,11 @@ export class Jira extends BaseTracker {
    * their own; one whose link names no status is unreadable.
    */
   private relatedOf(
-    jira: Client, key: string, own: { blockers: Blocker[]; whole: boolean }, others: { related: Linked[]; whole: boolean },
+    jira: Client, key: string, own: { blockers: Blocker[]; whole: boolean }, others: { related: Linked[]; incomplete: string[] },
     resolutions: Resolutions, ctx: RuntimeContext,
-  ): Pick<ItemRecord, "related" | "relatedComplete"> {
+  ): Pick<ItemRecord, "related" | "relatedComplete" | "relatedIncomplete"> {
     const blockers = this.blockersOf(jira, key, own, resolutions, ctx);
-    if (!others.whole) this.sayUnreadable(ctx, key, "a link", `Jira answered ${key}'s issue links with one of a relations type this integration cannot read`);
+    if (others.incomplete.length > 0) this.sayUnreadable(ctx, key, "a link", `Jira answered ${key}'s issue links with one of a relations type this integration cannot read`);
     const related = others.related.map((r): RelatedRecord => {
       const category = r.status?.statusCategory?.key;
       if (typeof category !== "string") this.sayUnreadable(ctx, key, r.key, "Jira's link names it with no status");
@@ -1026,7 +1027,11 @@ export class Jira extends BaseTracker {
         ...(typeof category === "string" ? {} : { unreadable: true as const }),
       };
     });
-    return { related: [...(blockers.related ?? []), ...related], relatedComplete: blockers.relatedComplete !== false && others.whole };
+    return {
+      related: [...(blockers.related ?? []), ...related],
+      relatedComplete: blockers.relatedComplete,
+      ...(others.incomplete.length > 0 ? { relatedIncomplete: others.incomplete } : {}),
+    };
   }
 
   /**
