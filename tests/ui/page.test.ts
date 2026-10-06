@@ -501,7 +501,7 @@ describe("a row's open menu under the sticky top bar", () => {
   });
 
   it("does not close on the page's scroll", () => {
-    expect(APP_JS).not.toContain("onPageScroll");
+    expect(APP_JS).not.toMatch(/addEventListener\(\s*["']scroll["']|\.onscroll\s*=/);
   });
 });
 
