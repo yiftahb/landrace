@@ -592,15 +592,15 @@ describe("a new worktree's base", () => {
   }
 
   /** A commit on origin's main from a clone of someone else's, which the operator's checkout has not fetched. */
-  async function mergedElsewhere(origin: string): Promise<string> {
+  async function mergedElsewhere(origin: string, file = "merged.ts"): Promise<string> {
     const theirs = await mkdtemp(join(tmpdir(), "lr-wt-theirs-"));
     roots.push(theirs);
     await run("git", ["clone", "-q", `file://${origin}`, theirs]);
     await git(theirs, "config", "user.email", "them@example.com");
     await git(theirs, "config", "user.name", "them");
-    await writeFile(join(theirs, "merged.ts"), "export const merged = 1;\n");
+    await writeFile(join(theirs, file), "export const merged = 1;\n");
     await git(theirs, "add", "-A");
-    await git(theirs, "commit", "-qm", "merged");
+    await git(theirs, "commit", "-qm", `add ${file}`);
     await git(theirs, "push", "-q", "origin", "main");
     return git(theirs, "rev-parse", "HEAD");
   }
@@ -794,6 +794,68 @@ describe("a new worktree's base", () => {
 
     expect(await git(path, "rev-parse", "HEAD")).toBe(local);
     await removeWorktree("116", root);
+  });
+
+  /*
+   * A write step on a branch that already exists merges origin's default
+   * branch itself, and the sandbox it runs in cannot reach an origin that
+   * wants credentials. So landrace fetches it first: without that, a fix round
+   * merged whatever `origin/main` the branch's first build fetched, and git
+   * said "Already up to date" of code a week old (#126).
+   */
+  it("fetches origin's default branch before a write step on an existing branch, and leaves the branch where it is", async () => {
+    const { root, origin } = await withOrigin();
+    const local = await git(root, "rev-parse", "HEAD");
+    await git(root, "branch", "landrace/122", local);
+    const tip = await mergedElsewhere(origin);
+    expect(await git(root, "rev-parse", "refs/remotes/origin/main")).toBe(local);
+
+    const path = await ensureWorktree("122", root, { branch: "landrace/122", write: true }, keptSlot("122"));
+
+    expect(await git(root, "rev-parse", "refs/remotes/origin/main")).toBe(tip);
+    expect(await git(path, "rev-parse", "HEAD")).toBe(local);
+    expect(await git(path, "rev-parse", "origin/main")).toBe(tip);
+    expect(await git(path, "rev-parse", "--abbrev-ref", "origin/HEAD")).toBe("origin/main");
+
+    // And again when the kept worktree is reused for the next round.
+    const later = await mergedElsewhere(origin, "later.ts");
+    await ensureWorktree("122", root, { branch: "landrace/122", write: true }, keptSlot("122"));
+    expect(await git(root, "rev-parse", "refs/remotes/origin/main")).toBe(later);
+    await removeWorktree("122", root, keptSlot("122"));
+  });
+
+  it("does not fetch for a read-only step on an existing branch", async () => {
+    const { root, origin } = await withOrigin();
+    const local = await git(root, "rev-parse", "HEAD");
+    await git(root, "branch", "landrace/123", local);
+    await mergedElsewhere(origin);
+
+    await ensureWorktree("123", root, { branch: "landrace/123", write: false });
+
+    expect(await git(root, "rev-parse", "refs/remotes/origin/main")).toBe(local);
+    await removeWorktree("123", root);
+  });
+
+  it("fails a write step on an existing branch with git's own error when origin cannot be reached", async () => {
+    const { root, origin } = await withOrigin();
+    await git(root, "remote", "set-head", "origin", "main");
+    await git(root, "branch", "landrace/124");
+    await rm(origin, { recursive: true, force: true });
+
+    await expect(ensureWorktree("124", root, { branch: "landrace/124", write: true }))
+      .rejects.toThrow(/#124[\s\S]*fetching origin's main failed[\s\S]*does not appear to be a git repository/);
+    expect(await worktrees(root)).toHaveLength(1);
+  });
+
+  it("starts a write step on an existing branch in a repository with no origin", async () => {
+    const root = await repo();
+    const head = await git(root, "rev-parse", "HEAD");
+    await git(root, "branch", "landrace/125");
+
+    const path = await ensureWorktree("125", root, { branch: "landrace/125", write: true });
+
+    expect(await git(path, "rev-parse", "HEAD")).toBe(head);
+    await removeWorktree("125", root);
   });
 });
 

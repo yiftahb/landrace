@@ -135,9 +135,11 @@ stages:
   #
   # The item's own text is the whole brief. Reached fresh, or from
   # `waiting`, once nothing it is blocked by is open; from a red pull
-  # request while builds are left — a CI fix is a build round, within build's
-  # three — and from a person's reply asking for work, uncapped: each one
-  # waits for someone to write.
+  # request, or one that conflicts with the default branch, while builds are
+  # left — a CI fix or a merge of the default branch is a build round, within
+  # build's three, and one trigger for both, since two matching would halt —
+  # and from a person's reply asking for work, uncapped: each one waits for
+  # someone to write.
   - id: build
     step: steps/build.md
     entry: true
@@ -159,12 +161,14 @@ stages:
           "rel.blocked-by.out.dropped": { $not: { $gt: 0 } }
           "node.state.dependencyCycle": { $ne: true }
           "node.state.relatedUnreadable": { $ne: true }
-      - name: the checks failed
+      - name: the checks failed, or the pull request conflicts
         when:
           "run.stage": ci
           "run.lastOutputValid": null
           "rel.implements.in.sum.openThreads": 0
-          "rel.implements.in.sum.ciFailed": { $gt: 0 }
+          $or:
+            - { "rel.implements.in.sum.ciFailed": { $gt: 0 } }
+            - { "rel.implements.in.sum.conflicts": { $gt: 0 } }
           "run.counters.build": { $lt: 3 }
       - name: you asked for work
         when:
@@ -275,9 +279,12 @@ stages:
   #
   # A review that settled with every thread resolved waits here for the
   # checks on the pull request's head. A thread opened meanwhile goes back to
-  # review first; then red goes back to build while builds are left, and
-  # green to the retro after friction, or to the merge. Checks still running
-  # match nothing, and the item waits. A pull request a person closed is
+  # review first; then red, or a conflict with the default branch, goes back
+  # to build while builds are left, and green to the retro after friction, or
+  # to the merge. Checks still running match nothing, and the item waits; so
+  # do conflicts the forge has not worked out yet, since the retro and the
+  # merge read `conflicts: 0`, which no pull request reports then. A pull
+  # request a person closed is
   # stuck's, not a precondition's: a failed `requires` halts where no board
   # shows it. Nothing is pushed here — the review's own push published the
   # head it read, and a push now could publish one nobody reviewed.
@@ -309,6 +316,7 @@ stages:
           "rel.implements.in.sum.openThreads": 0
           "rel.implements.in.sum.ciPending": 0
           "rel.implements.in.sum.ciFailed": 0
+          "rel.implements.in.sum.conflicts": 0
           "rel.implements.in.not.merged": { $gt: 0 }
           "run.counters.retro": { $lt: 1 }
           $or:
@@ -338,6 +346,7 @@ stages:
           "rel.implements.in.sum.openThreads": 0
           "rel.implements.in.sum.ciPending": 0
           "rel.implements.in.sum.ciFailed": 0
+          "rel.implements.in.sum.conflicts": 0
           $or:
             - $and:
                 - { "run.counters.build": { $lt: 2 } }
@@ -541,12 +550,14 @@ stages:
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
           "run.counters.fix-review": { $gte: 8 }
-      - name: CI is still failing after three builds
+      - name: CI is still failing, or the pull request still conflicts, after three builds
         when:
           "run.stage": ci
           "run.lastOutputValid": null
           "rel.implements.in.sum.openThreads": 0
-          "rel.implements.in.sum.ciFailed": { $gt: 0 }
+          $or:
+            - { "rel.implements.in.sum.ciFailed": { $gt: 0 } }
+            - { "rel.implements.in.sum.conflicts": { $gt: 0 } }
           "run.counters.build": { $gte: 3 }
       - name: a thread was opened after the last review
         when:

@@ -197,6 +197,7 @@ export function pullNode(pull: Omit<PullRecord, "items">, threads?: ThreadCounts
       merged: pull.merged,
       headSha: pull.headSha,
       ...(pull.branch === undefined ? {} : { branch: pull.branch }),
+      ...conflictCount(pull),
       ...threads,
       ...ci,
     },
@@ -204,6 +205,15 @@ export function pullNode(pull: Omit<PullRecord, "items">, threads?: ThreadCounts
     ...updatedAtOf(pull.updatedAt),
   };
 }
+
+/**
+ * Whether a pull request conflicts, as its node carries it: 1 or 0, so a
+ * workflow sums it — `rel.implements.in.sum.conflicts` — and nothing while
+ * the forge is still working it out, so nothing routes on a guess. A merged
+ * or closed one conflicts with nothing.
+ */
+export const conflictCount = (pull: Pick<PullRecord, "merged" | "closed" | "conflicts">): { conflicts?: number } =>
+  pull.merged || pull.closed ? { conflicts: 0 } : pull.conflicts === null ? {} : { conflicts: pull.conflicts ? 1 : 0 };
 
 /**
  * A pull request's checks as its node carries them: the state, for a prompt
@@ -410,10 +420,13 @@ const logTail = (log: string): string => (log.length > BRIEF_LOG_CHARS ? `…${l
  * failed check with its log's tail, for a fix round that has no way to ask
  * the forge why the build is red. `failed` is read only for a failing one.
  */
-export function ciBrief(open: Array<{ number: number; checks: CheckState; failed: FailedCheck[] }>): string {
+export function ciBrief(open: Array<{ number: number; checks: CheckState; failed: FailedCheck[]; conflicts?: boolean | null }>): string {
   if (open.length === 0) return "There is no open pull request on this item, so there are no checks to read.";
   const sections = open.map((pull) => {
-    const head = `### pr-${pull.number}: checks ${pull.checks}`;
+    const conflicts = pull.conflicts === true
+      ? `\n\npr-${pull.number} conflicts with the default branch: merge it into the branch and resolve the conflicts.`
+      : "";
+    const head = `### pr-${pull.number}: checks ${pull.checks}${conflicts}`;
     if (pull.checks !== "failure") return head;
     // Said, so a red build with nothing under it does not read as nothing wrong.
     if (pull.failed.length === 0) return `${head}\n\n(the forge named no failed check)`;
@@ -1164,10 +1177,11 @@ export abstract class BaseForge {
         return diffBrief(changed);
       },
       ci: async (ctx) => {
-        const read: Array<{ number: number; checks: CheckState; failed: FailedCheck[] }> = [];
+        const read: Array<{ number: number; checks: CheckState; failed: FailedCheck[]; conflicts: boolean | null }> = [];
         for (const pull of await open(ctx)) {
           const checks = await this.checks(pull, ctx);
-          read.push({ number: pull.number, checks, failed: checks === "failure" ? await this.failedChecks(pull, ctx) : [] });
+          const failed = checks === "failure" ? await this.failedChecks(pull, ctx) : [];
+          read.push({ number: pull.number, checks, failed, conflicts: pull.conflicts });
         }
         return ciBrief(read);
       },

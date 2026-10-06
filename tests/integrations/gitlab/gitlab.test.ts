@@ -115,7 +115,7 @@ describe("pulls", () => {
     const gl = createFakeGitLab();
     const mr = gl.open({ source_branch: "landrace/7", title: "Add a thing", sha: "abc" });
     expect(await forgeOver(gl).pulls(gl.ctx())).toEqual([{
-      number: mr.iid, title: "Add a thing", link: mr.web_url, merged: false, closed: false, headSha: "abc",
+      number: mr.iid, title: "Add a thing", link: mr.web_url, merged: false, closed: false, headSha: "abc", conflicts: false,
       branch: "landrace/7", createdAt: mr.created_at, updatedAt: mr.updated_at, items: [],
     }]);
   });

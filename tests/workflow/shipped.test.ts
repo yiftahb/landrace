@@ -854,14 +854,26 @@ describe("the shipped spec is short, and build does the planning", () => {
   });
 });
 
+/**
+ * Origin's default branch, by name from `origin/HEAD` — never `origin/main`
+ * by hand — merged with no fetch first: the sandbox cannot reach an origin
+ * that wants credentials, and Landrace fetched it just before the step (#126).
+ */
+const expectsDefaultBranchMerge = (prompt: string): void => {
+  const prose = prompt.replace(/\s+/g, " ");
+  expect(prompt).toContain('`git merge "$(git rev-parse --abbrev-ref origin/HEAD)"`');
+  expect(prose).toMatch(/Landrace fetched it just before this step; do not fetch/);
+  expect(prompt).not.toContain("origin/main");
+  expect(prose).not.toMatch(/`git fetch origin`, then/);
+};
+
 describe("the shipped write steps merge, test, commit and push their own branch", () => {
-  it.each(["build", "fix-review"])("%s tells the agent to merge origin/main, test, commit and push only its branch", async (id) => {
+  it.each(["build", "fix-review"])("%s tells the agent to merge origin's default branch, test, commit and push only its branch", async (id) => {
     const { steps } = await loadShipped();
     const step = steps.get(`steps/${id}.md`);
     expect(step?.capabilities).toEqual(["repo:read", "repo:write"]);
     const prompt = step?.prompt ?? "";
-    expect(prompt).toContain("`git fetch origin`");
-    expect(prompt).toContain("`git merge origin/main`");
+    expectsDefaultBranchMerge(prompt);
     expect(prompt).toContain("`pnpm install`");
     expect(prompt).toMatch(/commit as you go/i);
     expect(prompt).toContain("`git push origin HEAD`");
@@ -889,6 +901,12 @@ describe("the shipped write steps merge, test, commit and push their own branch"
       const { workspace } = await loadShipped();
       const prose = (workspace.workflows.find((w) => w.id === wf)?.steps.get(`steps/${id}.md`)?.prompt ?? "").replace(/\s+/g, " ");
       expect(prose).toMatch(/commit conventions — a commitlint configuration, a `commit-msg` hook, a contributing guide — and follow them/);
+    });
+
+  it.each(["full-cycle", "fastlane"].flatMap((wf) => ["build", "fix-review", "retro"].map((id) => [wf, id])))(
+    "%s's %s merges origin's default branch, which Landrace fetched, and does not fetch it", async (wf, id) => {
+      const { workspace } = await loadShipped();
+      expectsDefaultBranchMerge(workspace.workflows.find((w) => w.id === wf)?.steps.get(`steps/${id}.md`)?.prompt ?? "");
     });
 
   /*
@@ -1180,7 +1198,7 @@ describe("the shipped workflow learns from a corrected item before a person revi
       expect(prompt).toContain("`pnpm install`");
       expect(prose).toMatch(/run the test suite and the lint checks before you push/i);
       expect(prose).toMatch(/never edit a test/i);
-      expect(prompt).toContain("`git merge origin/main`");
+      expectsDefaultBranchMerge(prompt);
       expect(prompt).toContain("`git push origin HEAD`");
       expect(prompt).toMatch(/never push any other branch, never force-push, and never touch `main`/i);
     });

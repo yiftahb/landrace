@@ -134,6 +134,8 @@ agent:
 
 **Checks.** A merge request's checks combine every pipeline on its head, read from one page of 100 of its pipelines, newest first. A branch or merge request pipeline runs at the head's sha. A [merged results pipeline](https://docs.gitlab.com/ci/pipelines/merged_results_pipelines/) runs at a merge commit, and counts when the head is one of that commit's parents. Any failed pipeline makes the checks `failure`. Otherwise any pipeline still running or pending makes them `pending`, and the rest is `success`. A head with no pipeline yet reads as pending, never as an older head's result. A merge request with no pipeline at all has no checks. A page that fills with the head's pipelines was not read to its end, so it never reads as `success`. The CI failures a prompt reads, `{brief.project.ci}`, list the failed jobs of every pipeline on the head, and the failed commit statuses of its `external` one.
 
+**Conflicts.** A merge request's [`conflicts`](workflows.md#what-a-condition-can-read) is GitLab's `has_conflicts`, and unknown while its `detailed_merge_status` is `checking` or `unchecked`. A merge request with conflicts may get no merged results pipeline at all, so a workflow that routes only on its checks can wait on it for ever. Each time Landrace reads an item's merge requests it asks GitLab to work their mergeability out again (`with_merge_status_recheck`), for one left `unchecked` since its target branch moved. GitLab does that in the background and does not promise it, so the answer arrives on a later tick.
+
 GitLab puts every commit status that tools post on the head, such as a security scanner's or an AI reviewer's, into one `external` pipeline. Those statuses count as CI. To leave a reviewer's status out, and wait for it instead, name it in `reviewers` — see [Forge options](#forge-options):
 
 ```ts
@@ -176,7 +178,7 @@ new GitLab({ project: "group/app", reviewers: [{ status: "CodeRabbit" }] })
 - A named status is left out of the checks and out of the CI failures a prompt reads, so it neither passes nor blocks CI.
 - `landrace start` refuses a reviewer with no status, and `reviewers` on a forge that cannot read one.
 
-`reviewPending` sums like `ciPending`. A fastlane without a review step of its own can wait for the reviewer and then route on its threads. Below, `reviewing` is a stage with no step that every push lands in, and each trigger is limited to the stages it leaves. No two fire together: the review routes differ on `awaitingFix` and both need `ciFailed` at `0`, which `build` needs above it. Both review routes need a pull request, since a sum over none is `0`:
+`reviewPending` sums like `ciPending`. A fastlane without a review step of its own can wait for the reviewer and then route on its threads. Below, `reviewing` is a stage with no step that every push lands in, and each trigger is limited to the stages it leaves. No two fire together: the review routes differ on `awaitingFix`, and both need `ciFailed` and [`conflicts`](workflows.md#what-a-condition-can-read) not above `0`, where `build` needs one of them above it. Both review routes need a pull request, since a sum over none is `0`:
 
 ```yaml
 - id: reviewing
@@ -193,6 +195,7 @@ new GitLab({ project: "group/app", reviewers: [{ status: "CodeRabbit" }] })
         "rel.implements.in.total": { $gt: 0 }
         "rel.implements.in.sum.reviewPending": 0
         "rel.implements.in.sum.ciFailed": { $not: { $gt: 0 } }
+        "rel.implements.in.sum.conflicts": { $not: { $gt: 0 } }
         "rel.implements.in.sum.awaitingFix": { $gt: 0 }
 - id: human-review
   triggers:
@@ -202,13 +205,16 @@ new GitLab({ project: "group/app", reviewers: [{ status: "CodeRabbit" }] })
         "rel.implements.in.total": { $gt: 0 }
         "rel.implements.in.sum.reviewPending": 0
         "rel.implements.in.sum.ciFailed": { $not: { $gt: 0 } }
+        "rel.implements.in.sum.conflicts": { $not: { $gt: 0 } }
         "rel.implements.in.sum.awaitingFix": 0
 - id: build
   triggers:
-    - name: the checks failed
+    - name: the checks failed, or the pull request conflicts
       when:
         "run.stage": { $in: [reviewing, human-review] }
-        "rel.implements.in.sum.ciFailed": { $gt: 0 }
+        $or:
+          - { "rel.implements.in.sum.ciFailed": { $gt: 0 } }
+          - { "rel.implements.in.sum.conflicts": { $gt: 0 } }
 ```
 
 A reviewer's answers can land after its status already says it finished. A workflow that moves on at `reviewPending: 0` keeps a route back to its fix stage for a thread that starts awaiting a fix later, as it would for a person's late comment.

@@ -1196,6 +1196,11 @@ export interface PullRecord {
   merged: boolean;
   closed: boolean;
   headSha: string;
+  /**
+   * Whether it conflicts with the branch it merges into; null while the forge
+   * is still working that out, which `pullNode` leaves off the node.
+   */
+  conflicts: boolean | null;
   branch: string | undefined;
   createdAt: string | undefined;
   /** Optional, as `ItemRecord`'s is. */
@@ -2066,6 +2071,8 @@ export interface ExternalPull {
   failed: FailedCheck[];
   /** False: the forge will not merge it — a conflict, or a rule of its own — and `merge` refuses, as a real one does. */
   mergeable?: false;
+  /** Whether it conflicts with the default branch, false unless a test says; null is the forge still working it out. */
+  conflicts?: boolean | null;
   /**
    * What it changes, file by file: none unless the test says. Once a test
    * says, a review's findings are placed on it as `placeFindings` places them;
@@ -2083,7 +2090,7 @@ export interface ExternalPull {
 /** What a test may set on a pull request it opens in memory; everything else is defaulted. */
 export type ExternalPullSeed = Partial<Pick<
   ExternalPull,
-  "merged" | "openThreads" | "awaitingFix" | "awaitingWordingFix" | "closed" | "branch" | "items" | "headSha" | "checks" | "failed" | "mergeable" |
+  "merged" | "openThreads" | "awaitingFix" | "awaitingWordingFix" | "closed" | "branch" | "items" | "headSha" | "checks" | "failed" | "mergeable" | "conflicts" |
   "files" | "filesComplete" | "reviewerStatuses" | "opened"
 >>;
 

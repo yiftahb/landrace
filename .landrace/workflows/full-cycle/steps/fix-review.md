@@ -65,7 +65,7 @@ Do these in order. Finish each before starting the next.
 
 Progress:
 - [ ] Step 1: Read the spec and list what is yours: threads, and the person's request
-- [ ] Step 2: Bring the branch up to date with main
+- [ ] Step 2: Bring the branch up to date with the default branch
 - [ ] Step 3: Decide, for each thread, fix or push back
 - [ ] Step 4: Fix the ones you will fix, committing as you go
 - [ ] Step 5: Verify: install, tests, lint
@@ -79,8 +79,10 @@ last reply, when it has one, is what is asked now. One more line for the
 person's request, when their message sent this round. Done when every thread
 above marked "[awaiting a fix]", and that request, is on your list.
 
-**Step 2 — Bring the branch up to date with main.** `git fetch origin`, then
-`git merge origin/main`. Resolve any conflict and commit the merge. Done when
+**Step 2 — Bring the branch up to date with the default branch.** Merge
+origin's default branch: `git merge "$(git rev-parse --abbrev-ref origin/HEAD)"`.
+Landrace fetched it just before this step; do not fetch, since this sandbox
+may not reach origin. Resolve any conflict and commit the merge. Done when
 `git status` is clean.
 
 **Step 3 — Decide, for each thread, fix or push back.** Each thread on your

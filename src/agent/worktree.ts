@@ -226,8 +226,17 @@ async function defaultBranch(repoRoot: string, what: string, guard: RemoteGuard)
  * The operator's checkout is never touched: only origin's ref moves.
  */
 async function baseCommit(repoRoot: string, what: string, guard: RemoteGuard): Promise<string | null> {
+  return (await fetchDefault(repoRoot, what, guard)) ?? commitOf("HEAD", repoRoot, what);
+}
+
+/**
+ * Origin's default branch fetched into `refs/remotes/origin/<default>`, and
+ * the commit it names now; null in a repository with no origin, where there
+ * is nothing to fetch.
+ */
+async function fetchDefault(repoRoot: string, what: string, guard: RemoteGuard): Promise<string | null> {
   const remotes = (await git(["remote"], repoRoot, what)).split("\n");
-  if (!remotes.includes("origin")) return commitOf("HEAD", repoRoot, what);
+  if (!remotes.includes("origin")) return null;
   const branch = await defaultBranch(repoRoot, what, guard);
   const tracking = `refs/remotes/origin/${branch}`;
   // The operator's repository, so only that one ref, as the forge's fetch of
@@ -262,7 +271,8 @@ function registered(porcelain: string): Array<{ path: string; head: string | nul
  * detached: the agent sees committed state only, cannot read the operator's
  * work in progress and cannot damage it, and nothing it commits outlives the
  * worktree. With one, a step that may write gets the branch itself, created
- * at origin's default branch the first time (see `baseCommit`),
+ * at origin's default branch the first time (see `baseCommit`) and with that
+ * branch fetched again every later time, for the step to merge,
  * so its commits are kept when the worktree goes; a read-only step gets the
  * branch's commit detached — the item's code, not main's, and no branch for
  * a commit it should never have made to land on.
@@ -304,6 +314,11 @@ export async function ensureWorktree(
   const attach = on?.write ? on.branch : null;
   const base = tip === null ? await baseCommit(repoRoot, what, guard) : null;
   const detach = attach === null ? (tip ?? base) : null;
+  // A write step on a branch that already exists merges origin's default
+  // branch itself, from a sandbox that cannot reach an origin wanting
+  // credentials: fetched here, or it merges whatever the branch's first build
+  // fetched and git calls that up to date (#126). The branch is not moved.
+  if (attach !== null && tip !== null && !holder) await fetchDefault(repoRoot, what, guard);
 
   if (attach !== null) {
     // git checks a branch out in one place at a time, and the other place is
