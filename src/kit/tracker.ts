@@ -59,6 +59,47 @@ export const DONE_WINDOW_MS = 30 * 86_400_000;
  */
 export const BRIEF_ITEM_CHARS = 16_000;
 
+/** How much of `{brief.project.related}` a prompt is handed: a link list is short, and a long one is cut saying so. */
+export const BRIEF_RELATED_CHARS = 8_000;
+
+/** The relationships `{brief.project.related}` leaves out: the tree and the artifacts, which other briefings and the prompt's own text cover. */
+const UNBRIEFED: ReadonlySet<string> = new Set([RELATIONS.childOf, RELATIONS.implements, RELATIONS.documents]);
+
+/** A title on one line, unable to carry a marker: whoever wrote it is not us. */
+const briefTitle = (title: string): string => neutraliseMarkers(title.replace(/\s+/g, " ").trim());
+
+/**
+ * `{brief.project.related}`: the item's status, when its node carries one,
+ * then one line per relationship touching it but `child-of`, `implements`
+ * and `documents` — type, direction, the other end's id and title, and its
+ * status, or its state where it has none — read off the graph the snapshot
+ * holds, so a prompt sees what the workflow routed on — read afresh only
+ * where it holds none. Escaped and cut at a
+ * bound that says so, as the item's text is.
+ */
+export function relatedBrief(graph: Graph, id: string): string {
+  const nodes = new Map(graph.nodes.map((n) => [n.id, n]));
+  const status = nodes.get(id)?.state.status;
+  const category = nodes.get(id)?.state.statusCategory;
+  const lines = graph.relationships.flatMap((r) => {
+    const dir = r.from === id ? "out" : r.to === id ? "in" : null;
+    if (dir === null || UNBRIEFED.has(r.type)) return [];
+    const other = nodes.get(dir === "out" ? r.to : r.from);
+    if (other === undefined) return [];
+    const said = other.state.status;
+    const state = typeof said === "string" ? said
+      : other.unreadable === true ? "unreadable" : other.closed === null ? "open" : `closed (${other.closed})`;
+    return [{ key: [r.type, dir === "out" ? 0 : 1, other.id] as const, line: `- ${r.type}, ${dir}: ${other.id} "${briefTitle(other.title)}" — ${briefTitle(state)}` }];
+  }).sort((a, b) => (a.key[0] < b.key[0] ? -1 : a.key[0] > b.key[0] ? 1 : a.key[1] - b.key[1] || (a.key[2] < b.key[2] ? -1 : a.key[2] > b.key[2] ? 1 : 0)))
+    .map((l) => l.line);
+  const head = typeof status === "string" ? [`Status: ${briefTitle(status)}${typeof category === "string" ? ` (${briefTitle(category)})` : ""}`] : [];
+  const text = lines.length === 0
+    ? [...head, ...(head.length === 0 ? [] : [""]), "This item has no related items."].join("\n")
+    : [...head, ...(head.length === 0 ? [] : [""]), ...lines].join("\n");
+  if (text.length <= BRIEF_RELATED_CHARS) return text;
+  return `${text.slice(0, BRIEF_RELATED_CHARS)}\n\n[the related items are cut here at ${BRIEF_RELATED_CHARS.toLocaleString("en-US")} characters]`;
+}
+
 /** Said, so a prompt never shows a hole where the item's text would be. */
 export const NO_ITEM_TEXT = "This item has no description beyond its title.";
 
@@ -271,11 +312,21 @@ export function itemNode(item: Omit<ItemRecord, "parent">, bot: string): Node {
     // instance instead of none.
     // The fields a `tracker.field` sets, where a tracker read them: absent
     // rather than empty otherwise, so nothing reads as an empty field.
-    state: { labels: item.labels, assignees: item.assignees, ...(item.fields === undefined ? {} : { fields: item.fields }) },
+    state: { labels: item.labels, assignees: item.assignees, ...(item.fields === undefined ? {} : { fields: item.fields }), ...statusOf(item) },
     ...createdAtOf(item.createdAt),
     ...updatedAtOf(item.updatedAt),
   };
 }
+
+/**
+ * The status a tracker keeps beside the stage label, and its category, as
+ * `node.state.status` and `statusCategory`: each only where it said one, so
+ * a tracker that keeps none reads as not read, never as an empty status.
+ */
+const statusOf = ({ status, statusCategory }: Pick<RelatedRecord, "status" | "statusCategory">): { status?: string; statusCategory?: string } => ({
+  ...(typeof status === "string" ? { status } : {}),
+  ...(typeof statusCategory === "string" ? { statusCategory } : {}),
+});
 
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
@@ -302,7 +353,7 @@ export function placeholderNode(related: RelatedRecord): Node {
     closed: related.unreadable === true ? null : related.closed,
     priority: null,
     origin: null,
-    state: { labels: [], assignees: [] },
+    state: { labels: [], assignees: [], ...statusOf(related) },
     placeholder: true,
     ...(related.unreadable === true ? { unreadable: true as const } : {}),
   };
@@ -330,6 +381,9 @@ export function relatedOf(item: ItemRecord): { related: RelatedRecord[]; whole: 
   };
 }
 
+/** Whether a relationship points from its item outward: absent is out. */
+const isOut = (r: RelatedRecord): boolean => r.direction !== "in";
+
 /**
  * The open items' relationships of `type`, as a full list of items holds
  * them: what `BaseTracker.openRelations` answers unless an integration asks
@@ -340,8 +394,8 @@ export function openRelationsOf(items: ReadonlyArray<ItemRecord>, type: string):
   const open = items.filter((t) => t.closed === null);
   return {
     open: open.map((t) => t.id),
-    edges: open.flatMap((t) => (t.related ?? []).filter((r) => r.type === type && r.closed === null).map((r) => ({ from: t.id, to: r.to }))),
-    partial: open.filter((t) => t.relatedComplete === false || (t.related ?? []).some((r) => r.unreadable === true)).map((t) => t.id),
+    edges: open.flatMap((t) => (t.related ?? []).filter((r) => r.type === type && isOut(r) && r.closed === null).map((r) => ({ from: t.id, to: r.to }))),
+    partial: open.filter((t) => t.relatedComplete === false || (t.related ?? []).some((r) => r.type === type && r.unreadable === true)).map((t) => t.id),
   };
 }
 
@@ -395,7 +449,7 @@ export function blockerCycle(
       queue.push(to);
     }
   };
-  for (const r of root.related ?? []) if (r.type === RELATIONS.blockedBy && r.closed === null) follow(r.to);
+  for (const r of root.related ?? []) if (r.type === RELATIONS.blockedBy && isOut(r) && r.closed === null) follow(r.to);
   for (let i = 0; i < queue.length; i++) {
     const at = queue[i] as string;
     if (partial.has(at)) whole = false;
@@ -407,7 +461,7 @@ export function blockerCycle(
 /** Whether `blockerCycle` has anywhere to go from `root`: an open blocker of the tracker's own besides itself. */
 export function waitsOnOwn(root: ItemRecord, owns: (id: string) => boolean): boolean {
   return root.closed === null && (root.related ?? []).some((r) =>
-    r.type === RELATIONS.blockedBy && r.closed === null && r.to !== root.id && itemIdProblem(r.to) === null && owns(r.to));
+    r.type === RELATIONS.blockedBy && isOut(r) && r.closed === null && r.to !== root.id && itemIdProblem(r.to) === null && owns(r.to));
 }
 
 /**
@@ -428,13 +482,18 @@ function withFacts(node: Node, { unreadable, cycle }: { unreadable: boolean; cyc
   };
 }
 
-/** One edge per relationship, a repeat dropped; and a placeholder for an id `known` does not hold, by `placeholderRank`. */
+/**
+ * One edge per relationship, a repeat dropped — an inward one drawn from the
+ * other end, so a link both listed items report is one edge — and a
+ * placeholder for an id `known` does not hold, by `placeholderRank`.
+ */
 function drawRelated(
-  from: string, related: RelatedRecord[], known: (id: string) => boolean,
+  item: string, related: RelatedRecord[], known: (id: string) => boolean,
   edges: Map<string, Relationship>, placeholders: Map<string, Node>,
 ): void {
   for (const r of related) {
-    edges.set(JSON.stringify([from, r.to, r.type]), { from, to: r.to, type: r.type });
+    const [from, to] = isOut(r) ? [item, r.to] : [r.to, item];
+    edges.set(JSON.stringify([from, to, r.type]), { from, to, type: r.type });
     if (known(r.to)) continue;
     const had = placeholders.get(r.to);
     const next = placeholderNode(r);
@@ -610,6 +669,16 @@ export abstract class BaseTracker {
   }
 
   /**
+   * The relationship types its `ItemRecord.related` reports both ways — an
+   * inward one saying `direction: "in"` — so a read draws `rel.<type>.in` as
+   * well as `out`, and `validate` accepts both: none, until an integration
+   * says which. Read only: `relate` writes `writableRelations()` alone.
+   */
+  protected readBothWays(): string[] {
+    return [];
+  }
+
+  /**
    * An item's parent, and whatever else it relates to — `blocked-by`, say.
    * Not singular: an item may wait on many. Drawn outward only by a read,
    * which reads the item's own relationships and never another's toward it.
@@ -618,6 +687,7 @@ export abstract class BaseTracker {
     return [
       { type: RELATIONS.childOf, singular: true },
       ...this.readRelations().map((type): RelationDecl => ({ type, singular: false, outwardOnly: true })),
+      ...this.readBothWays().map((type): RelationDecl => ({ type, singular: false })),
     ];
   }
 
@@ -764,11 +834,16 @@ export abstract class BaseTracker {
   }
 
   /**
-   * Prompt text under `{brief.project.<key>}`: `body`, the item's own text.
-   * Its comments reach a step through `history`, which the composition owns.
+   * Prompt text under `{brief.project.<key>}`: `body`, the item's own text,
+   * and `related`, its status and what it relates to, from the snapshot's
+   * graph. Its comments reach a step through `history`, which the
+   * composition owns.
    */
   briefs(): BriefTable {
-    return { body: async (ctx) => bodyBrief((await this.item(ctx.item, ctx)).body) };
+    return {
+      body: async (ctx) => bodyBrief((await this.item(ctx.item, ctx)).body),
+      related: async (ctx) => relatedBrief((ctx.snapshot.graph as Graph | undefined) ?? (await this.read(ctx.item, ctx)), ctx.item),
+    };
   }
 
   /** The item's comments, for the history's one timeline. */

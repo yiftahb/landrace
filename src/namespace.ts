@@ -1127,6 +1127,16 @@ export interface RelatedRecord {
    * relationships read as not all read.
    */
   unreadable?: true;
+  /**
+   * Which way it points from the item: `out`, the item relates to `to`, as
+   * the edge `item → to`; `in`, `to` relates to the item, as `to → item`.
+   * Absent is `out`. Only a type the tracker reads both ways (`readBothWays`)
+   * carries `in`.
+   */
+  direction?: "in" | "out" | undefined;
+  /** The related item's status, by name, and its category, where its tracker keeps one: `node.state.status` and `statusCategory` on its placeholder. */
+  status?: string | undefined;
+  statusCategory?: string | undefined;
 }
 
 /**
@@ -1166,8 +1176,15 @@ export interface ItemRecord {
   updatedAt?: string | undefined;
   parent: string | null;
   priority?: number | null | undefined;
-  /** Its outgoing relationships, beside the parent: absent from a tracker that reads none. */
+  /** Its relationships beside the parent, each outgoing unless it says `in`: absent from a tracker that reads none. */
   related?: RelatedRecord[] | undefined;
+  /**
+   * Its status by name, and the status's category, where its tracker keeps a
+   * status beside the stage label: `node.state.status` and
+   * `node.state.statusCategory`. Absent where it keeps none, or did not say.
+   */
+  status?: string | undefined;
+  statusCategory?: string | undefined;
   /**
    * False when `related` is not the whole of them: the tracker's list stopped
    * before its end, or held one it could not read. Absent is whole.
