@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **The board's top bar and sidebar stay in view while the list scrolls.** The top bar, with "Run next tick now", notifications and the theme switch, stays at the top of the window. From 640 px up the sidebar stays just below it, however many rows the top bar wraps to, and scrolls on its own when it is taller than the space left. Under 640 px the sidebar is still a row of links that scrolls away. An open row menu closes when the page scrolls, so it never draws over the top bar. See [CLI](docs/cli.md#the-board).
+- **The board's top bar and sidebar stay in view while the list scrolls.** The top bar, with "Run next tick now", notifications and the theme switch, stays at the top of the window. From 640 px up the sidebar stays just below it, however many rows the top bar wraps to, and scrolls on its own when it is taller than the space left. Under 640 px the sidebar is still a row of links that scrolls away. An open row menu passes under the top bar as the page scrolls, and stays open. See [CLI](docs/cli.md#the-board).
 
 ## [1.3.0] - 2026-10-05
 

@@ -461,13 +461,6 @@ function onDocumentClick(e) {
   resetIdleTimer();
 }
 document.addEventListener("click", onDocumentClick);
-// A row's menu is z-10, as the sticky top bar is, and comes later in the
-// document, so scrolled up under the top bar it draws over the tick controls.
-// The panel's menu stays: the panel is fixed and never moves with the page.
-function onPageScroll() {
-  if (openMenuKey !== null && openMenuKey !== "panel") closeMenu();
-}
-window.addEventListener("scroll", onPageScroll, { passive: true });
 // Whether focus is somewhere a "c" is a letter someone is typing, not a
 // shortcut — the search box above all, but any field or contenteditable
 // reads the same way.
@@ -608,9 +601,11 @@ function writesOf(row) {
 
 // A row's actions: its writes (Retry, Go to step…), if the server offered
 // any, then a divider, then the Chat caption and its targets — the same menu
-// regardless of which row's ⋯ opens it (see actionFor).
+// regardless of which row's ⋯ opens it (see actionFor). z-[5] keeps it over
+// later rows yet under the sticky top bar's z-10, so scrolled up it passes
+// beneath the tick controls and stays open for the items below the fold.
 function buildRowMenu(row) {
-  const menu = el("div", "absolute left-0 z-10 mt-1 w-44 sm:left-auto sm:right-0 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
+  const menu = el("div", "absolute left-0 z-[5] mt-1 w-44 sm:left-auto sm:right-0 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   const writes = writesOf(row);

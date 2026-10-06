@@ -479,26 +479,22 @@ describe("the toggle button's title, kept in step with its label", () => {
   });
 });
 
-// A row's menu is z-10, as the sticky top bar is, and later in the document,
-// so scrolled up under the top bar it would draw over the tick controls.
-describe("an open menu while the page scrolls", () => {
-  const scroll = (openMenuKey: string | null): number => {
-    let closes = 0;
-    runInNewContext(`${fnSource("onPageScroll")}onPageScroll()`, { openMenuKey, closeMenu: () => { closes++; } });
-    return closes;
-  };
+// A row's menu at z-10, the sticky top bar's own, came later in the document
+// and so drew over the tick controls when scrolled up under the bar. Closing
+// it on scroll instead lost menus a person had to scroll to reach the end of.
+// Plain z-0 is no fix: a later row's relative wrapper would paint over it.
+describe("a row's open menu under the sticky top bar", () => {
+  const menuTokens = (): string[] => fnSource("buildRowMenu").match(/el\("div", "(absolute [^"]*)"/)?.[1]?.split(" ") ?? [];
 
-  it("closes a row's menu, which would otherwise scroll up over the top bar", () => {
-    expect(scroll("19")).toBe(1);
+  it("sits above the rows and below the top bar, so it scrolls under the bar and stays open", () => {
+    expect(menuTokens()).toContain("z-[5]");
+    expect(menuTokens()).not.toContain("z-10");
+    expect(PAGE_HTML).toMatch(/<header class="[^"]*\bz-10\b/);
+    expect(APP_CSS).toContain(".z-\\[5\\]{");
   });
 
-  it("leaves the panel's menu open, since the panel is fixed and never scrolls with the page, and does nothing with none open", () => {
-    expect(scroll("panel")).toBe(0);
-    expect(scroll(null)).toBe(0);
-  });
-
-  it("listens on the page's own scroll, passively", () => {
-    expect(APP_JS).toContain(`window.addEventListener("scroll", onPageScroll, { passive: true });`);
+  it("does not close on the page's scroll", () => {
+    expect(APP_JS).not.toContain("onPageScroll");
   });
 });
 
@@ -1379,7 +1375,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the scroll that closes a row menu, the item panel's and pairing's, the message box's shortcut, and the bell's — no more, no less", () => {
+  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, and the bell's — no more, no less", () => {
     // Pins the count deliberately: the tick button, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
     // button (each wired once, outside anything a render rebuilds), the
@@ -1391,7 +1387,7 @@ describe("the page", () => {
     // writeItem, shared by Retry and every Go to step… target, and built
     // only where the server offered one), and one document listener each for
     // outside-click and Escape (both defined once, so re-rendering never
-    // multiplies them), and the window's scroll that closes it. And the item panel's: an item row's title button
+    // multiplies them). And the item panel's: an item row's title button
     // and the row itself (each defined once, in itemRowFor), ✕, ⤢, Reply,
     // Ask the step, Resolve, and the window's hashchange. And pairing's: the
     // row menu's Pairing…, the panel header's ⋯ and its Pairing… item, and
@@ -1401,7 +1397,7 @@ describe("the page", () => {
     // notification's (defined once, in notifyOf). And the message box's
     // Ctrl/⌘+Enter.
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(31);
+    expect(listeners).toHaveLength(30);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
