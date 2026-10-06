@@ -1,5 +1,5 @@
 import {
-  compareIds, compareWork, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, RELATED_FACT_WORDS, RELATED_FACTS, stageFromLabels,
+  compareIds, compareWork, edgeDirection, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, RELATED_FACT_WORDS, RELATED_FACTS, stageFromLabels,
 } from "#conventions.js";
 import { claimItems, eligibilityOfNode, gotoTargetsOf, writesNothing } from "#core/index.js";
 import { BLOCKED_NOTE, engineNoteOf, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
@@ -247,8 +247,8 @@ export function boardView(input: {
    */
   const relatedOf = (id: string): BoardRelated[] =>
     graph.relationships.flatMap((r): BoardRelated[] => {
-      const dir = r.to === id ? "in" : r.from === id ? "out" : null;
-      const other = dir === null ? undefined : nodes.get(dir === "in" ? r.from : r.to);
+      const dir = edgeDirection(r, id);
+      const other = dir === null ? undefined : nodes.get(r.from === id ? r.to : r.from);
       if (dir === null || other === undefined || other.kind !== ITEM_KIND) return [];
       const state = other.unreadable === true ? "unreadable" : other.closed ?? "open";
       const status = other.state.status;

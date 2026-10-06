@@ -11,7 +11,7 @@
  * mapping what they answer into the plain fields `itemNode` takes.
  */
 import {
-  allClosed, CLOSE_EFFECT, COMMENT_VISIBILITIES, CREATED_KIND, distinctRelations, EffectRefused, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS,
+  allClosed, CLOSE_EFFECT, COMMENT_VISIBILITIES, CREATED_KIND, distinctRelations, edgeDirection, EffectRefused, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS,
   labelsOf, MAX_SUBGRAPH_NODES,
   neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATED_FACTS, RELATIONS, renderMarker,
   renderOrigin, sameLogin, STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND, TRACKER_CREATE_EFFECT,
@@ -82,9 +82,9 @@ export function relatedBrief(graph: Graph, id: string): string {
   const status = nodes.get(id)?.state.status;
   const category = nodes.get(id)?.state.statusCategory;
   const lines = graph.relationships.flatMap((r) => {
-    const dir = r.from === id ? "out" : r.to === id ? "in" : null;
+    const dir = edgeDirection(r, id);
     if (dir === null || UNBRIEFED.has(r.type)) return [];
-    const other = nodes.get(dir === "out" ? r.to : r.from);
+    const other = nodes.get(r.from === id ? r.to : r.from);
     if (other === undefined) return [];
     const said = other.state.status;
     // Unreadable first: a status its link named does not say its state could be read.
@@ -485,16 +485,23 @@ function withFacts(node: Node, { unreadable, cycle }: { unreadable: boolean; cyc
 
 /**
  * One edge per relationship, a repeat dropped — an inward one drawn from the
- * other end, so a link both listed items report is one edge — and a
- * placeholder for an id `known` does not hold, by `placeholderRank`.
+ * other end, so a link both listed items report is one edge, and a symmetric
+ * one keyed by its two ends in either order, since both ends report it as
+ * `out` — and a placeholder for an id `known` does not hold, by
+ * `placeholderRank`.
  */
 function drawRelated(
   item: string, related: RelatedRecord[], known: (id: string) => boolean,
   edges: Map<string, Relationship>, placeholders: Map<string, Node>,
 ): void {
   for (const r of related) {
-    const [from, to] = isOut(r) ? [item, r.to] : [r.to, item];
-    edges.set(JSON.stringify([from, to, r.type]), { from, to, type: r.type });
+    if (r.symmetric === true) {
+      const key = JSON.stringify([...[item, r.to].sort(), r.type, "symmetric"]);
+      if (!edges.has(key)) edges.set(key, { from: item, to: r.to, type: r.type, symmetric: true });
+    } else {
+      const [from, to] = isOut(r) ? [item, r.to] : [r.to, item];
+      edges.set(JSON.stringify([from, to, r.type]), { from, to, type: r.type });
+    }
     if (known(r.to)) continue;
     const had = placeholders.get(r.to);
     const next = placeholderNode(r);

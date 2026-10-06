@@ -181,6 +181,13 @@ describe("boardView: every relationship of an item", () => {
     expect(flatten(view(g).rows).find((r) => r.id === "13")?.related.map((r) => [r.dir, r.id])).toEqual([["out", "10"], ["out", "12"]]);
   });
 
+  it("lists a symmetric edge once on each end, as out from both", () => {
+    const g = graph([item("12"), item("10")], [{ from: "12", to: "10", type: "relates", symmetric: true }]);
+    for (const [id, other] of [["12", "10"], ["10", "12"]]) {
+      expect(flatten(view(g).rows).find((r) => r.id === id)?.related.map((r) => [r.type, r.dir, r.id])).toEqual([["relates", "out", other]]);
+    }
+  });
+
   it("lists none for an item nothing relates to", () => {
     expect(view(graph([item("12")])).rows[0]?.related).toEqual([]);
   });

@@ -30,6 +30,14 @@ describe("deriveRel", () => {
     expect(r.ok && r.rel["child-of"]?.out.total).toBe(1);
   });
 
+  it("counts a symmetric edge as out from both ends, never in", () => {
+    const g: Graph = { nodes: [n("1"), n("2")], relationships: [{ from: "1", to: "2", type: "relates", symmetric: true }] };
+    for (const id of ["1", "2"]) {
+      const r = deriveRel(g, id, ["relates"]);
+      expect(r.ok && r.rel["relates"]).toMatchObject({ out: { total: 1 }, in: { total: 0 } });
+    }
+  });
+
   it("counts booleans with is/not, sums finite numbers, and counts done as is.closed", () => {
     const g: Graph = {
       nodes: [

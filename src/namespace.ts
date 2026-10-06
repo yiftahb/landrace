@@ -74,7 +74,17 @@ export interface Node {
   unreadable?: true;
 }
 
-export interface Relationship { from: string; to: string; type: string }
+export interface Relationship {
+  from: string;
+  to: string;
+  type: string;
+  /**
+   * True where the link reads the same from either end ("relates to"): one
+   * edge, `out` from both its ends and `in` from neither. Two edges, one
+   * each way, would count every such link in `in` as well, and list it twice.
+   */
+  symmetric?: true;
+}
 
 export interface Graph { nodes: Node[]; relationships: Relationship[] }
 
@@ -1134,6 +1144,8 @@ export interface RelatedRecord {
    * carries `in`.
    */
   direction?: "in" | "out" | undefined;
+  /** True where the relationship reads the same from either end: drawn as one `symmetric` edge, however many listed ends report it. */
+  symmetric?: true | undefined;
   /** The related item's status, by name, and its category, where its tracker keeps one: `node.state.status` and `statusCategory` on its placeholder. */
   status?: string | undefined;
   statusCategory?: string | undefined;

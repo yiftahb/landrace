@@ -1,4 +1,4 @@
-import { compareIds, isReservedId, labelsOf, stageFromLabels } from "#conventions.js";
+import { compareIds, edgeDirection, isReservedId, labelsOf, stageFromLabels } from "#conventions.js";
 import type { Graph, Node, Rel, RelAgg } from "#namespace.js";
 
 const empty = (): RelAgg => ({
@@ -79,11 +79,11 @@ export function deriveRel(
   const kinds = new Map<string, string>();
 
   for (const r of graph.relationships) {
-    const direction = r.to === id ? "in" : r.from === id ? "out" : null;
+    const direction = edgeDirection(r, id);
     if (direction === null) continue;
     if (isReservedId(r.type)) return { ok: false, why: `relationship type "${r.type}" is a reserved object key` };
 
-    const other = byId.get(direction === "in" ? r.from : r.to);
+    const other = byId.get(r.from === id ? r.to : r.from);
     // Validation (runner/graph.ts) has already refused a dangling edge.
     if (!other || superseded(other, id, entered)) continue;
     if (other.closed === "dropped") {

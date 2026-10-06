@@ -439,8 +439,12 @@ interface LinkEntry {
   id?: unknown; type?: { name?: unknown; inward?: unknown; outward?: unknown } | null; inwardIssue?: LinkEnd | null; outwardIssue?: LinkEnd | null;
 }
 
-/** An issue a mapped link type relates an issue to, as its link names it: the relationship, which way, and what the link says of the other end. */
-interface Linked { type: string; direction: "in" | "out"; key: string; title: string; status: Status | undefined }
+/**
+ * An issue a mapped link type relates an issue to, as its link names it: the
+ * relationship, which way, whether its type reads the same both ways, and
+ * what the link says of the other end.
+ */
+interface Linked { type: string; direction: "in" | "out"; symmetric: boolean; key: string; title: string; status: Status | undefined }
 
 /**
  * A blocker as an issue's own links name it: the link's id, which deletes
@@ -587,9 +591,11 @@ function relatedIn(issuelinks: unknown, mapped: ReadonlyMap<string, string>): { 
       whole = false;
       continue;
     }
+    const symmetric = same(inWords, outWords);
     related.push({
       type,
-      direction: outward !== null || same(inWords, outWords) ? "out" : "in",
+      direction: outward !== null || symmetric ? "out" : "in",
+      symmetric,
       key: end.key,
       title: typeof end.fields?.summary === "string" ? end.fields.summary : "",
       status: end.fields?.status ?? undefined,
@@ -1015,6 +1021,7 @@ export class Jira extends BaseTracker {
       const closed: Closed = category !== "done" ? null : same(r.status?.name, this.dropped) ? "dropped" : "done";
       return {
         type: r.type, to: r.key, title: r.title, link: `${jira.baseUrl}/browse/${r.key}`, closed, direction: r.direction,
+        ...(r.symmetric ? { symmetric: true as const } : {}),
         ...statusFields(r.status),
         ...(typeof category === "string" ? {} : { unreadable: true as const }),
       };

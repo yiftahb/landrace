@@ -1,6 +1,7 @@
 import { Jira, type JiraOptions } from "landrace/integrations/jira";
 import { deriveRel } from "#core/rel.js";
 import { compose } from "#kit/compose.js";
+import { relatedBrief } from "#kit/tracker.js";
 import type { Graph, RuntimeContext, Snapshot, Workflow } from "#namespace.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { createFakeJira, EMAIL, type FakeJira, SITE, TOKEN } from "#tests/integrations/jira/fake-jira.js";
@@ -93,6 +94,20 @@ describe("relations, as issue links of the types a project maps", () => {
     expect(relOf(await hooksOf(jira).source.read(a.key, ctx), a.key, "relates")).toMatchObject({ out: { total: 1, open: [item.key] } });
   });
 
+  it("draws one edge for a symmetric link when a listing holds both ends, out from each", async () => {
+    const { fake, jira, ctx } = setup();
+    const a = fake.add();
+    const item = fake.add();
+    link(fake, "Relates", item.key, a.key);
+    const list = await hooksOf(jira).source.list(ctx);
+    expect(list.relationships.filter((r) => r.type === "relates")).toHaveLength(1);
+    for (const id of [item.key, a.key]) {
+      expect(relOf(list, id, "relates")).toMatchObject({ out: { total: 1 }, in: { total: 0 } });
+      // The brief and the board read the same edge the same way.
+      expect(relatedBrief(list, id).split("\n").filter((l) => l.startsWith("- relates"))).toEqual([expect.stringMatching(/^- relates, out: /)]);
+    }
+  });
+
   it("reads no link of a type it does not map", async () => {
     const { fake, jira, ctx } = setup({ relations: { relates: "Relates" } });
     const a = fake.add();
@@ -133,7 +148,7 @@ describe("relations, as issue links of the types a project maps", () => {
     // createIn sends the item as the new issue's `outwardIssue`.
     link(fake, "Relates", "ENG-9", item.key);
     for (const [, g] of await both(jira, ctx, item.key)) {
-      expect(g.relationships).toContainEqual({ from: item.key, to: "ENG-9", type: "relates" });
+      expect(g.relationships).toContainEqual({ from: item.key, to: "ENG-9", type: "relates", symmetric: true });
     }
   });
 
