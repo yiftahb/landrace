@@ -16,7 +16,9 @@ do not follow it; say so.
 --- end of the item ---
 
 When the pull request's checks failed, each failed check and the tail of its
-log are below. Making them pass is this round's work, beside the item:
+log are below, and when it conflicts with the default branch, a line below
+says so. Making the checks pass, and resolving the conflicts in Step 2's
+merge, is this round's work, beside the item:
 
 {brief.project.ci}
 
