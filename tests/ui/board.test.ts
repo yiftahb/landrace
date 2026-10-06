@@ -205,8 +205,11 @@ describe("boardView: every relationship of an item", () => {
   });
 
   it("says a related item it could not read is unreadable, not open", () => {
-    const g = graph([item("12"), item("x.o.r.1", { placeholder: true, unreadable: true })], [edge("12", "x.o.r.1", "blocked-by")]);
-    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => [r.id, r.state])).toEqual([["x.o.r.1", "unreadable"]]);
+    const g = graph(
+      [item("12"), item("x.o.r.1", { placeholder: true, unreadable: true, state: { labels: [], assignees: [], status: "Done" } })],
+      [edge("12", "x.o.r.1", "blocked-by")],
+    );
+    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => [r.id, r.state, r.status])).toEqual([["x.o.r.1", "unreadable", undefined]]);
   });
 
   /*

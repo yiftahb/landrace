@@ -87,8 +87,9 @@ export function relatedBrief(graph: Graph, id: string): string {
     const other = nodes.get(dir === "out" ? r.to : r.from);
     if (other === undefined) return [];
     const said = other.state.status;
-    const state = typeof said === "string" ? said
-      : other.unreadable === true ? "unreadable" : other.closed === null ? "open" : `closed (${other.closed})`;
+    // Unreadable first: a status its link named does not say its state could be read.
+    const state = other.unreadable === true ? "unreadable" : typeof said === "string" ? said
+      : other.closed === null ? "open" : `closed (${other.closed})`;
     return [{ key: [r.type, dir === "out" ? 0 : 1, other.id] as const, line: `- ${r.type}, ${dir}: ${other.id} "${briefTitle(other.title)}" — ${briefTitle(state)}` }];
   }).sort((a, b) => (a.key[0] < b.key[0] ? -1 : a.key[0] > b.key[0] ? 1 : a.key[1] - b.key[1] || (a.key[2] < b.key[2] ? -1 : a.key[2] > b.key[2] ? 1 : 0)))
     .map((l) => l.line);

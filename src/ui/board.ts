@@ -254,7 +254,8 @@ export function boardView(input: {
       const status = other.state.status;
       return [{
         type: r.type, dir, id: other.id, title: oneLine(other.title), link: safeUrl(other.link), state,
-        ...(typeof status === "string" && status.trim() !== "" ? { status: oneLine(status) } : {}),
+        // Never over unreadable: a status a link named does not say the state could be read.
+        ...(state !== "unreadable" && typeof status === "string" && status.trim() !== "" ? { status: oneLine(status) } : {}),
       }];
     }).sort(byRelation);
 

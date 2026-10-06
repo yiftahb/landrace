@@ -1,7 +1,8 @@
 /*
  * Jira Cloud issues as a project's tracker: the JQL, the changelog that says
  * who last edited a body, the workflow's transitions, the "Blocks" issue
- * links as `blocked-by`, and the account's permissions. Everything else a
+ * links as `blocked-by` and the `relations` types as theirs, each issue's
+ * status, and the account's permissions. Everything else a
  * tracker does is `BaseTracker`'s — position is still an `lr:stage:*` label;
  * Jira's status follows it only where `statuses` maps the stage, and
  * otherwise moves only to close an item or reopen it.

@@ -930,6 +930,13 @@ describe("relationships read both ways, and statuses", () => {
       ].join("\n"));
     });
 
+    it("says unreadable of a related item whose state could not be read, whatever status its link named", async () => {
+      const tracker = linked([{ id: "12" }], {
+        "12": { related: [{ type: R, to: "x-far-6", title: "Fix", link: "", closed: null, unreadable: true, status: "Done" }] },
+      });
+      expect(await briefOf(tracker, "12")).toBe('- relates, out: x-far-6 "Fix" — unreadable');
+    });
+
     it("says so when the item relates to nothing, and has no status line where its tracker keeps none", async () => {
       expect(await briefOf(linked([{ id: "12" }], {}), "12")).toBe("This item has no related items.");
     });
