@@ -25,7 +25,7 @@ import { type Client, clientFor, issueNumber, MAX_COMMENT_CHARS, tokenRejected, 
  * request says it closes ties it to nothing.
  */
 const PULL_FIELDS = `
-  number title url state merged headRefName headRefOid isCrossRepository createdAt updatedAt`;
+  number title url state merged headRefName headRefOid isCrossRepository createdAt updatedAt mergeable`;
 
 /**
  * Every open pull request, paged on its own cursor. Merged ones are not
@@ -164,6 +164,8 @@ interface PullNode {
   createdAt?: string;
   /** ISO 8601, when it last changed: the board's lane order. Optional likewise; null where GitHub answers none. */
   updatedAt?: string | null;
+  /** Whether it conflicts with its base: UNKNOWN while GitHub works it out. */
+  mergeable?: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 }
 
 type Page<T> = { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: T[] };
@@ -196,6 +198,7 @@ const recordOf = (pull: PullNode): PullRecord => ({
   merged: pull.merged,
   closed: pull.state === "CLOSED",
   headSha: pull.headRefOid,
+  conflicts: pull.mergeable === "CONFLICTING" ? true : pull.mergeable === "MERGEABLE" ? false : null,
   branch: pull.isCrossRepository ? undefined : pull.headRefName,
   createdAt: pull.createdAt,
   updatedAt: pull.updatedAt ?? undefined,

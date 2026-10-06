@@ -47,7 +47,7 @@ Do these in order. Finish each before starting the next.
 
 Progress:
 - [ ] Step 1: Read the spec, and what the person asked for
-- [ ] Step 2: Bring the branch up to date with main
+- [ ] Step 2: Bring the branch up to date with the default branch
 - [ ] Step 3: Plan the work
 - [ ] Step 4: Implement the plan, committing as you go
 - [ ] Step 5: Verify: install, tests, lint
@@ -72,8 +72,10 @@ and flag it sets, each with its test. Likewise the code that shares what you
 change, and leaned on its old value — another element at the z-index you take,
 a scroll into view that assumed nothing covers the window's top.
 
-**Step 2 — Bring the branch up to date with main.** `git fetch origin`, then
-`git merge origin/main`. Resolve any conflict and commit the merge. Done when
+**Step 2 — Bring the branch up to date with the default branch.** Merge
+origin's default branch: `git merge "$(git rev-parse --abbrev-ref origin/HEAD)"`.
+Landrace fetched it just before this step; do not fetch, since this sandbox
+may not reach origin. Resolve any conflict and commit the merge. Done when
 `git status` is clean.
 
 **Step 3 — Plan the work.** The spec says what changes and where, not the

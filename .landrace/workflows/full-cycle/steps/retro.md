@@ -56,7 +56,7 @@ Progress:
 - [ ] Step 2: Read the lessons already committed from it
 - [ ] Step 3: Decide, for each correction, whether it generalises
 - [ ] Step 4: Pick the narrowest file for each lesson
-- [ ] Step 5: Bring the branch up to date with main, then make the edits
+- [ ] Step 5: Bring the branch up to date with the default branch, then make the edits
 - [ ] Step 6: Verify: install, tests, lint
 - [ ] Step 7: Commit once and push
 - [ ] Step 8: Summarise and end with the json block
@@ -98,9 +98,11 @@ would have avoided the mistake:
   standards in the agent instructions, beside any lesson above. A retro that
   finds documentation drift and leaves it is incomplete.
 
-**Step 5 — Bring the branch up to date with main, then make the edits.**
-`git fetch origin`, then `git merge origin/main`. Resolve any conflict and
-commit the merge. Then edit, don't append: tighten or replace the sentence
+**Step 5 — Bring the branch up to date with the default branch, then make
+the edits.** Merge origin's default branch:
+`git merge "$(git rev-parse --abbrev-ref origin/HEAD)"`. Landrace fetched it
+just before this step; do not fetch, since this sandbox may not reach origin.
+Resolve any conflict and commit the merge. Then edit, don't append: tighten or replace the sentence
 that let the mistake through rather than adding a paragraph beside it. A
 prompt that grows by a paragraph every item soon says nothing.
 

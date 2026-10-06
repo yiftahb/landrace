@@ -15,7 +15,7 @@ import {
 import { defineSource } from "#hooks/contracts.js";
 import { compose } from "#kit/compose.js";
 import { BaseDocs } from "#kit/docs.js";
-import { BaseForge, isFinding, itemBranchOf, placeFindings, prBranch } from "#kit/forge.js";
+import { BaseForge, conflictCount, isFinding, itemBranchOf, placeFindings, prBranch } from "#kit/forge.js";
 import { BaseTracker, commentSatisfied, createdSatisfied } from "#kit/tracker.js";
 import type {
   BranchHeads,
@@ -351,6 +351,7 @@ const pullRecordOf = (p: ExternalPull): PullRecord => ({
   merged: p.merged,
   closed: p.closed !== null,
   headSha: p.headSha,
+  conflicts: p.conflicts === undefined ? false : p.conflicts,
   branch: p.branch,
   createdAt: undefined,
   items: [...(p.items ?? [])],
@@ -561,6 +562,7 @@ export class MemoryForge extends BaseForge {
         awaitingFix: p.closed === null ? p.awaitingFix : 0,
         awaitingBehaviourFix: p.closed === null ? p.awaitingFix - Math.min(p.awaitingWordingFix, p.awaitingFix) : 0,
         ...(p.branch === undefined ? {} : { branch: p.branch }),
+        ...conflictCount(pull),
         ...ci,
       },
     };

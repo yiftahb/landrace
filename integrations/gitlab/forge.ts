@@ -16,6 +16,9 @@ import { type Client, clientFor, PER_PAGE, statusOf, tokenRejected } from "./cli
 /** The merge statuses GitLab answers while it is still working mergeability out: a refusal then clears by asking again. */
 const UNSETTLED = new Set(["checking", "unchecked", "ci_still_running", "preparing", "approvals_syncing"]);
 
+/** The merge statuses under which `has_conflicts` is not worked out yet. */
+const UNWORKED = new Set(["checking", "unchecked"]);
+
 /** Developer: what opening a merge request, commenting and resolving need. */
 const DEVELOPER = 30;
 const LEVELS: Record<number, string> = { 5: "Minimal access", 10: "Guest", 15: "Planner", 20: "Reporter", 30: "Developer", 40: "Maintainer", 50: "Owner" };
@@ -35,6 +38,9 @@ interface MergeRequest {
   target_project_id: number;
   created_at?: string;
   updated_at?: string | null;
+  /** Whether it conflicts with its target branch: not yet worked out while `detailed_merge_status` is in `UNWORKED`. */
+  has_conflicts?: boolean;
+  detailed_merge_status?: string;
 }
 
 /**
@@ -114,6 +120,7 @@ const recordOf = (mr: MergeRequest): PullRecord => ({
   merged: mr.state === "merged",
   closed: mr.state === "closed",
   headSha: mr.sha ?? "",
+  conflicts: typeof mr.has_conflicts !== "boolean" || UNWORKED.has(mr.detailed_merge_status ?? "") ? null : mr.has_conflicts,
   branch: mr.source_project_id === mr.target_project_id ? mr.source_branch : undefined,
   createdAt: mr.created_at,
   updatedAt: mr.updated_at ?? undefined,
@@ -361,7 +368,10 @@ export class GitLab extends BaseForge {
   async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
     const branch = prBranch(item, itemBranchOf(ctx.config));
     const { items: requests, more } = await this.gl(ctx).pages<MergeRequest>(
-      `/merge_requests?state=all&order_by=created_at&sort=desc&source_branch=${encodeURIComponent(branch)}`, MAX_ISSUE_PAGES,
+      // Rechecked, or one GitLab has not looked at since its target moved can
+      // stay `unchecked`, and its conflicts unknown, for good.
+      `/merge_requests?state=all&order_by=created_at&sort=desc&with_merge_status_recheck=true&source_branch=${encodeURIComponent(branch)}`,
+      MAX_ISSUE_PAGES,
     );
     if (more) {
       throw tooMany(`more than ${MAX_ISSUE_PAGES * PER_PAGE} merge requests are from a branch named ${branch}, forks' among them`);

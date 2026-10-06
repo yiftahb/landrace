@@ -9,6 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **The board's top bar and sidebar stay in view while the list scrolls.** The top bar, with "Run next tick now", notifications and the theme switch, stays at the top of the window. From 640 px up the sidebar stays just below it, however many rows the top bar wraps to, and scrolls on its own when it is taller than the space left. Under 640 px the sidebar is still a row of links that scrolls away. An open row menu passes under the top bar as the page scrolls, and stays open. See [CLI](docs/cli.md#the-board).
+### Added
+
+- **A pull request's conflicts.** The pull request node carries `conflicts`: `1` when it conflicts with the branch it merges into, `0` when it does not, and `0` once merged or closed. It is left out while the forge is still working that out — GitHub's `mergeable` is `UNKNOWN`, GitLab's `detailed_merge_status` is `checking` or `unchecked` — so it adds nothing to `rel.implements.in.sum.conflicts` and nothing routes on a guess. Route on `{ $gt: 0 }`; `0` is not proof that nothing conflicts. GitLab is asked to recheck mergeability as an item's merge requests are read. `{brief.project.ci}` says when a pull request conflicts. A forge integration on the kit sets the new `PullRecord.conflicts`, `true`, `false` or `null`. The shipped fastlane sends a conflicting pull request from `ci` back to `build`, within build's three rounds, and to `stuck` after them, and its retro and merge wait while conflicts are unknown. Before, a GitLab merge request with conflicts could get no pipeline at all and wait for ever. See [Workflows](docs/workflows.md#what-a-condition-can-read) and [Integrations](docs/integrations.md#gitlab).
+
+### Fixed
+
+- **A write step can bring an item branch up to date.** Landrace now fetches `origin`'s default branch before every write step on an item branch that already exists, as it already did when it created the branch, and a failed fetch fails the round. Before, a fix round, a rebuild or the retro merged whatever `origin/<default>` the branch's first build had fetched, and its own `git fetch` failed inside the sandbox whenever `origin` needed credentials the sandbox keeps out. The shipped write steps now merge `origin`'s default branch by name, `git merge "$(git rev-parse --abbrev-ref origin/HEAD)"`, and do not fetch. The item branch itself is not moved. See [Workflows](docs/workflows.md#the-items-branch).
 
 ## [1.3.0] - 2026-10-05
 
