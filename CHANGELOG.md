@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The board's top bar and sidebar stay in view while the list scrolls.** The top bar, with "Run next tick now", notifications and the theme switch, stays at the top of the window. From 640 px up the sidebar stays just below it, however many rows the top bar wraps to, and scrolls on its own when it is taller than the space left. Under 640 px the sidebar is still a row of links that scrolls away. An open row menu passes under the top bar as the page scrolls, and stays open. See [CLI](docs/cli.md#the-board).
 ### Added
 
 - **A pull request's conflicts.** The pull request node carries `conflicts`: `1` when it conflicts with the branch it merges into, `0` when it does not, and `0` once merged or closed. It is left out while the forge is still working that out — GitHub's `mergeable` is `UNKNOWN`, GitLab's `detailed_merge_status` is `checking` or `unchecked` — so it adds nothing to `rel.implements.in.sum.conflicts` and nothing routes on a guess. Route on `{ $gt: 0 }`; `0` is not proof that nothing conflicts. GitLab is asked to recheck mergeability as an item's merge requests are read. `{brief.project.ci}` says when a pull request conflicts. A forge integration on the kit sets the new `PullRecord.conflicts`, `true`, `false` or `null`. The shipped fastlane sends a conflicting pull request from `ci` back to `build`, within build's three rounds, and to `stuck` after them, and its retro and merge wait while conflicts are unknown. Before, a GitLab merge request with conflicts could get no pipeline at all and wait for ever. See [Workflows](docs/workflows.md#what-a-condition-can-read) and [Integrations](docs/integrations.md#gitlab).

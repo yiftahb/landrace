@@ -68,7 +68,9 @@ written out by hand, a sentence on how it used to work — found by searching
 for the old, not only by reading what you edit. And it means the code that
 already does what you are adding — the same git command, a call to the same
 remote or host — found by searching for it: call it, or give yours every guard
-and flag it sets, each with its test.
+and flag it sets, each with its test. Likewise the code that shares what you
+change, and leaned on its old value — another element at the z-index you take,
+a scroll into view that assumed nothing covers the window's top.
 
 **Step 2 — Bring the branch up to date with the default branch.** Merge
 origin's default branch: `git merge "$(git rev-parse --abbrev-ref origin/HEAD)"`.
