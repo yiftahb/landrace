@@ -6,13 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
+## [1.4.0] - 2026-10-06
 
-- **The board's top bar and sidebar stay in view while the list scrolls.** The top bar, with "Run next tick now", notifications and the theme switch, stays at the top of the window. From 640 px up the sidebar stays just below it, however many rows the top bar wraps to, and scrolls on its own when it is taller than the space left. Under 640 px the sidebar is still a row of links that scrolls away. An open row menu passes under the top bar as the page scrolls, and stays open. See [CLI](docs/cli.md#the-board).
 ### Added
 
 - **Jira related issues and status.** `new Jira({ relations: { relates: "Relates", duplicates: "Duplicate" } })` reads more issue link types as relationships, in any project on the site. A link whose outward words describe the item is `rel.<name>.out`, and one whose inward words do is `rel.<name>.in`. A type that reads the same both ways, such as Relates, counts as `out` from both ends. An issue the list does not hold, such as one in another project, is a placeholder with its key, title, link, closed state and status. All of it comes from the links the list already reads. These relationships are read only. Each item also carries `node.state.status` and `node.state.statusCategory` (`new`, `indeterminate` or `done`), so a condition can say `"node.state.status": { $ne: "Pending R&D Fix" }`. A new briefing, `{brief.project.related}`, gives a prompt the item's status and one line per related item, for any tracker on the kit. The board's panel shows a related item's status. Loading the hook file refuses a `relations` name that is not lowercase, is one of the engine's own relationship types, is `constructor` or `prototype`, maps `blockedByLinkType`, or maps a link type another name maps. `start` refuses a link type the site lacks. `validate` accepts `rel.<name>.*` only for a mapped name. A tracker on the kit declares types it reads both ways with `readBothWays()`, and sets `ItemRecord.status`, `statusCategory`, `relatedIncomplete` (the relationship types it could not read all of) and `RelatedRecord.direction`. Tested against a fake Jira only. See [Integrations](docs/integrations.md#jira) and [Workflows](docs/workflows.md#what-a-condition-can-read).
 - **A pull request's conflicts.** The pull request node carries `conflicts`: `1` when it conflicts with the branch it merges into, `0` when it does not, and `0` once merged or closed. It is left out while the forge is still working that out — GitHub's `mergeable` is `UNKNOWN`, GitLab's `detailed_merge_status` is `checking` or `unchecked` — so it adds nothing to `rel.implements.in.sum.conflicts` and nothing routes on a guess. Route on `{ $gt: 0 }`; `0` is not proof that nothing conflicts. GitLab is asked to recheck mergeability as an item's merge requests are read. `{brief.project.ci}` says when a pull request conflicts. A forge integration on the kit sets the new `PullRecord.conflicts`, `true`, `false` or `null`. The shipped fastlane sends a conflicting pull request from `ci` back to `build`, within build's three rounds, and to `stuck` after them, and its retro and merge wait while conflicts are unknown. Before, a GitLab merge request with conflicts could get no pipeline at all and wait for ever. See [Workflows](docs/workflows.md#what-a-condition-can-read) and [Integrations](docs/integrations.md#gitlab).
+
+### Changed
+
+- **The board's top bar and sidebar stay in view while the list scrolls.** The top bar, with "Run next tick now", notifications and the theme switch, stays at the top of the window. From 640 px up the sidebar stays just below it, however many rows the top bar wraps to, and scrolls on its own when it is taller than the space left. Under 640 px the sidebar is still a row of links that scrolls away. An open row menu passes under the top bar as the page scrolls, and stays open. See [CLI](docs/cli.md#the-board).
 
 ### Fixed
 
@@ -103,7 +106,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Versions and updates.** `landrace version` (and `--version`) prints the version and whether npm has a newer one; `landrace update` updates the project's own dependency with its package manager, or the global install; `landrace start` says when a newer version is out. The check asks npm's registry once, gives up after two seconds, and is off in CI or with `LANDRACE_NO_UPDATE_CHECK=1`.
 - **Notifications and telemetry.** A `notify` block tells a person, through a notifier hook, when an item comes to rest needing them. `--telemetry` exports the engine's events as OpenTelemetry log records.
 
-[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/yiftahb/landrace/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/yiftahb/landrace/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/yiftahb/landrace/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/yiftahb/landrace/compare/v1.1.0...v1.2.0
