@@ -82,6 +82,51 @@ describe("the page's lanes", () => {
   });
 });
 
+describe("the top bar and the sidebar while the page scrolls", () => {
+  const classesOf = (re: RegExp): string[] => (re.exec(PAGE_HTML)?.[1] ?? "").split(" ");
+  const header = classesOf(/<body[^>]*>\n<header class="([^"]*)"/);
+  const sidebar = classesOf(/<nav id="sidebar"[^>]*class="([^"]*)"/);
+
+  it("sticks the top bar to the top, under the item panel, on its own background in light and dark", () => {
+    expect(header).toEqual(expect.arrayContaining(["sticky", "top-0", "z-10", "bg-white", "dark:bg-neutral-900"]));
+    const panel = classesOf(/<aside id="panel"[^>]*class="([^"]*)"/);
+    expect(panel).toEqual(expect.arrayContaining(["fixed", "z-20"]));
+  });
+
+  it("sticks the sidebar just below the top bar from sm up, scrolling on its own when taller than the space left", () => {
+    expect(sidebar).toEqual(expect.arrayContaining([
+      "sm:sticky", "sm:self-start", "sm:top-[var(--header-h)]",
+      "sm:max-h-[calc(100vh-var(--header-h))]", "sm:overflow-y-auto",
+    ]));
+  });
+
+  it("leaves the sidebar unstuck below sm", () => {
+    expect(sidebar.filter((c) => !c.includes(":") && /sticky|top-|max-h-|overflow/.test(c))).toEqual([]);
+  });
+
+  it("sets --header-h from the top bar's height on load and again whenever the top bar resizes", () => {
+    const set: [string, string][] = [];
+    const observed: unknown[] = [];
+    let onResize = (): void => {};
+    let height = 57;
+    const top = { getBoundingClientRect: () => ({ height }) };
+    const watch = runInNewContext(`${fnSource("watchHeaderHeight")}watchHeaderHeight`, {
+      document: { documentElement: { style: { setProperty: (k: string, v: string) => set.push([k, v]) } } },
+      ResizeObserver: class { constructor(cb: () => void) { onResize = cb; } observe(t: unknown): void { observed.push(t); } },
+    }) as (h: typeof top) => void;
+    watch(top);
+    expect(set).toEqual([["--header-h", "57px"]]);
+    expect(observed).toEqual([top]);
+    height = 101.5;
+    onResize();
+    expect(set.at(-1)).toEqual(["--header-h", "101.5px"]);
+  });
+
+  it("watches the page's own top bar, not a lane's header", () => {
+    expect(APP_JS).toContain('\nwatchHeaderHeight(document.querySelector("body > header"));\n');
+  });
+});
+
 describe("the filter row", () => {
   const input = /<input id="search" type="search"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
 

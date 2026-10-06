@@ -106,7 +106,7 @@ export const PAGE_HTML = `<!doctype html>
 <script src="/app.js" defer></script>
 </head>
 <body class="min-h-screen bg-neutral-50 font-sans text-sm text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100 sm:pr-[28rem]">
-<header class="border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+<header class="sticky top-0 z-10 border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
 <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
 <div class="flex min-w-0 flex-wrap items-center gap-2">
 ${MARK}
@@ -129,7 +129,7 @@ ${MARK}
 </div>
 </header>
 <div class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 sm:flex-row sm:px-6">
-<nav id="sidebar" aria-label="Pages" class="sm:w-48 sm:shrink-0"><ul id="nav" class="flex flex-wrap gap-2 sm:flex-col sm:gap-1"></ul></nav>
+<nav id="sidebar" aria-label="Pages" class="sm:sticky sm:top-[var(--header-h)] sm:max-h-[calc(100vh-var(--header-h))] sm:w-48 sm:shrink-0 sm:self-start sm:overflow-y-auto"><ul id="nav" class="flex flex-wrap gap-2 sm:flex-col sm:gap-1"></ul></nav>
 <main class="min-w-0 flex-1">
 <div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
 <input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
@@ -2435,4 +2435,13 @@ themeToggle.addEventListener("click", () => {
 });
 
 syncThemeLabel();
+
+// The sidebar sticks just below the top bar, and the top bar wraps to two rows
+// at some widths, so its height is measured rather than written down.
+function watchHeaderHeight(header) {
+  const sync = () => document.documentElement.style.setProperty("--header-h", header.getBoundingClientRect().height + "px");
+  sync();
+  new ResizeObserver(sync).observe(header);
+}
+watchHeaderHeight(document.querySelector("body > header"));
 `;
