@@ -74,7 +74,17 @@ export interface Node {
   unreadable?: true;
 }
 
-export interface Relationship { from: string; to: string; type: string }
+export interface Relationship {
+  from: string;
+  to: string;
+  type: string;
+  /**
+   * True where the link reads the same from either end ("relates to"): one
+   * edge, `out` from both its ends and `in` from neither. Two edges, one
+   * each way, would count every such link in `in` as well, and list it twice.
+   */
+  symmetric?: true;
+}
 
 export interface Graph { nodes: Node[]; relationships: Relationship[] }
 
@@ -1127,6 +1137,18 @@ export interface RelatedRecord {
    * relationships read as not all read.
    */
   unreadable?: true;
+  /**
+   * Which way it points from the item: `out`, the item relates to `to`, as
+   * the edge `item → to`; `in`, `to` relates to the item, as `to → item`.
+   * Absent is `out`. Only a type the tracker reads both ways (`readBothWays`)
+   * carries `in`.
+   */
+  direction?: "in" | "out" | undefined;
+  /** True where the relationship reads the same from either end: drawn as one `symmetric` edge, however many listed ends report it. */
+  symmetric?: true | undefined;
+  /** The related item's status, by name, and its category, where its tracker keeps one: `node.state.status` and `statusCategory` on its placeholder. */
+  status?: string | undefined;
+  statusCategory?: string | undefined;
 }
 
 /**
@@ -1166,13 +1188,27 @@ export interface ItemRecord {
   updatedAt?: string | undefined;
   parent: string | null;
   priority?: number | null | undefined;
-  /** Its outgoing relationships, beside the parent: absent from a tracker that reads none. */
+  /** Its relationships beside the parent, each outgoing unless it says `in`: absent from a tracker that reads none. */
   related?: RelatedRecord[] | undefined;
+  /**
+   * Its status by name, and the status's category, where its tracker keeps a
+   * status beside the stage label: `node.state.status` and
+   * `node.state.statusCategory`. Absent where it keeps none, or did not say.
+   */
+  status?: string | undefined;
+  statusCategory?: string | undefined;
   /**
    * False when `related` is not the whole of them: the tracker's list stopped
    * before its end, or held one it could not read. Absent is whole.
    */
   relatedComplete?: boolean | undefined;
+  /**
+   * The types of relationship it could not read all of, where `relatedComplete`
+   * holds for the rest: the item's own relationships are not all read, yet a
+   * walk of another type — the blocker cycle's — reads them as whole, so one
+   * broken link of a type it never follows does not cloud every item it passes.
+   */
+  relatedIncomplete?: string[] | undefined;
   /**
    * The issue fields asked for in `trackerFields`, by id, as `node.state.fields`
    * carries them: an option as its value, a multi-select as a list of values,
@@ -2761,6 +2797,8 @@ export interface BoardRelated {
   link: string;
   /** `unreadable` where its source knew which item it is but not what state it is in. */
   state: "open" | "done" | "dropped" | "unreadable";
+  /** Its tracker's status for it, one line, where the tracker keeps one beside the stage label: shown in place of `state`. */
+  status?: string;
 }
 
 /** The item panel's routes for one item. */

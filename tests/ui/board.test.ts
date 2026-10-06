@@ -181,6 +181,27 @@ describe("boardView: every relationship of an item", () => {
     expect(flatten(view(g).rows).find((r) => r.id === "13")?.related.map((r) => [r.dir, r.id])).toEqual([["out", "10"], ["out", "12"]]);
   });
 
+  it("lists a symmetric edge once on each end, as out from both", () => {
+    const g = graph([item("12"), item("10")], [{ from: "12", to: "10", type: "relates", symmetric: true }]);
+    for (const [id, other] of [["12", "10"], ["10", "12"]]) {
+      expect(flatten(view(g).rows).find((r) => r.id === id)?.related.map((r) => [r.type, r.dir, r.id])).toEqual([["relates", "out", other]]);
+    }
+  });
+
+  // SD's tracker reports SD-1 relates ENG-5, ENG's the same link from its own end: one link, listed once on each.
+  it("lists a symmetric edge two sources report from opposite ends once on each end", () => {
+    const sd = graph([item("SD-1"), item("ENG-5", { placeholder: true })], [{ from: "SD-1", to: "ENG-5", type: "relates", symmetric: true }]);
+    const eng = graph([item("ENG-5"), item("SD-1", { placeholder: true })], [{ from: "ENG-5", to: "SD-1", type: "relates", symmetric: true }]);
+    const graphs = [sd, eng];
+    const both = view(sd, {
+      workflows: [{ id: "t", workflow }, { id: "u", workflow }],
+      listing: { graphs, sourceOf: new Map([["t", 0], ["u", 1]]), claims: claimItems([], graphs) },
+    });
+    for (const [id, other] of [["SD-1", "ENG-5"], ["ENG-5", "SD-1"]]) {
+      expect(flatten(both.rows).find((r) => r.id === id)?.related.map((r) => [r.type, r.dir, r.id])).toEqual([["relates", "out", other]]);
+    }
+  });
+
   it("lists none for an item nothing relates to", () => {
     expect(view(graph([item("12")])).rows[0]?.related).toEqual([]);
   });
@@ -193,9 +214,23 @@ describe("boardView: every relationship of an item", () => {
     expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => r.id)).toEqual(["10"]);
   });
 
+  // A tracker that keeps a status beside the stage label says it of the other end too: "Pending R&D Fix" says more than open.
+  it("carries the other end's status, on one line, where its tracker gave one", () => {
+    const g = graph(
+      [item("12"), item("ENG-5", { placeholder: true, state: { labels: [], assignees: [], status: "In\nProgress" } })],
+      [edge("12", "ENG-5", "relates")],
+    );
+    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related).toEqual([
+      { type: "relates", dir: "out", id: "ENG-5", title: "tENG-5", link: "https://x/ENG-5", state: "open", status: "In Progress" },
+    ]);
+  });
+
   it("says a related item it could not read is unreadable, not open", () => {
-    const g = graph([item("12"), item("x.o.r.1", { placeholder: true, unreadable: true })], [edge("12", "x.o.r.1", "blocked-by")]);
-    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => [r.id, r.state])).toEqual([["x.o.r.1", "unreadable"]]);
+    const g = graph(
+      [item("12"), item("x.o.r.1", { placeholder: true, unreadable: true, state: { labels: [], assignees: [], status: "Done" } })],
+      [edge("12", "x.o.r.1", "blocked-by")],
+    );
+    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => [r.id, r.state, r.status])).toEqual([["x.o.r.1", "unreadable", undefined]]);
   });
 
   /*

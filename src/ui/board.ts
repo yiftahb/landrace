@@ -1,5 +1,5 @@
 import {
-  compareIds, compareWork, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, RELATED_FACT_WORDS, RELATED_FACTS, stageFromLabels,
+  compareIds, compareWork, edgeDirection, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, RELATED_FACT_WORDS, RELATED_FACTS, stageFromLabels,
 } from "#conventions.js";
 import { claimItems, eligibilityOfNode, gotoTargetsOf, writesNothing } from "#core/index.js";
 import { BLOCKED_NOTE, engineNoteOf, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
@@ -35,7 +35,12 @@ function unionOf(graphs: readonly Graph[]): Graph {
       const drawn = nodes.get(node.id);
       if (!drawn || over(drawn, node)) nodes.set(node.id, node);
     }
-    for (const edge of graph.relationships) edges.set(JSON.stringify([edge.from, edge.to, edge.type]), edge);
+    // A symmetric edge is one link whichever end reported it: two trackers each
+    // reporting it from their own end listed it twice on both items' panels.
+    for (const edge of graph.relationships) {
+      const key = edge.symmetric === true ? [...[edge.from, edge.to].sort(), edge.type, "symmetric"] : [edge.from, edge.to, edge.type];
+      edges.set(JSON.stringify(key), edge);
+    }
   }
   return { nodes: [...nodes.values()], relationships: [...edges.values()] };
 }
@@ -247,11 +252,16 @@ export function boardView(input: {
    */
   const relatedOf = (id: string): BoardRelated[] =>
     graph.relationships.flatMap((r): BoardRelated[] => {
-      const dir = r.to === id ? "in" : r.from === id ? "out" : null;
-      const other = dir === null ? undefined : nodes.get(dir === "in" ? r.from : r.to);
+      const dir = edgeDirection(r, id);
+      const other = dir === null ? undefined : nodes.get(r.from === id ? r.to : r.from);
       if (dir === null || other === undefined || other.kind !== ITEM_KIND) return [];
       const state = other.unreadable === true ? "unreadable" : other.closed ?? "open";
-      return [{ type: r.type, dir, id: other.id, title: oneLine(other.title), link: safeUrl(other.link), state }];
+      const status = other.state.status;
+      return [{
+        type: r.type, dir, id: other.id, title: oneLine(other.title), link: safeUrl(other.link), state,
+        // Never over unreadable: a status a link named does not say the state could be read.
+        ...(state !== "unreadable" && typeof status === "string" && status.trim() !== "" ? { status: oneLine(status) } : {}),
+      }];
     }).sort(byRelation);
 
   /** The item's own relationship facts, each its source reports true, in words: read off the shared vocabulary, never a type. */

@@ -4,7 +4,7 @@
  * back as the engine's. None of it belongs to a tracker — any tracker's hook
  * uses the same names — so none of it lives in a hook.
  */
-import type { Effect, Entry, Graph, HandoffArg, Marker, Node, Origin, TrackerComment, Trailing } from "#namespace.js";
+import type { Effect, Entry, Graph, HandoffArg, Marker, Node, Origin, Relationship, TrackerComment, Trailing } from "#namespace.js";
 
 /*
  * No admission label among them: what starts an item is each workflow's own
@@ -169,6 +169,14 @@ export const DOCUMENT_KIND = "document";
  * `rel.blocked-by.*` counts, and says so in a stage's `note`.
  */
 export const RELATIONS = { childOf: "child-of", implements: "implements", documents: "documents", blockedBy: "blocked-by" } as const;
+
+/**
+ * Which way an edge points from `id`, or null when it does not touch it: a
+ * symmetric one is `out` from both ends. `rel`, the board and the brief all
+ * read it here, so the three agree.
+ */
+export const edgeDirection = (r: Relationship, id: string): "in" | "out" | null =>
+  r.from !== id && r.to !== id ? null : r.symmetric === true || r.to !== id ? "out" : "in";
 
 /**
  * What a tracker reports of an item's relationships on the item's own node,

@@ -103,7 +103,8 @@ A condition reads the item's **snapshot**: the document the engine builds for it
 - `node.state.labels` — its labels;
 - `node.state.assignees` — a list of logins, empty (never absent) when nobody is assigned;
 - `node.state.relatedUnreadable` — `true` when its relationships could not all be read; absent otherwise;
-- `node.state.dependencyCycle` — `true` when it is on a cycle of `blocked-by`; absent otherwise.
+- `node.state.dependencyCycle` — `true` when it is on a cycle of `blocked-by`; absent otherwise;
+- `node.state.status` and `node.state.statusCategory` — the item's status by name, and its category, where the tracker keeps a status beside the stage label; absent otherwise. Jira sets both, the category as `new`, `indeterminate` or `done` ([Integrations](integrations.md#jira)). A related item drawn as a placeholder carries them too.
 
 An item's priority comes from a `P0`..`P9` label (`P0` most urgent), unless its tracker reports one. Two of them is a priority that cannot be told, and the item halts.
 
@@ -132,6 +133,7 @@ An item's priority comes from a `P0`..`P9` label (`P0` most urgent), unless its 
 | `implements` | pull request → item | The item's pull request: one from the item's own branch, `landrace/{item}` unless [`branch`](#the-items-branch) sets another — see [Which pull requests are an item's](#which-pull-requests-are-an-items). Singular |
 | `documents` | page → item | The item's published spec page. Singular |
 | `blocked-by` | item → blocker | The item waits on the blocker. Many per item, outward-only: `rel.blocked-by.in` is refused. Reported by trackers that read it — GitHub, Jira and the in-memory tracker |
+| A name a project chooses | item → other, or other → item | Jira's [`relations`](integrations.md#jira): another issue link type, such as `relates` for Relates. Many per item, read both ways: `rel.<name>.out` for a link whose outward words describe the item, `rel.<name>.in` for one whose inward words do. A type that reads the same both ways counts as `out` from either end. Read only |
 
 A pull request is a node like any other, `kind: "pull-request"`, and its `state` carries:
 
@@ -452,6 +454,7 @@ A project whose hooks are made by the kit's `compose` has the source id `project
 | Key | What it holds |
 |---|---|
 | `{brief.project.body}` | The item's own text, without the marker Landrace stamps on an item it created; 16,000 characters at most, cut saying so, and "This item has no description beyond its title." when there is none |
+| `{brief.project.related}` | The item's status, `Status: <name> (<category>)`, when its tracker keeps one, then one line per relationship other than `child-of`, `implements` and `documents`: `- <type>, <in or out>: <id> "<title>" — <status>`, or its state (`open`, `closed (done)`, `closed (dropped)`) where it has no status, and `unreadable` where its state could not be read, whatever its status. Read off the graph the workflow routed on. 8,000 characters at most, cut saying so. "This item has no related items." when there are none |
 | `{brief.project.threads}` | The open review threads across the item's pull requests, each named by its thread id, marked when Landrace's reviewer raised it, and said to be awaiting a fix or answered by the fixer, with its last reply — the ones awaiting a fix first |
 | `{brief.project.diff}` | What the item's open pull requests change, file by file — a read-only step has no shell to run `git diff` — 24,000 characters of patches at most, with every file past that named |
 | `{brief.project.ci}` | The open pull requests' checks: a `### pr-N: checks <state>` line for each, under it a line saying so when it conflicts with the default branch, and under a failing one each failed check as `#### <name>` followed by the last 4,000 characters of its log, or `(log unavailable)`. 16,000 characters at most; it says when no pull request is open |

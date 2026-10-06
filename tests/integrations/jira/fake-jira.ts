@@ -37,6 +37,8 @@ export const STATUSES: Record<string, Status> = {
   "In Progress": { id: "3", name: "In Progress", category: "indeterminate" },
   // In the workflow, and no transition leads into it.
   "In Review": { id: "10003", name: "In Review", category: "indeterminate" },
+  // A service desk's own: a ticket waiting on an engineering fix.
+  "Pending R&D Fix": { id: "10004", name: "Pending R&D Fix", category: "indeterminate" },
   Done: { id: "10001", name: "Done", category: "done" },
   "Won't Do": { id: "10002", name: "Won't Do", category: "done" },
 };

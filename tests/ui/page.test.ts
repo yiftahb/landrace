@@ -1947,6 +1947,11 @@ describe("the item panel's relationships", () => {
     expect(anchors.map((a) => [a.href, a.target, a.textContent])).toEqual([["https://x/10", "_blank", "#10 Auth"]]);
   });
 
+  it("shows a related item's status in place of its state where its tracker gave one", () => {
+    const [, list] = draw([{ type: "relates", dir: "out", id: "ENG-5", title: "Fix", link: "", state: "open", status: "In Progress" }]);
+    expect(list?.children.map((li) => li.children.map((c) => c.textContent))).toEqual([["relates →", "#ENG-5 Fix", "In Progress"]]);
+  });
+
   it("draws text only, never markup", () => {
     expect(fnSource("relatedOf")).not.toMatch(/innerHTML|insertAdjacentHTML/);
   });

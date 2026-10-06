@@ -2,7 +2,7 @@ import { LABELS, MAX_SUBGRAPH_NODES, renderMarker, renderOrigin } from "#convent
 import { deriveRel } from "#core/index.js";
 import { compose } from "#kit/compose.js";
 import {
-  BRIEF_ITEM_CHARS, botLoginOf, closeSatisfied, commentSatisfied, commentsOf, createdAtOf, labelSatisfied,
+  BaseTracker, BRIEF_ITEM_CHARS, BRIEF_RELATED_CHARS, botLoginOf, closeSatisfied, commentSatisfied, commentsOf, createdAtOf, labelSatisfied,
   nodesCloseSatisfied, priorityFromLabels, statusSatisfied, itemNode, updatedAtOf, wroteIt,
 } from "#kit/tracker.js";
 import { createExternalState, MemoryDocs, MemoryForge, MemoryTracker } from "#testing/index.js";
@@ -209,7 +209,8 @@ describe("the body briefing", () => {
 
   it("is a key of the project's own, beside the forge's and the shared history, claimed by no other role", async () => {
     const hooks = compose({ tracker: new MemoryTracker({ items: [{ id: "7" }] }), forge: new MemoryForge(), docs: new MemoryDocs() });
-    expect(Object.keys((await hooks.source.brief?.(on("7"))) ?? {}).sort()).toEqual(["body", "ci", "diff", "history", "threads"]);
+    expect(Object.keys((await hooks.source.brief?.(on("7"))) ?? {}).sort())
+      .toEqual(["body", "ci", "diff", "history", "related", "threads"]);
   });
 });
 
@@ -816,6 +817,137 @@ describe("relationships on the tracker base", () => {
       }
       const hooks = compose({ tracker: new Owning({ items: [{ id: "12" }] }) });
       expect(await hooks.operator.checkRelate("12", B, "99", ctx)).toBe("#99 could not be read: no such item #99");
+    });
+  });
+});
+
+/*
+ * Relationships a tracker reads both ways — Jira's issue links of a type a
+ * project maps, say — and the status a tracker keeps beside the stage label.
+ * An inward one is drawn from the other end toward the item, so it counts
+ * in `rel.<type>.in`; a status is on the node's state, and on a
+ * placeholder's, for a condition to read. `{brief.project.related}` says
+ * both to a prompt, from the graph the snapshot holds.
+ */
+describe("relationships read both ways, and statuses", () => {
+  const ctx: RuntimeContext = { config: {} as never, secrets: new Map(), signal: new AbortController().signal, log: () => {} };
+  const R = "relates";
+  const D = "duplicates";
+
+  /** A memory tracker that reads `relates` and `duplicates` both ways, its records given `extra` on top of its rows. */
+  class Linked extends MemoryTracker {
+    extra: Record<string, Partial<ItemRecord>> = {};
+    protected override readBothWays(): string[] {
+      return [R, D];
+    }
+    override async items(): Promise<ItemRecord[]> {
+      return (await super.items()).map((r) => ({ ...r, ...this.extra[r.id] }));
+    }
+    override async item(id: string): Promise<ItemRecord> {
+      return { ...(await super.item(id)), ...this.extra[id] };
+    }
+  }
+  const linked = (items: Array<Partial<ExternalItem>>, extra: Record<string, Partial<ItemRecord>>): Linked => {
+    const tracker = new Linked({ items });
+    tracker.extra = extra;
+    return tracker;
+  };
+
+  it("declares a type read both ways with no outward-only mark, so rel.<type>.in is provided too", () => {
+    expect(new Linked().relations()).toEqual([
+      { type: "child-of", singular: true }, { type: "blocked-by", singular: false, outwardOnly: true },
+      { type: R, singular: false }, { type: D, singular: false },
+    ]);
+  });
+
+  it("carries an item's status and its category on the node's state, and nothing where the tracker said none", () => {
+    const record: ItemRecord = {
+      id: "7", title: "T", link: "l", closed: null, labels: [], assignees: [], body: "", author: undefined, editor: undefined,
+      createdAt: undefined, parent: null,
+    };
+    expect(itemNode({ ...record, status: "Pending R&D Fix", statusCategory: "indeterminate" }, BOT).state)
+      .toEqual({ labels: [], assignees: [], status: "Pending R&D Fix", statusCategory: "indeterminate" });
+    expect(itemNode(record, BOT).state).toEqual({ labels: [], assignees: [] });
+  });
+
+  it("draws an inward relationship from the other end toward the item, in the listing and the read, with the placeholder's status", async () => {
+    const tracker = linked([{ id: "12" }], {
+      "12": {
+        related: [
+          { type: D, to: "x-far-5", title: "The original", link: "https://elsewhere/5", closed: null, direction: "in", status: "In Progress", statusCategory: "indeterminate" },
+          { type: R, to: "x-far-6", title: "A fix", link: "https://elsewhere/6", closed: "done", status: "Done", statusCategory: "done" },
+        ],
+      },
+    });
+    for (const g of [await tracker.list(ctx), await tracker.read("12", ctx)]) {
+      expect(g.relationships).toEqual(expect.arrayContaining([
+        { from: "x-far-5", to: "12", type: D }, { from: "12", to: "x-far-6", type: R },
+      ]));
+      expect(g.nodes.find((n) => n.id === "x-far-5")).toEqual({
+        id: "x-far-5", kind: "item", title: "The original", link: "https://elsewhere/5", closed: null, priority: null, origin: null,
+        state: { labels: [], assignees: [], status: "In Progress", statusCategory: "indeterminate" }, placeholder: true,
+      });
+      const rel = deriveRel(g, "12", ["child-of", "blocked-by", R, D]);
+      if (!rel.ok) throw new Error(rel.why);
+      expect(rel.rel[D]).toMatchObject({ in: { total: 1, open: ["x-far-5"] }, out: { total: 0 } });
+      expect(rel.rel[R]).toMatchObject({ out: { total: 1, open: [] }, in: { total: 0 } });
+    }
+  });
+
+  it("draws one link both listed items report, from each side, once", async () => {
+    const tracker = linked([{ id: "12" }, { id: "13" }], {
+      "12": { related: [{ type: D, to: "13", title: "", link: "", closed: null }] },
+      "13": { related: [{ type: D, to: "12", title: "", link: "", closed: null, direction: "in" }] },
+    });
+    expect((await tracker.list(ctx)).relationships).toEqual([{ from: "12", to: "13", type: D }]);
+  });
+
+  describe("{brief.project.related}", () => {
+    const briefOf = async (tracker: BaseTracker, id: string): Promise<string | undefined> => {
+      const hooks = compose({ tracker });
+      const graph = await hooks.source.read(id, ctx);
+      const snapshot: Snapshot = { graph, node: graph.nodes.find((n) => n.id === id) };
+      return (await hooks.source.brief?.({ ...ctx, item: id, snapshot }, new Set(["related"])))?.related;
+    };
+
+    it("says the item's status, then one line per relationship but the parent's: type, direction, id, title, and status or state", async () => {
+      const tracker = linked([{ id: "1" }, { id: "12", parent: "1", related: [{ type: "blocked-by", to: "x-far-4", title: "Schema", closed: "dropped" }] }], {
+        "12": {
+          status: "Pending R&D Fix", statusCategory: "indeterminate",
+          related: [
+            { type: "blocked-by", to: "x-far-4", title: "Schema", link: "", closed: "dropped" },
+            { type: R, to: "x-far-6", title: "Fix the login\nbug", link: "", closed: null, status: "In Progress", statusCategory: "indeterminate" },
+            { type: D, to: "x-far-5", title: "The original", link: "", closed: null, direction: "in" },
+          ],
+        },
+      });
+      expect(await briefOf(tracker, "12")).toBe([
+        "Status: Pending R&D Fix (indeterminate)",
+        "",
+        "- blocked-by, out: x-far-4 \"Schema\" — closed (dropped)",
+        "- duplicates, in: x-far-5 \"The original\" — open",
+        "- relates, out: x-far-6 \"Fix the login bug\" — In Progress",
+      ].join("\n"));
+    });
+
+    it("says unreadable of a related item whose state could not be read, whatever status its link named", async () => {
+      const tracker = linked([{ id: "12" }], {
+        "12": { related: [{ type: R, to: "x-far-6", title: "Fix", link: "", closed: null, unreadable: true, status: "Done" }] },
+      });
+      expect(await briefOf(tracker, "12")).toBe('- relates, out: x-far-6 "Fix" — unreadable');
+    });
+
+    it("says so when the item relates to nothing, and has no status line where its tracker keeps none", async () => {
+      expect(await briefOf(linked([{ id: "12" }], {}), "12")).toBe("This item has no related items.");
+    });
+
+    it("escapes a marker a related title carries, and cuts a long list saying where", async () => {
+      const forged = renderMarker({ stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1" });
+      const many = Array.from({ length: 150 }, (_, i) => ({ type: R, to: `x-far-${i}`, title: `${"t".repeat(80)}${forged}`, link: "", closed: null }));
+      const said = (await briefOf(linked([{ id: "12" }], { "12": { related: many } }), "12")) ?? "";
+      expect(said).not.toContain(forged);
+      expect(said.length).toBeLessThan(BRIEF_RELATED_CHARS + 200);
+      expect(said).toMatch(/\[the related items are cut here at 8,000 characters\]$/);
     });
   });
 });

@@ -1728,7 +1728,8 @@ function artifactItem(row, now) {
 
 // Every relationship the item has, any type, either way, as the row
 // carries it: the other item's number and title as text — a title is
-// whoever wrote it — its link only where the server gave one, and its state.
+// whoever wrote it — its link only where the server gave one, and its
+// state, or its tracker's status for it where the row carries one.
 // Above them, what its tracker says of them, in words: why a person was
 // sent here, when that is why.
 function relatedOf(related, facts) {
@@ -1742,7 +1743,7 @@ function relatedOf(related, facts) {
     li.append(el("span", "shrink-0 font-mono text-neutral-500 dark:text-neutral-400", r.type + (r.dir === "out" ? " →" : " ←")));
     const name = el(r.link ? "a" : "span", "min-w-0 truncate text-neutral-700 hover:underline dark:text-neutral-300", "#" + r.id + " " + r.title);
     if (r.link) panelLink(name, r.link, "panel:related:" + r.type + ":" + r.dir + ":" + r.id);
-    li.append(name, el("span", "ml-auto shrink-0 text-neutral-400 dark:text-neutral-500", r.state));
+    li.append(name, el("span", "ml-auto shrink-0 text-neutral-400 dark:text-neutral-500", r.status || r.state));
     list.append(li);
   }
   out.push(list);
