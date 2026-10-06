@@ -9,7 +9,7 @@
  */
 import {
   type Closed, type Effect, FIELD_EFFECT, type HookContext, type ItemPatch, type Json, mayCreateItems, neutraliseMarkers, type Node,
-  type PreflightContext, RELATIONS, type RuntimeContext, sameLogin, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT,
+  type PreflightContext, RELATIONS, RESERVED_IDS, type RuntimeContext, sameLogin, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT,
   type TrackerFieldValue, WORKLOG_EFFECT,
 } from "landrace/hooks";
 import {
@@ -715,8 +715,9 @@ const RESERVED: readonly string[] = Object.values(RELATIONS);
 /**
  * `relations`, checked and turned round — link type to name — or refused,
  * before anything is read: a name a path could not spell, one the engine
- * means something else by, a type read as blocked-by already, or two names
- * for one type, which would count each link twice under different names.
+ * means something else by, an object key the engine refuses as a type, a
+ * type read as blocked-by already, or two names for one type, which would
+ * count each link twice under different names.
  */
 function mappedRelations(relations: Record<string, string>, blockedBy: string): Map<string, string> {
   const mapped = new Map<string, string>();
@@ -724,6 +725,9 @@ function mappedRelations(relations: Record<string, string>, blockedBy: string): 
     if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error(`relations name "${name}" must be lowercase: a letter, then letters, digits or "-"`);
     if (RESERVED.includes(name)) {
       throw new Error(`relations name "${name}" is one of the engine's own relationship types (${RESERVED.join(", ")}); name it something else`);
+    }
+    if (RESERVED_IDS.includes(name)) {
+      throw new Error(`relations name "${name}" is a reserved object key (${RESERVED_IDS.join(", ")}): the engine refuses a relationship of that type, so every read would halt once an item had such a link`);
     }
     if (typeof type !== "string" || type.trim() === "") throw new Error(`relations.${name} must name an issue link type, got ${JSON.stringify(type)}`);
     if (type === blockedBy) throw new Error(`relations.${name} maps "${type}", which is blockedByLinkType: its links are read as blocked-by already`);

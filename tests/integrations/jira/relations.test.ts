@@ -56,6 +56,8 @@ describe("relations, as issue links of the types a project maps", () => {
     [{ Relates: "Relates" }, /relations name "Relates" must be lowercase/],
     [{ "blocked-by": "Duplicate" }, /relations name "blocked-by" is one of the engine's own relationship types/],
     [{ "child-of": "Duplicate" }, /"child-of" is one of the engine's own/],
+    [{ constructor: "Relates" }, /relations name "constructor" is a reserved object key/],
+    [{ prototype: "Relates" }, /relations name "prototype" is a reserved object key/],
     [{ waits: "Blocks" }, /relations\.waits maps "Blocks", which is blockedByLinkType/],
     [{ relates: "Relates", related: "Relates" }, /relations\.relates and relations\.related both map "Relates"/],
     [{ relates: " " }, /relations\.relates must name an issue link type/],

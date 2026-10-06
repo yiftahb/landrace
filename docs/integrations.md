@@ -400,7 +400,7 @@ new Jira({ project: "SD", relations: { relates: "Relates", duplicates: "Duplicat
 - An issue that `tracker.create` filed shows up here when `createLinkType` is one of the mapped types.
 - A link entry of a mapped type that cannot be read is logged as `jira.blocker.unreadable`, and the item's relationships read as not all read. That includes a missing end, a missing key, and a type without its inward and outward words. So does a related issue whose link names no status: it is drawn open and marked unreadable.
 - These relationships are read only. `relate` and `unrelate` still write `blocked-by` alone.
-- A name is lowercase: a letter, then letters, digits or `-`. It may not be `child-of`, `implements`, `documents` or `blocked-by`. A name may not map `blockedByLinkType`, and two names may not map one link type. Loading the hook file refuses each of these. `start` refuses a link type the site does not have.
+- A name is lowercase: a letter, then letters, digits or `-`. It may not be `child-of`, `implements`, `documents` or `blocked-by`, the engine's own relationship types, nor `constructor` or `prototype`, which the engine refuses as a relationship type. A name may not map `blockedByLinkType`, and two names may not map one link type. Loading the hook file refuses each of these. `start` refuses a link type the site does not have.
 - `validate` accepts `rel.<name>.in.*` and `rel.<name>.out.*` for each mapped name. It refuses those paths for a name that is not mapped.
 
 `relations` is tested against a fake Jira only. It has not been run against a real site, and `scripts/jira-check.mjs` does not exercise it.
