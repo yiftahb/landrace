@@ -2737,6 +2737,21 @@ describe("the panel's Release", () => {
   });
 });
 
+// The Pair confirm cannot promise the agent takes the round back on a
+// release: at a stage that waits for a pairing, it never does.
+describe("the panel's Pair", () => {
+  it("asks first, saying a stage that waits for a pairing is never run alone", () => {
+    const confirms: string[] = [];
+    const context: Record<string, unknown> = {
+      pairing: { busy: false, note: "", command: null, view: null },
+      currentRow: () => ({ id: "29", panel: { pair: "/items/29/pair" } }),
+      confirm: (t: string) => { confirms.push(t); return false; },
+    };
+    runInNewContext(`${fnSource("pairWrite")} pairWrite("pair", "design")`, context);
+    expect(confirms[0]).toMatch(/#29[\s\S]*until you finish or release it[\s\S]*or ever, if its stage waits for a pairing/);
+  });
+});
+
 /*
  * A pairing's command is right until it has been run: the seeded line then
  * refuses its own session id, and only the server's next answer resumes it.

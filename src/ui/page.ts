@@ -2226,7 +2226,7 @@ function pairWrite(kind, stage) {
   let body = "";
   if (kind === "pair") {
     const fresh = !(pairing.view && pairing.view.open);
-    if (fresh && !confirm("Pair on " + stage + " for #" + row.id + "? Its round is held for you: the agent does not run it alone until you finish or release it.")) return;
+    if (fresh && !confirm("Pair on " + stage + " for #" + row.id + "? Its round is held for you: the agent does not run it alone until you finish or release it — or ever, if its stage waits for a pairing.")) return;
     body = stage;
   } else if (kind === "finish") {
     const note = prompt("Finish the pairing on #" + row.id + "? Your session is asked for the step's answer, a paid agent turn, and the item moves on. A note for it, if you like:", "");
