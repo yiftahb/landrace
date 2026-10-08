@@ -2871,6 +2871,12 @@ export interface BoardRelated {
   type: string;
   /** `out` where the row's node is the edge's `from`, `in` where it is its `to` — `rel`'s own two ways. */
   dir: "in" | "out";
+  /**
+   * The relationship in the row's node's own words — `blocked by` or `blocks`,
+   * never one word for both ends, which reads as each blocking the other. A
+   * symmetric edge is its type alone; a type with no words its type and an arrow.
+   */
+  label: string;
   id: string;
   /** One line. */
   title: string;
