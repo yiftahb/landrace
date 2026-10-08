@@ -57,6 +57,15 @@ describe("mcp server over a real transport", () => {
     await client.close();
   });
 
+  // A client reads only the description: one that promised a re-run would
+  // send it to wait at a stage that waits for a pairing, where nothing runs.
+  it("says a goto into a stage that waits for a pairing waits there for one", async () => {
+    const { client } = await connect();
+    const goto = (await client.listTools()).tools.find((t) => t.name === "landrace_goto");
+    expect(goto?.description).toMatch(/re-runs on the next tick, unless its stage waits for a pairing: then the item waits there for one/);
+    await client.close();
+  });
+
   /*
    * An executor that cannot hand a session to a person offers nothing to pair
    * on, and a pairing asked for anyway is refused in a sentence — never

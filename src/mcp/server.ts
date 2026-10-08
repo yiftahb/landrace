@@ -155,7 +155,8 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
     said(
       "Send an item back to an earlier step — spec or build, say — from a stage where it is your turn. " +
         "The workflow says which steps each stage may send an item to, and how many rounds each may run; " +
-        "anything else is refused with the reason. The step re-runs on the next tick.",
+        "anything else is refused with the reason. The step re-runs on the next tick, unless its stage waits for a pairing: " +
+        "then the item waits there for one.",
     ),
     { item, stage: z.string().min(1).max(64) },
     guard(({ item: n, stage }) => tools.goto(n, stage)),
