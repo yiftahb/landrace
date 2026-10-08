@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-08
+
 ### Added
 
 - **A stage worked only with a person.** `waits: pairing` on a stage means its step runs only in a pairing: the engine never runs it alone. An item that reaches the stage, by a trigger, a Retry, a Clear & retry or a Go to step, waits there in Needs you, and the panel offers **Pair on `<stage>`**. Release ends the pairing and the item waits there for the next one; before, the agent ran the step alone on the next tick. Finish routes the answer as before, as `run.lastOutputBy: pair`. `validate` refuses `waits: pairing` on a stage with no step or a terminal one. `validate` and `start` refuse it with `agent.isolation` other than `worktree`, and under an executor that cannot start a fresh pairing: Codex, one with no `take` in its `pairings`, or any executor with no `handoff`, a plain `Executor` hook included. A `waits: pairing` stage that another stage's `goto` lists counts as reachable, so it needs no trigger of its own. Clear & retry on such a stage clears its next pairing: that pairing starts and hands in without screening. A Release's answer, from `landrace_release` and the board, carries `next`: `agent` or `pairing`. An executor factory gets the stages in `ExecutorContext.pairingStages`. See [Workflows](docs/workflows.md#worked-only-with-a-person) and [`validate`](docs/validate.md).
@@ -121,7 +123,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Versions and updates.** `landrace version` (and `--version`) prints the version and whether npm has a newer one; `landrace update` updates the project's own dependency with its package manager, or the global install; `landrace start` says when a newer version is out. The check asks npm's registry once, gives up after two seconds, and is off in CI or with `LANDRACE_NO_UPDATE_CHECK=1`.
 - **Notifications and telemetry.** A `notify` block tells a person, through a notifier hook, when an item comes to rest needing them. `--telemetry` exports the engine's events as OpenTelemetry log records.
 
-[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/yiftahb/landrace/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/yiftahb/landrace/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/yiftahb/landrace/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/yiftahb/landrace/compare/v1.2.0...v1.2.1
