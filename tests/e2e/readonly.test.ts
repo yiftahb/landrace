@@ -75,7 +75,7 @@ function workspace(
         }),
       },
     }],
-    preflights: [], intervalMs: 60_000, concurrency: 2, converging: 0, listed: 0, stop, running: new Map(), seen: new Map(), log, ctx,
+    preflights: [], intervalMs: 60_000, concurrency: 2, agents: 0, checking: false, asking: [], turnedAway: [], stop, running: new Map(), seen: new Map(), log, ctx,
   };
   const registry: Registry = {
     preflights: [state.preflight], pre: [state.pre], post: [state.post], artifacts: [], source: state.source,
@@ -359,11 +359,11 @@ describe("telling you an item placed by its own state waits on you", () => {
   });
 
   /*
-   * Ticks overlap. One that lists while another is still working the item
-   * finds it not yet told of, and its converge waits on the other's lock:
-   * whichever tells first is the one tell.
+   * Ticks overlap. One that starts while an earlier tick is still checking is
+   * skipped: it lists nothing and converges nothing, so the first tick's own
+   * check is the one tell, and the tick after it finds the item told of.
    */
-  it("tells you once of an item two overlapping ticks both find arriving", async () => {
+  it("tells you once of an item a tick finds arriving while a later tick is skipped for it", async () => {
     const state = requested();
     let hold: (() => void) | null = null;
     const held = new Promise<void>((resolve) => { hold = resolve; });
@@ -378,9 +378,9 @@ describe("telling you an item placed by its own state waits on you", () => {
     const w = workspace(state, review, "review", { source: slow });
 
     const first = w.tick();
-    // The first tick holds the item's lock while its read waits.
+    // The first tick is still checking while its read waits: the second checks nothing.
     while (reads === 0) await new Promise((resolve) => setImmediate(resolve));
-    expect((await w.tick()).find((r) => r.item === "1")?.outcome).toMatch(/lock/);
+    expect(await w.tick()).toEqual([]);
     (hold as unknown as () => void)();
     await first;
     await w.tick();
@@ -496,7 +496,7 @@ describe("main and a read-only workflow over one tracker", () => {
     });
     const runtime: WorkspaceRuntime = {
       dir: root, workflows: [listed("main", main), listed("review", review)],
-      preflights: [], intervalMs: 60_000, concurrency: 2, converging: 0, listed: 0, stop, running: new Map(), seen: new Map(), log, ctx,
+      preflights: [], intervalMs: 60_000, concurrency: 2, agents: 0, checking: false, asking: [], turnedAway: [], stop, running: new Map(), seen: new Map(), log, ctx,
     };
     const registry: Registry = {
       preflights: [state.preflight], pre: [state.pre], post: [state.post], artifacts: [], source: state.source,

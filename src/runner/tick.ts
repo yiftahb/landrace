@@ -1,6 +1,7 @@
 import { keptItems, keptSlot, removeWorktree } from "#agent/worktree.js";
 import { claimItems, closedIdle, eligibilityOfNode, locateNode, placedByState } from "#core/index.js";
 import type {
+  AgentSlot,
   Claims,
   ConvergeResult,
   Graph,
@@ -15,6 +16,8 @@ import type {
   Snapshot,
   Source,
   TickRow,
+  TickWait,
+  TurnedAway,
   WorkflowRuntime,
   WorkspaceListing,
   WorkspaceRuntime,
@@ -23,7 +26,7 @@ import type {
 import { compareIds, compareWork, isItemNode, isOpenItem, itemIdProblem } from "#conventions.js";
 import { converge } from "#runner/converge.js";
 import { messageOf } from "#runner/errors.js";
-import { held, withLock } from "#runner/lock.js";
+import { withLock } from "#runner/lock.js";
 import { oneLine } from "#runner/status.js";
 
 /** Claims and the tick judge eligibility through one function, so they cannot disagree. */
@@ -255,17 +258,16 @@ function noteArrivals(
  * Tell a person of an item that arrived at their turn by its own state, once
  * its converge has left it where it was listed: settled waiting on its first
  * pass, so no transition took it on and nothing ran — or not converged at
- * all, its lock held elsewhere or no slot free for it. One a trigger moved on
- * in the same tick never waited on anyone. Through the workflow's notify, so
- * by the board's rule for who is waiting, and noted where it was told of, so
- * no tick tells it again.
+ * all, its lock held elsewhere. One a trigger moved on in the same tick never
+ * waited on anyone. Through the workflow's notify, so by the board's rule for
+ * who is waiting, and noted where it was told of, so no tick tells it again.
  *
- * Unless a tick overlapping this one has already told of it there: one that
- * listed before this one told finds it arriving too, and the first to tell is
- * the one tell.
+ * Unless another tick has already told of it there: a later one lists while
+ * this one's runs go on, finds it arriving too, and the first to tell is the
+ * one tell.
  */
 function tellIf(
-  runtime: WorkspaceRuntime, workflow: WorkflowRuntime, node: Node, at: SeenAt, result: ConvergeResult | "locked" | "left",
+  runtime: WorkspaceRuntime, workflow: WorkflowRuntime, node: Node, at: SeenAt, result: ConvergeResult | "locked",
 ): void {
   if (typeof result !== "string" && (result.settled !== "wait" || result.passes !== 1)) return;
   if (sameStage(runtime.seen.get(node.id), at)) return;
@@ -333,35 +335,67 @@ const isLocked = (e: unknown): boolean =>
 const outcomeOf = (result: ConvergeResult): string =>
   `${result.settled} after ${result.passes} pass(es)${result.why ? `: ${oneLine(result.why)}` : ""}`;
 
+/** Why a step did not start: its row, its event, and the converge's own answer. */
+export const waitingForSlot = (concurrency: number): string => `waiting for a free agent slot (tick.concurrency ${concurrency})`;
+
+/** Why a tick checked nothing. */
+export const SKIPPED_CHECKING = "an earlier tick is still checking its items";
+
 /**
- * Run `fn` over `items`, never more than `limit` at a time, and hand back the
- * items it never ran, in order.
+ * Grant the slots asked for in one turn of the event loop, most urgent first,
+ * while one is free. Together rather than as each ask lands: checks run side
+ * by side, and the one whose read answered first is not the one most urgent.
+ */
+function grantAsks(runtime: WorkspaceRuntime): void {
+  for (const ask of runtime.asking.splice(0).sort((a, b) => compareWork(a.node, b.node))) {
+    const free = runtime.agents < runtime.concurrency;
+    if (free) runtime.agents += 1;
+    ask.grant(free);
+  }
+}
+
+function askSlot(runtime: WorkspaceRuntime, node: Node): Promise<boolean> {
+  return new Promise((grant) => {
+    if (runtime.asking.push({ node, grant }) === 1) setImmediate(() => grantAsks(runtime));
+  });
+}
+
+/**
+ * Hand every free slot to the most urgent item a check turned away, which is
+ * checked again holding it. Nothing once the loop is stopping: no new run
+ * starts after Ctrl-C.
+ */
+function drain(runtime: WorkspaceRuntime, by: TickWait): void {
+  while (runtime.agents < runtime.concurrency && !runtime.stop.signal.aborted) {
+    const next = runtime.turnedAway.shift();
+    if (next === undefined) return;
+    runtime.agents += 1;
+    next.start(by);
+  }
+}
+
+/** Keep `turnedAway` most urgent first, one entry an item, and hand it a slot if one came free meanwhile. */
+function turnAway(runtime: WorkspaceRuntime, entry: TurnedAway, by: TickWait): void {
+  const queue = runtime.turnedAway.filter((t) => t.node.id !== entry.node.id);
+  const at = queue.findIndex((t) => compareWork(entry.node, t.node) < 0);
+  queue.splice(at === -1 ? queue.length : at, 0, entry);
+  runtime.turnedAway = queue;
+  drain(runtime, by);
+}
+
+/**
+ * Run `fn` over `items`, never more than `limit` at a time, in order.
  *
  * A shared queue rather than fixed-size batches: a batch finishes at the pace
  * of its slowest member, which is the starvation this whole design exists to
  * avoid, one level down.
- *
- * A worker whose `fn` answers false puts that item back where it was and
- * stops: the rest of the queue goes to the workers still running, or back to
- * the caller once none is. Where it was, not at the front — workers turned
- * away in one round resume in no order of the items', and each putting its
- * own first would hand the next free slot to the least urgent of them.
  */
-async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<boolean>): Promise<T[]> {
-  const queue = items.map((_, i) => i);
+async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  const queue = [...items];
   const worker = async (): Promise<void> => {
-    for (;;) {
-      const next = queue.shift();
-      if (next === undefined) return;
-      if (!(await fn(items[next] as T))) {
-        const after = queue.findIndex((i) => i > next);
-        queue.splice(after === -1 ? queue.length : after, 0, next);
-        return;
-      }
-    }
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) await fn(next);
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, queue.length)) }, worker));
-  return queue.map((i) => items[i] as T);
 }
 
 /**
@@ -369,221 +403,257 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<boole
  *
  * Each open item is worked by the one workflow that claims it, converged with
  * that workflow's own deps; one claimed twice, or reported by two sources, is
- * worked by neither and its row says who. `tick.concurrency` bounds the
- * workspace, not each workflow and not each tick: the converges in flight
- * over every workflow and every tick still running, counted in
- * `runtime.converging`. Each tick's pool is that size too, so a tick alone
- * works its list as it always did, its own runs queueing the rest — until a
- * later tick lists, which from then on hands out every slot that frees.
+ * worked by neither and its row says who.
  *
- * Items are independent, so one item running a long agent must not hold up
- * the rest: mutual exclusion is per item, and ticks themselves are allowed
- * to overlap. A global "is a tick running" guard would let a single ten-minute
- * step starve every other item in the repository.
+ * Every claimed item is checked once, `tick.concurrency` at a time so the
+ * tracker is not flooded. A check takes no agent slot: reading an item,
+ * entering a stage and its effects, a merge, never wait behind running
+ * agents. A slot is an agent, taken by converge just before a step starts and
+ * held until it ends. From there the run carries on outside the checks,
+ * holding its lock and its slot, and the checks move on to the next item; the
+ * tick's promise waits for it. `tick.concurrency` bounds the agents over every
+ * workflow and every tick, counted in `runtime.agents`.
+ *
+ * A step that finds no slot free is left owed, and its row says so. The next
+ * slot a run of this process frees goes to the most urgent item the latest
+ * checks turned away, checked again holding it; else a later tick runs it.
+ *
+ * A tick that starts while an earlier one is still checking is skipped.
+ * Checking again from the top, the most urgent first, is what starved new
+ * work behind slow reads (#136): each tick spent its time on items that only
+ * waited, then a later one started over. Runs never cause a skip: one item's
+ * ten-minute agent must not stop every other item moving, so mutual
+ * exclusion of runs is per item.
  *
  * A busy item is skipped, not queued. It will still be there next tick, and
- * forcing in would mean two invocations resuming the same agent session. So
- * is what this tick has not started once no slot is free and no run of its
- * own is left to free one, or once a later tick has listed.
+ * forcing in would mean two invocations resuming the same agent session.
  */
 export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow[]> {
   const { runtime } = opts;
   const { log } = runtime;
+  if (runtime.checking) {
+    log("tick.skipped", { reason: SKIPPED_CHECKING });
+    return [];
+  }
+  runtime.checking = true;
   const started = Date.now();
-  log("tick.started", {});
+  const rows = new Map<string, TickRow>();
+  const runs = new Set<Promise<void>>();
+  const tick: TickWait = {
+    track: (run) => {
+      runs.add(run);
+      void run.finally(() => runs.delete(run));
+    },
+    rows,
+  };
+  let arrived = new Map<string, SeenAt>();
 
-  const listing = await listWorkspace(runtime);
-  const listed = ++runtime.listed;
-
-  // A display must never be able to stop the work it is displaying.
-  try {
-    opts.onList?.(listing);
-  } catch (e) {
-    log("display.failed", { reason: messageOf(e) });
-  }
-
-  const moved = stopStopped(runtime, listing);
-
-  // With two sources or more, one that could not list leaves every clash
-  // unjudged: an id the others list may be one it reports too. Nothing is
-  // worked until it lists again, rather than settling a clash for whichever
-  // source answered. Runs are not stopped for it — what stops one is judged
-  // above, and a clash would only stop it too. One source has no one to clash
-  // with, and its own items are simply absent.
-  const unjudged = listing.failed.size > 0 && listing.graphs.length > 1;
-
-  const workflows = new Map(runtime.workflows.map((w) => [w.id, w]));
-  const rows: TickRow[] = [];
-  const work: Array<{ node: Node; workflow: WorkflowRuntime }> = [];
-  // Items only: a pull request in the list is context for an item. A closed
-  // item is there for its parent to count, and is work only where a workflow
-  // with a `closed: run` stage claims it, or two halt over it — and then only
-  // when its node shows it could move or run, so a tracker's every recently
-  // closed item is not read again on every tick. Open ones first, so an id
-  // one source reports open is judged as open. An id two sources report is
-  // one row: claims has already judged it a clash.
-  const items = listing.graphs.flatMap((g) => g.nodes).filter(isItemNode);
-  const seen = new Set<string>();
-  for (const node of [...items.filter(isOpenItem), ...items.filter((n) => !isOpenItem(n))]) {
-    if (seen.has(node.id)) continue;
-    seen.add(node.id);
-    const item = node.id;
-    const closed = node.closed !== null;
-    const closedOwner = closed ? listing.claims.closed.get(item) : undefined;
-    if (closed && !listing.claims.conflicts.has(item) && !listing.claims.clashes.has(item)) {
-      const owning = closedOwner === undefined ? undefined : workflows.get(closedOwner);
-      if (owning === undefined || closedIdle(owning.deps.workflow, node)) continue;
-    }
-    const problem = itemIdProblem(item);
-    if (problem) {
-      // A source is a hook, and a hook's output is outside input: this id is
-      // about to become a lock file name and a worktree directory.
-      log("item.skipped", { item, reason: problem });
-      rows.push({ item, outcome: `error: ${oneLine(problem)}` });
-      continue;
-    }
-    const owner = closed ? closedOwner : listing.claims.owner.get(item);
-    const workflow = owner === undefined ? undefined : workflows.get(owner);
-    if (workflow && unjudged) {
-      const reason = unknownClash(listing, item);
-      log("item.skipped", { item, reason });
-      rows.push({ item, outcome: reason });
-      continue;
-    }
-    if (workflow) {
-      work.push({ node, workflow });
-      continue;
-    }
-    const why = unworked(listing.claims, item);
-    if (!why) continue;
-    log("item.skipped", { item, reason: why.reason, ...(why.workflows ? { workflows: why.workflows } : {}) });
-    rows.push({ item, outcome: why.outcome });
-  }
-
-  // Sorted before the pool takes from it, because with a concurrency limit
-  // the order is who waits — ordering work is not choosing a transition, and
-  // the id tie-break keeps it total.
-  work.sort((a, b) => compareWork(a.node, b.node));
-
-  // Before the pool, and in one synchronous step after the listing: a tick
-  // overlapping this one reads what this one noted, never the same old map.
-  const arrived = noteArrivals(runtime, listing, work, unjudged);
-
-  let overtaken = false;
-  const left = await pool(work, runtime.concurrency, async ({ node, workflow: w }) => {
-    const item = node.id;
-    // Moved here from another workflow this tick: its stopped run lets go of
-    // the item first, so the new owner works it in this same tick and never
-    // beside the old. The wait holds a pool slot, deliberately — the handoff
-    // is this slot's work — and is bounded by the old run honouring the abort
-    // it was just sent, as Ctrl-C's own wait for every run is.
-    await moved.get(item);
-    // A slot of the workspace's, taken here in compareWork order before the
-    // lock, because a slot taken after an awaited lock goes to whichever lock
-    // came back first. None free, or a later tick has listed since: this
-    // worker stops, and the item waits for another of this tick's own workers
-    // or a later tick, never for another tick's runs. An item running in this
-    // process takes none, since its run holds one and its lock turns it away;
-    // one another process holds takes one only until its lock says so.
-    let slot = false;
-    const take = (): boolean => {
-      // Once a later tick lists, every take after says so: the last refusal
-      // is the reason this tick leaves what it has not started.
-      overtaken = runtime.listed !== listed;
-      if (overtaken || runtime.converging >= runtime.concurrency) return false;
-      runtime.converging += 1;
-      return (slot = true);
-    };
-    if (!runtime.running.has(item) && !take()) return false;
-    let settle!: () => void;
-    const done = new Promise<void>((resolve) => {
-      settle = resolve;
-    });
-    try {
-      const result = await withLock(
-        item,
-        "tick",
-        async () => {
-          // Its run of an earlier tick ended while this one asked for the lock.
-          if (!slot && !take()) return null;
-          log("lock.acquired", { item, kind: "tick" });
-          // Its own controller, so a later tick can stop this item alone;
-          // joined to the loop's, so Ctrl-C still stops every one.
-          const own = new AbortController();
-          runtime.running.set(item, { controller: own, workflow: w.id, done, closed: node.closed !== null });
-          // However the converge ends: the board waits on this before a list
-          // may vouch for the labels a step it ran was about to change.
-          const notify = noting(runtime, w, item);
-          try {
-            return await converge(item, {
-              ...w.deps,
-              source: w.source,
-              ctx: { ...w.deps.ctx, item, signal: AbortSignal.any([w.deps.ctx.signal, own.signal]) } satisfies Omit<HookContext, "snapshot">,
-              ...(notify ? { notify } : {}),
-            });
-          } finally {
-            if (runtime.running.get(item)?.controller === own) runtime.running.delete(item);
-            log("lock.released", { item, kind: "tick" });
+  /*
+   * Converge one item under its lock; resolves once its check is over — the
+   * converge ended, or it took a slot and carries on. `holding` is a slot
+   * already taken for it: an item turned away, started again by the run that
+   * freed one. `by` is the tick that waits for the run and prints its row,
+   * which is not this one when a slot an earlier tick's run freed started it:
+   * this tick may have printed long ago.
+   */
+  const work = (node: Node, w: WorkflowRuntime, holding: boolean, by: TickWait): Promise<void> =>
+    new Promise<void>((checked) => {
+      const item = node.id;
+      const handedOn = holding;
+      let refused: string | null = null;
+      const slot: AgentSlot = {
+        take: async () => {
+          if (!holding) {
+            if (!(await askSlot(runtime, node))) return (refused = waitingForSlot(runtime.concurrency));
+            holding = true;
           }
+          checked();
+          return null;
         },
-        opts.lock,
-      );
-      if (result === null) return false;
-      rows.push({ item, workflow: w.id, outcome: outcomeOf(result) });
-      const at = arrived.get(item);
-      if (at) tellIf(runtime, w, node, at, result);
-    } catch (e) {
-      if (isLocked(e)) {
-        log("lock.denied", { item, kind: "tick" });
-        rows.push({ item, workflow: w.id, outcome: oneLine(messageOf(e)) });
-        const at = arrived.get(item);
-        if (at) tellIf(runtime, w, node, at, "locked");
-        return true;
-      }
-      // One item's failure is one item's row. `messageOf`, not
-      // `(e as Error).message`: a hook is a plain interface and nothing stops
-      // one rejecting with a shape that throws on a property read, which would
-      // take the whole tick down from inside the handler meant to report it.
-      log("item.skipped", { item, reason: messageOf(e) });
-      rows.push({ item, workflow: w.id, outcome: `error: ${oneLine(messageOf(e))}` });
-    } finally {
-      // Before settling: a handoff waiting on this takes the slot it frees.
-      if (slot) runtime.converging -= 1;
-      // After withLock has released: whoever waits on this may take the lock.
-      settle();
-    }
-    return true;
-  });
+        // However the run ends, once: converge gives back the slot it took,
+        // and the run gives back one handed to it that converge never took.
+        give: () => {
+          if (!holding) return;
+          holding = false;
+          runtime.agents -= 1;
+          drain(runtime, by);
+        },
+      };
+      const tell = (result: ConvergeResult | "locked"): void => {
+        const at = handedOn ? undefined : arrived.get(item);
+        if (at) tellIf(runtime, w, node, at, result);
+      };
+      const run = (async (): Promise<void> => {
+        let settle!: () => void;
+        const done = new Promise<void>((resolve) => {
+          settle = resolve;
+        });
+        try {
+          const result = await withLock(
+            item,
+            "tick",
+            async () => {
+              log("lock.acquired", { item, kind: "tick" });
+              // Its own controller, so a later tick can stop this item alone;
+              // joined to the loop's, so Ctrl-C still stops every one.
+              const own = new AbortController();
+              runtime.running.set(item, { controller: own, workflow: w.id, done, closed: node.closed !== null });
+              // However the converge ends: the board waits on this before a list
+              // may vouch for the labels a step it ran was about to change.
+              const notify = noting(runtime, w, item);
+              try {
+                return await converge(item, {
+                  ...w.deps,
+                  source: w.source,
+                  ctx: { ...w.deps.ctx, item, signal: AbortSignal.any([w.deps.ctx.signal, own.signal]) } satisfies Omit<HookContext, "snapshot">,
+                  ...(notify ? { notify } : {}),
+                  slot,
+                });
+              } finally {
+                if (runtime.running.get(item)?.controller === own) runtime.running.delete(item);
+                log("lock.released", { item, kind: "tick" });
+              }
+            },
+            opts.lock,
+          );
+          if (refused !== null) {
+            // Owed, not waiting on anyone: no person is told of it.
+            log("item.skipped", { item, workflow: w.id, reason: refused });
+            by.rows.set(item, { item, workflow: w.id, outcome: refused });
+            turnAway(runtime, { node, start: (next) => void work(node, w, true, next) }, by);
+            return;
+          }
+          by.rows.set(item, { item, workflow: w.id, outcome: outcomeOf(result) });
+          tell(result);
+        } catch (e) {
+          if (isLocked(e)) {
+            log("lock.denied", { item, kind: "tick" });
+            by.rows.set(item, { item, workflow: w.id, outcome: oneLine(messageOf(e)) });
+            tell("locked");
+            return;
+          }
+          // One item's failure is one item's row. `messageOf`, not
+          // `(e as Error).message`: a hook is a plain interface and nothing stops
+          // one rejecting with a shape that throws on a property read, which would
+          // take the whole tick down from inside the handler meant to report it.
+          log("item.skipped", { item, reason: messageOf(e) });
+          by.rows.set(item, { item, workflow: w.id, outcome: `error: ${oneLine(messageOf(e))}` });
+        } finally {
+          slot.give();
+          // After withLock has released: whoever waits on this may take the lock.
+          settle();
+        }
+      })();
+      by.track(run);
+      void run.finally(checked);
+    });
 
-  // Skipped as a busy item is, not queued behind runs another tick started:
-  // by the time one ends this listing is stale, and a later tick lists anew.
-  // A busy one queued behind the first refusal says who holds it, as it would
-  // had a worker reached it: looked up, never taken.
-  const reason = overtaken
-    ? "left for a later tick: a later tick has listed"
-    : `no free slot of tick.concurrency (${runtime.concurrency}): left for a later tick`;
-  for (const { node, workflow: w } of left) {
-    const by = await held(node.id, opts.lock);
-    if (by) {
-      log("lock.denied", { item: node.id, kind: "tick" });
-      rows.push({ item: node.id, workflow: w.id, outcome: `#${node.id} is locked by ${by.holder}` });
-      const at = arrived.get(node.id);
-      if (at) tellIf(runtime, w, node, at, "locked");
-      continue;
+  let listing: WorkspaceListing | undefined;
+  try {
+    log("tick.started", {});
+    listing = await listWorkspace(runtime);
+    const listed = listing;
+
+    // A display must never be able to stop the work it is displaying.
+    try {
+      opts.onList?.(listed);
+    } catch (e) {
+      log("display.failed", { reason: messageOf(e) });
     }
-    log("item.skipped", { item: node.id, workflow: w.id, reason });
-    rows.push({ item: node.id, workflow: w.id, outcome: reason });
-    const at = arrived.get(node.id);
-    if (at) tellIf(runtime, w, node, at, "left");
+
+    const moved = stopStopped(runtime, listed);
+
+    // With two sources or more, one that could not list leaves every clash
+    // unjudged: an id the others list may be one it reports too. Nothing is
+    // worked until it lists again, rather than settling a clash for whichever
+    // source answered. Runs are not stopped for it — what stops one is judged
+    // above, and a clash would only stop it too. One source has no one to clash
+    // with, and its own items are simply absent.
+    const unjudged = listed.failed.size > 0 && listed.graphs.length > 1;
+
+    const workflows = new Map(runtime.workflows.map((w) => [w.id, w]));
+    const claimed: Array<{ node: Node; workflow: WorkflowRuntime }> = [];
+    // Items only: a pull request in the list is context for an item. A closed
+    // item is there for its parent to count, and is work only where a workflow
+    // with a `closed: run` stage claims it, or two halt over it — and then only
+    // when its node shows it could move or run, so a tracker's every recently
+    // closed item is not read again on every tick. Open ones first, so an id
+    // one source reports open is judged as open. An id two sources report is
+    // one row: claims has already judged it a clash.
+    const items = listed.graphs.flatMap((g) => g.nodes).filter(isItemNode);
+    const seen = new Set<string>();
+    for (const node of [...items.filter(isOpenItem), ...items.filter((n) => !isOpenItem(n))]) {
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      const item = node.id;
+      const closed = node.closed !== null;
+      const closedOwner = closed ? listed.claims.closed.get(item) : undefined;
+      if (closed && !listed.claims.conflicts.has(item) && !listed.claims.clashes.has(item)) {
+        const owning = closedOwner === undefined ? undefined : workflows.get(closedOwner);
+        if (owning === undefined || closedIdle(owning.deps.workflow, node)) continue;
+      }
+      const problem = itemIdProblem(item);
+      if (problem) {
+        // A source is a hook, and a hook's output is outside input: this id is
+        // about to become a lock file name and a worktree directory.
+        log("item.skipped", { item, reason: problem });
+        rows.set(item, { item, outcome: `error: ${oneLine(problem)}` });
+        continue;
+      }
+      const owner = closed ? closedOwner : listed.claims.owner.get(item);
+      const workflow = owner === undefined ? undefined : workflows.get(owner);
+      if (workflow && unjudged) {
+        const reason = unknownClash(listed, item);
+        log("item.skipped", { item, reason });
+        rows.set(item, { item, outcome: reason });
+        continue;
+      }
+      if (workflow) {
+        claimed.push({ node, workflow });
+        continue;
+      }
+      const why = unworked(listed.claims, item);
+      if (!why) continue;
+      log("item.skipped", { item, reason: why.reason, ...(why.workflows ? { workflows: why.workflows } : {}) });
+      rows.set(item, { item, outcome: why.outcome });
+    }
+
+    // Sorted before the pool takes from it, because the order is who is
+    // checked first, and so who asks for a slot first — ordering work is not
+    // choosing a transition, and the id tie-break keeps it total.
+    claimed.sort((a, b) => compareWork(a.node, b.node));
+
+    // Before the pool, and in one synchronous step after the listing: a run
+    // still going from an earlier tick reads what this one noted.
+    arrived = noteArrivals(runtime, listed, claimed, unjudged);
+
+    // This tick checks every item again: what an earlier check turned away is
+    // turned away again, or worked, by this one.
+    runtime.turnedAway = [];
+
+    await pool(claimed, runtime.concurrency, async ({ node, workflow: w }) => {
+      // Moved here from another workflow this tick: its stopped run lets go of
+      // the item first, so the new owner works it in this same tick and never
+      // beside the old. Bounded by the old run honouring the abort it was just
+      // sent, as Ctrl-C's own wait for every run is.
+      await moved.get(node.id);
+      await work(node, w, false, tick);
+    });
+  } finally {
+    runtime.checking = false;
   }
+
+  // The runs this tick's checks started, and the ones a slot they freed
+  // started in turn: `landrace start --once` and Ctrl-C wait on this.
+  while (runs.size > 0) await Promise.all([...runs]);
 
   await sweepKept(runtime, listing, opts.lock);
 
   // Sorted rather than left in completion order: the same repository in the
   // same state should print the same thing twice running, and completion order
   // is whichever agent happened to answer first.
-  rows.sort((a, b) => compareIds(a.item, b.item));
+  const out = [...rows.values()].sort((a, b) => compareIds(a.item, b.item));
 
-  log("tick.finished", { items: rows.length, duration: Date.now() - started });
-  return rows;
+  log("tick.finished", { items: out.length, duration: Date.now() - started });
+  return out;
 }

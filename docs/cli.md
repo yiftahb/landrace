@@ -59,7 +59,7 @@ Prints one line per listed item — `#<id>  <stage>  <title>  <note>`, with the 
 landrace start [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--no-ui] [--telemetry] [--otel KEY=VALUE]...
 ```
 
-Watches the tracker and advances every item a workflow claims. It runs a **tick** every `tick.interval`: each tick lists every workflow's source, then works the claimed items, most urgent first. `tick.concurrency` bounds the agents running at once across the whole workspace, overlapping ticks and every workflow included. [Configuration](configuration.md#landraceyaml) says when a tick leaves an item for a later one.
+Watches the tracker and advances every item a workflow claims. It runs a **tick** every `tick.interval`: each tick lists every workflow's source, then checks each claimed item once, most urgent first. An agent a tick starts runs on after its checks end, and a tick that starts while an earlier one is still checking is skipped. `tick.concurrency` bounds the agents running at once across the whole workspace, overlapping ticks and every workflow included; checking an item takes no slot. [Configuration](configuration.md#landraceyaml) says what happens to a step when no slot is free.
 
 As it starts, it asks npm whether a newer Landrace is out and, if one is, prints one line to stderr naming it — see [Checking for a newer version](#checking-for-a-newer-version).
 

@@ -1928,7 +1928,7 @@ describe("two workflows in one workspace", () => {
     };
     const runtime = {
       dir: root, workflows: [flow("main", "lr:auto"), flow("fast", "lr:fast")],
-      preflights: [], intervalMs: 60_000, concurrency, converging: 0, listed: 0, stop, running: new Map(), seen: new Map(), log, ctx,
+      preflights: [], intervalMs: 60_000, concurrency, agents: 0, checking: false, asking: [], turnedAway: [], stop, running: new Map(), seen: new Map(), log, ctx,
     };
     return { state, ran, peak: () => peak, events, once: () => tickWorkspace({ runtime, lock: { root } }) };
   }
