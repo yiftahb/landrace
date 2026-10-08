@@ -167,7 +167,8 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
     said(
       "Overrule the security check on an item it stopped: the refused step — or the stage named, where the " +
         "workflow lets the item go — runs its next round once without prompt screening, then every later round " +
-        "is screened as ever. Only after reading what was refused. Anything written on the item after the " +
+        "is screened as ever. On a stage that waits for a pairing, that round is its next pairing, started and handed " +
+        "in unscreened. Only after reading what was refused. Anything written on the item after the " +
         "clearance voids it. Refused where no security check stopped the item.",
     ),
     { item, stage: z.string().min(1).max(64).optional() },

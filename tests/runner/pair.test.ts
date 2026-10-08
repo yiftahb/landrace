@@ -312,6 +312,27 @@ describe("starting a pairing", () => {
     expect(await worktreesOf(repo)).toHaveLength(0);
   });
 
+  // A stage that waits for a pairing has no unattended round for Clear & retry
+  // to waive the screener on: the pairing is that round, so it honours it.
+  it("starts unscreened on the stage and round a person cleared, and only there", async () => {
+    const cleared = owed(agent().executor, { screen: { executor: screener("suspicious"), model: "haiku" } });
+    say(cleared.tracker, "spec", "cleared", 1, { marker: "cleared:spec:1" });
+    await startPair(cleared.deps, "29", "spec");
+    expect(records(cleared.tracker, "pair")).toHaveLength(1);
+
+    const later = owed(agent().executor, { screen: { executor: screener("suspicious"), model: "haiku" } });
+    say(later.tracker, "spec", "cleared", 2, { marker: "cleared:spec:2" });
+    await expect(startPair(later.deps, "29", "spec")).rejects.toThrow(/screening blocked/);
+  });
+
+  it("screens the seeded prompt again once a person wrote after the clearance", async () => {
+    const { deps, tracker } = owed(agent().executor, { screen: { executor: screener("suspicious"), model: "haiku" } });
+    say(tracker, "spec", "cleared", 1, { marker: "cleared:spec:1" });
+    tracker.say(29, "one more thing the clearance never read");
+    await expect(startPair(deps, "29", "spec")).rejects.toThrow(/screening blocked/);
+    expect(records(tracker, "pair")).toHaveLength(0);
+  });
+
   // #44: the preamble and the template are this engine's words; only the item's are fenced.
   it("screens the seeded prompt with only what the snapshot filled in fenced", async () => {
     const seen: string[] = [];
@@ -338,6 +359,16 @@ describe("finishing a pairing", () => {
     expect(finished).toEqual({ stage: "spec", round: 1, discarded: [] });
     expect(await run()).toMatchObject({ pairing: null, lastOutputBy: "pair" });
     expect(existsSync(started.cwd)).toBe(false);
+  });
+
+  it("hands in unscreened on the round a person cleared", async () => {
+    const a = agent();
+    const { deps, tracker } = owed(a.executor, { screen: { executor: screener("suspicious"), model: "haiku" } });
+    say(tracker, "spec", "cleared", 1, { marker: "cleared:spec:1" });
+    await startPair(deps, "29", "spec");
+    await finishPair(deps, "29", "ship it");
+    expect(records(tracker, "output")).toEqual([expect.objectContaining({ stage: "spec", round: 1, by: "pair" })]);
+    expect(records(tracker, "refused")).toHaveLength(0);
   });
 
   it("signs the hand-in the closing turn wrote, with the step's own model when the agent names none", async () => {

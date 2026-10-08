@@ -630,7 +630,8 @@ function writesOf(row) {
   if (row.clear) {
     items.push(writeItem({
       id: row.id, key: row.id + ":clear", label: "Clear & retry", busy: "Clearing…", path: row.clear, action: "clear",
-      ask: "Retry #" + row.id + " without the security check? Its next round runs once unscreened — only if you have " +
+      ask: "Retry #" + row.id + " without the security check? Its next round runs once unscreened — on a stage that " +
+        "waits for a pairing, your next pairing there — only if you have " +
         "read what was refused and trust it. Anything written on the item after this voids it.",
     }));
   }

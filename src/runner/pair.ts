@@ -128,8 +128,22 @@ async function enter(deps: PairDeps, item: string, snapshot: Snapshot, from: Sta
   await apply(deps, item, snapshot, reconcile(snapshot, planned, deps.dispatcher.satisfied));
 }
 
-async function screened(deps: PairDeps, prompt: Parameters<typeof screenPrompt>[0], what: string): Promise<void> {
+/**
+ * A person's Clear & retry waives the screener for one round of one stage
+ * (`run.cleared`, void once anyone wrote since). On a stage that waits for a
+ * pairing no agent ever runs that round alone: the pairing is the round, so
+ * its start and its hand-in honour the clearance, as a step's run does.
+ */
+async function screened(
+  deps: PairDeps, snapshot: Snapshot, at: { stage: string; round: number },
+  prompt: Parameters<typeof screenPrompt>[0], what: string,
+): Promise<void> {
   if (!deps.screen) return;
+  const cleared = snapshot.run?.cleared;
+  if (cleared?.stage === at.stage && cleared.round === at.round) {
+    deps.ctx.log("screen.cleared", at);
+    return;
+  }
   const verdict = await screenPrompt(prompt, {
     executor: deps.screen.executor, model: deps.screen.model,
     timeoutMs: stepTimeoutMs(deps.workflow), signal: deps.ctx.signal, log: deps.ctx.log,
@@ -210,7 +224,7 @@ export function startPair(deps: PairDeps, item: string, stageId: string): Promis
 
     const briefing = await buildBriefing([...(deps.artifacts ?? []), deps.source], { ...deps.ctx, item, snapshot }, step.prompt);
     const prompt = PAIRING_PREAMBLE + renderPrompt(step.prompt, snapshot, briefing);
-    await screened(deps, (quote) => PAIRING_PREAMBLE + renderPrompt(step.prompt, snapshot, briefing, quote), "this pairing");
+    await screened(deps, snapshot, { stage: stage.id, round: pairing.round }, (quote) => PAIRING_PREAMBLE + renderPrompt(step.prompt, snapshot, briefing, quote), "this pairing");
 
     if (open === null) {
       await apply(deps, item, snapshot, [{
@@ -325,7 +339,7 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
 
     const prompt = finishPrompt(note);
     try {
-      await screened(deps, prompt, "this hand-in");
+      await screened(deps, snapshot, { stage: stage.id, round }, prompt, "this hand-in");
     } catch (e) {
       return reject("refused", messageOf(e));
     }
