@@ -253,7 +253,95 @@ describe("structural validation", () => {
     ]);
     expect(validateStructure(w).filter((p) => p.rule === "waits")).toEqual([{
       rule: "waits",
-      message: 'stage "ask" waits on a person and runs step ask.md: a person\'s turn runs no agent, so it cannot do both',
+      message: 'stage "ask" waits on a person and runs step ask.md: a person\'s turn runs no agent, so it cannot do both. ' +
+        "A step worked only with a person is waits: pairing",
+    }]);
+  });
+
+  it("accepts a stage that waits for a pairing and runs a step", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "design", step: "design.md", waits: "pairing", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "design" } }] },
+    ]);
+    expect(validateStructure(w)).toEqual([]);
+  });
+
+  // A pairing works the stage's own step: with none, there is nothing to pair on.
+  it("refuses a stage that waits for a pairing and runs no step, naming it", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "design", waits: "pairing", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "design" } }] },
+    ]);
+    expect(validateStructure(w).filter((p) => p.rule === "waits")).toEqual([{
+      rule: "waits",
+      message: 'stage "design" waits for a pairing and runs no step: a pairing works the stage\'s step, and it has none',
+    }]);
+  });
+
+  // Pairing is how a person reaches it: the stage they pair from offers it in
+  // its goto, and a trigger of its own could only read the crash window
+  // between the pair record and the stage entry.
+  it("counts a stage that waits for a pairing as reachable when another stage's goto names it", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "plan", waits: "person", goto: ["design"], triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "design", step: "design.md", waits: "pairing", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "design" } }] },
+    ]);
+    expect(validateStructure(w)).toEqual([]);
+  });
+
+  it("still refuses a stage that waits for a pairing, has no trigger, and no goto names", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "plan", waits: "person", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "design", step: "design.md", waits: "pairing" },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "design" } }, { when: { "run.stage": "plan" } }] },
+    ]);
+    expect(validateStructure(w).filter((p) => p.rule === "reachability")).toEqual([
+      { rule: "reachability", message: 'nothing can reach stage "design"' },
+    ]);
+  });
+
+  // A goto is offered only from the stage an item already sits at, so a
+  // stage's own goto cannot bring an item there.
+  it("still refuses a stage that waits for a pairing, has no trigger, and only its own goto names", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "plan", waits: "person", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "design", step: "design.md", waits: "pairing", goto: ["design"] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "design" } }, { when: { "run.stage": "plan" } }] },
+    ]);
+    expect(validateStructure(w).filter((p) => p.rule === "reachability")).toEqual([
+      { rule: "reachability", message: 'nothing can reach stage "design"' },
+    ]);
+  });
+
+  // Only a pairing stage: any other stage a goto names is still reached by
+  // an agent's answer or a person's Go to step, neither of which the
+  // structural rule reads.
+  it("still refuses a stage with no trigger that only a goto names, when it does not wait for a pairing", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "plan", waits: "person", goto: ["work"], triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "work", step: "work.md", on_enter: [{ type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "work" } }] },
+    ]);
+    expect(validateStructure(w).filter((p) => p.rule === "reachability")).toEqual([
+      { rule: "reachability", message: 'nothing can reach stage "work"' },
+    ]);
+  });
+
+  it("refuses a terminal stage that waits for a pairing, naming it", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "z", step: "z.md", terminal: true, waits: "pairing", triggers: [{ when: { "run.stage": "a" } }] },
+    ]);
+    expect(validateStructure(w).filter((p) => p.rule === "waits")).toEqual([{
+      rule: "waits",
+      message: 'stage "z" is terminal and waits for a pairing: an item\'s work is done at a terminal stage, so it waits on no one there',
     }]);
   });
 

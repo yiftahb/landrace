@@ -89,7 +89,7 @@ To stop a step while it runs, close its item or take its admit label (`lr:auto` 
 
 `start` serves a **board**, the triage page, at `http://127.0.0.1:4545/`. It shows every candidate item, with its sub-items and pull requests nested beneath it, in lanes:
 
-- **Needs you** — an item at a `waits: person` stage, and every halt;
+- **Needs you** — an item at a `waits: person` or `waits: pairing` stage, and every halt;
 - **Agent running** — an agent this process started is running on it;
 - **Held elsewhere** — held outside this process: a person's pairing, an MCP conversation, another instance;
 - **Waiting**;
@@ -117,7 +117,7 @@ It costs no tracker calls: it polls the process every two seconds and shows what
 
 - **Retry** — first in a blocked or screened item's menu — sends the item back to the step whose failure put it there.
 - **Go to step…** — on any open item whose agent is not running and whose stage lists a goto — sends it back to a step its stage names.
-- **Clear & retry** — on a screened item only — is a Retry that also clears the refused step's next round of the security check. See [Security](security.md#clearing-a-refused-step).
+- **Clear & retry** — on a screened item only — is a Retry that also clears the refused step's next round of the security check. On a stage that waits for a pairing, that round is the next pairing, which starts and hands in unscreened. See [Security](security.md#clearing-a-refused-step).
 
 Each asks first, then writes the same goto record `landrace_goto` does, after reading the item afresh; an item that has moved on, a step its stage does not list, or one past its cap is refused in a sentence the menu shows. Top right are a countdown to the next tick and **Run next tick now**, which starts a tick — or, while one is running, says "queued" and runs one once every tick in flight has ended. The icon-only **Refresh** button re-reads the tracker and reloads the board, one listing and nothing more.
 
@@ -129,7 +129,7 @@ Each asks first, then writes the same goto record `landrace_goto` does, after re
 - **Ask the step** asks first, then resumes the step's session with them, as `landrace_ask` does — a paid agent turn.
 - **Resolve** hands the item back, as `landrace_resolve` does, with the default reply.
 
-**Pairing…**, in the row's menu and the panel's own "⋯", opens the panel's Pairing section: what may be paired on, or the pairing open now. **Pair on `<stage>`** (or **Continue `<stage>` together**) asks first, then holds that step's round for you and shows the command to run, as `landrace_pair` does. With a pairing open, **Finish…** asks for an optional note and hands the work in — a paid agent turn — and **Release** asks first and gives the step back to the agent, as `landrace_finish` and `landrace_release` do.
+**Pairing…**, in the row's menu and the panel's own "⋯", opens the panel's Pairing section: what may be paired on, or the pairing open now. **Pair on `<stage>`** (or **Continue `<stage>` together**) asks first, then holds that step's round for you and shows the command to run, as `landrace_pair` does. With a pairing open, **Finish…** asks for an optional note and hands the work in — a paid agent turn — and **Release** asks first and gives the step back to the agent, as `landrace_finish` and `landrace_release` do. At a `waits: pairing` stage, Release leaves the item waiting there for the next pairing instead: the agent never runs that step alone ([Worked only with a person](workflows.md#worked-only-with-a-person)).
 
 How every one of these writes is guarded against other websites is in [Security](security.md#the-board).
 
@@ -171,18 +171,18 @@ The generated files are gitignored, so run it after cloning. Then ask your clien
 |---|---|
 | `landrace_workflows` | Lists the workspace's workflows: `id`, `name`, `description`, `claimed`, `needsYou`, and `creates` — whether `landrace_create_item` can start an item in it |
 | `landrace_items` | Lists every open item a workflow claims, with its workflow, stage and lane, and every item no one workflow may work because two claim it or two trackers report it, with why. An item every workflow turned away is not listed. `workflow` narrows it to one workflow's items and the halts it is party to |
-| `landrace_waiting` | Lists the board's Needs you: items at a `waits: person` stage, and the halts — blocked, screened, a conflict, a clash. A closed item is never waiting. Takes `workflow` like `landrace_items` |
+| `landrace_waiting` | Lists the board's Needs you: items at a `waits: person` or `waits: pairing` stage, and the halts — blocked, screened, a conflict, a clash. A closed item is never waiting. Takes `workflow` like `landrace_items` |
 | `landrace_status` | Shows an item's workflow, its position, which rounds have run, and whose turn it is (`waitingOnYou`, by the same rule). An item no one workflow claims is shown with `workflow: null` and why |
 | `landrace_create_item` | Opens an item: `title`, `body`, `labels`, `start`, `relate`, and `workflow` — required when more than one workflow can create items. By default it adds the workflow's `admit` labels, so the next tick starts work; `start: false` files it without starting anything |
 | `landrace_update_item` | Changes an item's `title`, `body`, `state` (`open` or `closed`) or labels (`addLabels`, `removeLabels`), and its relationships (`relate`, `unrelate`). Removing the admit label stops further work |
 | `landrace_reply` | Posts a comment as you — approve the work, or ask for changes — exactly as if you had typed it on the tracker |
-| `landrace_goto` | Sends an item back to a step its stage lists, within its cap. The step re-runs on the next tick |
-| `landrace_clear` | Overrules the security check on a screened item: the refused step's next round runs unscreened, once. With `stage`, it sends the item to that stage instead — one its stage lists, within its cap, as `landrace_goto` — and that stage's next round runs unscreened |
+| `landrace_goto` | Sends an item back to a step its stage lists, within its cap. The step re-runs on the next tick, unless its stage waits for a pairing: then the item waits there for one |
+| `landrace_clear` | Overrules the security check on a screened item: the refused step's next round runs unscreened, once. With `stage`, it sends the item to that stage instead — one its stage lists, within its cap, as `landrace_goto` — and that stage's next round runs unscreened. On a stage that waits for a pairing, that round is its next pairing |
 | `landrace_ask` | Answers a step's open questions, or asks it something, by resuming the step's own session. Records both halves on the item and returns the reply. A turn takes 5–70 seconds. The workflow stays where it is until `landrace_resolve` |
 | `landrace_resolve` | Hands the item back: `why` (by default, that the questions are answered) is posted as your reply, and the workflow's next step reads it on the next tick |
 | `landrace_pair` | Works a step together with the agent in your own terminal. Without `stage`, lists what may be paired on and any open pairing. With it, holds that step's round for you — the agent never runs it alone meanwhile — and returns the command to run |
 | `landrace_finish` | Hands a pairing's work in: the paired session is asked for the step's answer, which is recorded as yours (`run.lastOutputBy: pair`) and moves the item on. Anything left uncommitted in the pairing's checkout is listed and discarded |
-| `landrace_release` | Gives a paired step back to the agent: the pairing ends, its checkout is removed, and the agent runs the step on the next tick |
+| `landrace_release` | Gives a paired step back to the agent: the pairing ends, its checkout is removed, and the agent runs the step on the next tick. At a `waits: pairing` stage the item waits there for the next pairing instead |
 
 **Routing.** Every tool that takes an item id resolves the workflow by the item's claim. A tool that writes a workflow's state (`landrace_reply`, `landrace_goto`, `landrace_ask`, `landrace_pair` with a stage, …) refuses an item no workflow claims or two do, and refuses while any tracker cannot list. A read (`landrace_status`, `landrace_pair` without a stage) is refused only for an id two trackers report. With one tracker, a tool about one item reads that item rather than listing the tracker.
 

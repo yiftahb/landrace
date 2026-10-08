@@ -175,6 +175,15 @@ export function decide(w: Workflow, s: Snapshot): Decision {
         why: `a person is pairing on "${stage.id}", round ${paired.round}`,
       };
     }
+    // Asked here, not by its prompt: a step told to answer `needs-person`
+    // when nobody said it was pairing still cost an agent turn every time a
+    // Release, a Retry or a route handed it the round.
+    if (stage.waits === "pairing") {
+      return {
+        action: "wait", stage, subState,
+        why: `"${stage.id}" is worked only with a person: pair on it to run its step`,
+      };
+    }
     return {
       action: "invoke",
       stage,

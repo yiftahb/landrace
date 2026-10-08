@@ -150,6 +150,65 @@ describe("landrace validate, against the hooks the workflow loads", () => {
     });
   });
 
+  /*
+   * Codex pairs only by carrying on the agent's own session, and an agent
+   * never runs a stage that waits for a pairing alone: `validate` hands the
+   * executor those stages, as `start` does, and reports its refusal.
+   */
+  it("reports a stage that waits for a pairing under an executor that cannot start one afresh", async () => {
+    const dir = join(await mkdtemp(join(tmpdir(), "lr-validate-")), ".landrace");
+    await mkdir(join(dir, "hooks"), { recursive: true });
+    await writeFile(join(dir, "hooks", "codex.ts"), `import { pathToFileURL } from "node:url";
+const { Codex } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), "integrations", "codex", "index.ts"))}).href);
+export const codex = new Codex();
+`);
+    await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: codex, sandbox: { deny: [] } }\n");
+    const main = workflowIn(dir);
+    await mkdir(join(main, "steps"), { recursive: true });
+    const minimal = join(process.cwd(), "tests", "fixtures", "minimal");
+    const workflow = await readFile(join(minimal, "workflow.yaml"), "utf8");
+    await writeFile(join(main, "workflow.yaml"), workflow
+      .replace("name: minimal\n", "name: minimal\nhooks: [../../hooks/codex.ts]\n")
+      .replace("    step: steps/spec.md\n", "    step: steps/spec.md\n    waits: pairing\n"));
+    await writeFile(join(main, "steps", "spec.md"), await readFile(join(minimal, "steps", "spec.md"), "utf8"));
+
+    const r = await runValidate(dir);
+    expect(r.problems.filter((p) => p.rule === "executor")).toEqual([{
+      rule: "executor",
+      message: expect.stringMatching(/^executor "codex" could not start: stage "spec" waits for a pairing, but the codex executor can only carry on/),
+    }]);
+  });
+
+  // Not only the kit's: a plain Executor hook with no handoff can never be
+  // paired with, which `start` refuses too.
+  it("reports a stage that waits for a pairing under a plain executor hook with no handoff, and passes one with", async () => {
+    const executors = async (handoff: boolean): Promise<Problem[]> => {
+      const dir = join(await mkdtemp(join(tmpdir(), "lr-validate-")), ".landrace");
+      await mkdir(join(dir, "hooks"), { recursive: true });
+      await writeFile(join(dir, "hooks", "plain.ts"), `export const plain = Object.defineProperty(
+  { id: "plain", run: async () => ({ text: "", sessionId: null })${handoff ? ', handoff: async () => ({ argv: [], cwd: "" })' : ""} },
+  Symbol.for("landrace.hook.kind"), { value: "executor", enumerable: false },
+);
+`);
+      await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: plain }\n");
+      const main = workflowIn(dir);
+      await mkdir(join(main, "steps"), { recursive: true });
+      const minimal = join(process.cwd(), "tests", "fixtures", "minimal");
+      const workflow = await readFile(join(minimal, "workflow.yaml"), "utf8");
+      await writeFile(join(main, "workflow.yaml"), workflow
+        .replace("name: minimal\n", "name: minimal\nhooks: [../../hooks/plain.ts]\n")
+        .replace("    step: steps/spec.md\n", "    step: steps/spec.md\n    waits: pairing\n"));
+      await writeFile(join(main, "steps", "spec.md"), await readFile(join(minimal, "steps", "spec.md"), "utf8"));
+      return (await runValidate(dir)).problems.filter((p) => p.rule === "executor");
+    };
+
+    expect(await executors(false)).toEqual([{
+      rule: "executor",
+      message: 'executor "plain" could not start: stage "spec" waits for a pairing, but the plain executor cannot hand a session to a person, so nobody could ever pair on it',
+    }]);
+    expect(await executors(true)).toEqual([]);
+  });
+
   /**
    * The wiring itself, end to end through the command: a path nothing
    * provides, in a workflow whose one hook does declare what it provides.

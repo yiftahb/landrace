@@ -633,6 +633,17 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       if (step.mcp !== undefined) problems.push(...narrowMcp(step.mcp, known).problems.map((p) => `${path} ${p}`));
       if (step.skills?.length && this.stepKeys.includes("skills")) skilled.push([path, step.skills]);
     }
+    // Continue and fork both need the agent's own session at the stage, and
+    // an agent never runs a stage that waits for a pairing alone: only a
+    // session a person takes afresh can ever work it.
+    const pairing = ctx.pairingStages ?? [];
+    if (pairing.length && !this.pairings.includes("take")) {
+      const named = pairing.map((id) => `"${id}"`).join(", ");
+      const why = this.pairings.length
+        ? "can only carry on the agent's own session, and an agent never runs such a stage alone, so there is never one to carry on"
+        : "cannot hand a session to a person, so nobody could ever pair on it";
+      problems.push(`${pairing.length === 1 ? `stage ${named} waits` : `stages ${named} wait`} for a pairing, but the ${this.id} executor ${why}`);
+    }
     if (skilled.length && this.skillProblems) {
       try {
         const root = await repositoryRoot(ctx.dir);

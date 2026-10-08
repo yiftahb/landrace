@@ -19,7 +19,7 @@ import {
 } from "#conventions.js";
 import { assess, gotoDeclined, gotoNotListed, gotoTargetsOf, nextRound, planEffects, reconcile, stageBranch } from "#core/index.js";
 import type {
-  Effect, Entry, ExecutorAnswer, PairDeps, PairFinished, PairingView, PairOffer, PairStarted, Pairing, Snapshot, Stage, Step,
+  Effect, Entry, ExecutorAnswer, PairDeps, PairFinished, PairingView, PairOffer, PairReleased, PairStarted, Pairing, Snapshot, Stage, Step,
 } from "#namespace.js";
 import { buildBriefing } from "#runner/artifacts.js";
 import { stepTimeoutMs } from "#runner/budget.js";
@@ -128,8 +128,22 @@ async function enter(deps: PairDeps, item: string, snapshot: Snapshot, from: Sta
   await apply(deps, item, snapshot, reconcile(snapshot, planned, deps.dispatcher.satisfied));
 }
 
-async function screened(deps: PairDeps, prompt: Parameters<typeof screenPrompt>[0], what: string): Promise<void> {
+/**
+ * A person's Clear & retry waives the screener for one round of one stage
+ * (`run.cleared`, void once anyone wrote since). On a stage that waits for a
+ * pairing no agent ever runs that round alone: the pairing is the round, so
+ * its start and its hand-in honour the clearance, as a step's run does.
+ */
+async function screened(
+  deps: PairDeps, snapshot: Snapshot, at: { stage: string; round: number },
+  prompt: Parameters<typeof screenPrompt>[0], what: string,
+): Promise<void> {
   if (!deps.screen) return;
+  const cleared = snapshot.run?.cleared;
+  if (cleared?.stage === at.stage && cleared.round === at.round) {
+    deps.ctx.log("screen.cleared", at);
+    return;
+  }
   const verdict = await screenPrompt(prompt, {
     executor: deps.screen.executor, model: deps.screen.model,
     timeoutMs: stepTimeoutMs(deps.workflow), signal: deps.ctx.signal, log: deps.ctx.log,
@@ -210,14 +224,16 @@ export function startPair(deps: PairDeps, item: string, stageId: string): Promis
 
     const briefing = await buildBriefing([...(deps.artifacts ?? []), deps.source], { ...deps.ctx, item, snapshot }, step.prompt);
     const prompt = PAIRING_PREAMBLE + renderPrompt(step.prompt, snapshot, briefing);
-    await screened(deps, (quote) => PAIRING_PREAMBLE + renderPrompt(step.prompt, snapshot, briefing, quote), "this pairing");
+    await screened(deps, snapshot, { stage: stage.id, round: pairing.round }, (quote) => PAIRING_PREAMBLE + renderPrompt(step.prompt, snapshot, briefing, quote), "this pairing");
 
     if (open === null) {
       await apply(deps, item, snapshot, [{
         type: RECORD_EFFECT, kind: PAIR_KIND, stage: stage.id, round: pairing.round,
         marker: `${PAIR_KIND}:${stage.id}:${pairing.round}:${pairing.n}`,
         body: `Pairing on ${stage.id}, round ${pairing.round}: a person is working this round with the agent in ` +
-          "their own session. It runs alone again only once they release it.",
+          "their own session. " + (stage.waits === "pairing"
+          ? `It never runs alone: a release leaves the item waiting at ${stage.id} for the next pairing.`
+          : "It runs alone again only once they release it."),
       }]);
     }
     // Entered unless the stage already has been at the pairing's round —
@@ -323,7 +339,7 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
 
     const prompt = finishPrompt(note);
     try {
-      await screened(deps, prompt, "this hand-in");
+      await screened(deps, snapshot, { stage: stage.id, round }, prompt, "this hand-in");
     } catch (e) {
       return reject("refused", messageOf(e));
     }
@@ -376,21 +392,27 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
   });
 }
 
-/** Give the round back to the agent: a release record closes the pairing, and the next tick runs the step alone. */
-export function releasePair(deps: PairDeps, item: string): Promise<{ stage: string; round: number }> {
+/**
+ * End a pairing without its answer: a release record closes it, and the next
+ * tick runs the step alone — or, at a stage that waits for a pairing, which
+ * `decide` never hands the agent, the item waits there for the next one.
+ */
+export function releasePair(deps: PairDeps, item: string): Promise<PairReleased> {
   return locked(deps, item, "release", async () => {
     const snapshot = await snapshotOf(deps, item);
     const open = snapshot.run?.pairing ?? null;
     if (open === null) throw new Error(`#${item} has no pairing to release`);
+    const next = deps.workflow.stages.find((s) => s.id === open.stage)?.waits === "pairing" ? "pairing" : "agent";
     await apply(deps, item, snapshot, [{
       type: RECORD_EFFECT, kind: RELEASE_KIND, stage: open.stage, round: open.round,
       marker: `${RELEASE_KIND}:${open.stage}:${open.round}:${open.n}`,
-      body: `Released the pairing on ${open.stage}, round ${open.round}: the agent runs it alone.`,
+      body: `Released the pairing on ${open.stage}, round ${open.round}: ` +
+        (next === "pairing" ? `the item waits at ${open.stage} for the next pairing.` : "the agent runs it alone."),
     }]);
     if (deps.sandbox) {
       await removeWorktree(item, deps.sandbox.root, slotOf(item));
       await rm(await seedOf(deps.sandbox.root, item), { force: true });
     }
-    return { stage: open.stage, round: open.round };
+    return { stage: open.stage, round: open.round, next };
   });
 }

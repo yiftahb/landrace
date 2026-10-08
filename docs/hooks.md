@@ -157,7 +157,7 @@ The kit starts the agent with no shell, and with only a few basic variables of L
 | `skillProblems(root, listed)` | Optional. The skills a step lists that the repository does not define, refused at startup — Claude's are the folders of `.claude/skills` holding a `SKILL.md` |
 | `mcpFile(root)` | Where `agent.mcp`'s servers are defined; `.mcp.json` unless overridden |
 
-It also declares `efforts` (the levels it takes), `pairings` (`take` a fresh session, `continue` the agent's, `fork` for a pairing's finish), `envKeys` (variables the agent needs, never a credential) and `stepKeys` (which of a step's `skills` and `plugins` it enforces; none unless it says so). To change one piece, subclass and override that method.
+It also declares `efforts` (the levels it takes), `pairings` (`take` a fresh session, `continue` the agent's, `fork` for a pairing's finish; without `take`, `create` refuses a workflow with a `waits: pairing` stage, whose ids arrive in `ctx.pairingStages`), `envKeys` (variables the agent needs, never a credential) and `stepKeys` (which of a step's `skills` and `plugins` it enforces; none unless it says so). To change one piece, subclass and override that method.
 
 ## Notifiers
 

@@ -11,10 +11,11 @@ import { createLogger, scrubberOf } from "#runner/events.js";
 import { declaredOf, declaredTrackerFields, runPreflights, scopedPreflights } from "#runner/preflight.js";
 import type { EventName } from "#namespace.js";
 import { createOtelSink, telemetrySettings } from "#telemetry/otel.js";
+import { pairingStages } from "#workflow/validate.js";
 import { loadWorkspace, workflowById } from "#workflow/workspace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { touchWake, wakePath } from "#wake.js";
-import { childServerCommand, executorFor, sandboxFor, screenerFor } from "#cli/start.js";
+import { childServerCommand, sandboxFor, screenerFor, stepExecutorFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.
@@ -130,7 +131,7 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
     // An executor factory's own members, beyond what every hook gets — and
     // this workflow's steps, against which it is built: see the same
     // construction in `buildWorkspaceRuntime`.
-    const ectx: ExecutorContext = { ...ctx, dir, redact: events.redact, steps: w.steps };
+    const ectx: ExecutorContext = { ...ctx, dir, redact: events.redact, steps: w.steps, pairingStages: pairingStages(w.workflow) };
     /*
      * The same executor the loop invokes steps with, resolved the same way and
      * refused at startup for the same reason: `landrace_ask` resumes a session
@@ -144,7 +145,7 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
      * this process ever naming them: that resolution belongs to the executor
      * factory itself, which this call reaches exactly as `start` does.
      */
-    const executor = await executorFor(loaded.config, registry, ectx);
+    const executor = await stepExecutorFor(loaded.config, registry, ectx);
     /*
      * And the screener, resolved exactly as the loop's runtime resolves it. §15 screens every agent
      * invocation before it runs, and a conversation turn is one: a person's

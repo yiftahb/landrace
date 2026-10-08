@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { executorFor, screenerFor } from "#cli/start.js";
+import { screenerFor, stepExecutorFor } from "#cli/start.js";
 import { configProblems, loadConfig } from "#config/load.js";
 import { ITEM_BRANCH } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
@@ -10,9 +10,9 @@ import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { WorkflowLoadError } from "#workflow/load.js";
-import { admitProblems, branchIsolationProblems, claimProblems, createProblems, validate } from "#workflow/validate.js";
+import { admitProblems, branchIsolationProblems, claimProblems, createProblems, pairingIsolationProblems, pairingStages, validate } from "#workflow/validate.js";
 import { readWorkspace } from "#workflow/workspace.js";
-import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Source, Step, Workspace, WorkspaceRead } from "#namespace.js";
+import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Source, Step, Workflow, Workspace, WorkspaceRead } from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -108,19 +108,19 @@ function startRefusalProblems(message: string): Problem[] {
  * files outside the workflow itself, so a missing one is reported here too,
  * as `start` would refuse over it.
  */
-async function executorProblems(dir: string, loaded: LoadedConfig, registry: Registry, steps: ReadonlyMap<string, Step>): Promise<Problem[]> {
+async function executorProblems(dir: string, loaded: LoadedConfig, registry: Registry, workflow: Workflow, steps: ReadonlyMap<string, Step>): Promise<Problem[]> {
   const ctx: ExecutorContext = {
     config: loaded.config, secrets: loaded.secretValues, signal: new AbortController().signal,
-    log: () => {}, dir, redact: () => {}, steps,
+    log: () => {}, dir, redact: () => {}, steps, pairingStages: pairingStages(workflow),
   };
   try {
     // Screener before executor, the same order `start` builds them in:
     // `buildWorkspaceRuntime` resolves its screener before it ever reaches the object
-    // literal that awaits `executorFor` for the step — so a configuration
+    // literal that awaits `stepExecutorFor` for the step — so a configuration
     // broken both ways is reported over the same one `start` would actually
     // meet first.
     await screenerFor(loaded.config, registry, ctx);
-    await executorFor(loaded.config, registry, ctx);
+    await stepExecutorFor(loaded.config, registry, ctx);
     return [];
   } catch (e) {
     return startRefusalProblems(messageOf(e));
@@ -240,7 +240,10 @@ async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: Loade
   }
   // What `start` refuses about the workflow against its runtime, said here
   // too: validate passing what start will refuse is the two disagreeing.
-  if (loaded) own.push(...branchIsolationProblems(workflow, loaded.config.agent.isolation));
+  if (loaded) {
+    own.push(...branchIsolationProblems(workflow, loaded.config.agent.isolation));
+    own.push(...pairingIsolationProblems(workflow, loaded.config.agent.isolation));
+  }
   own.push(...admitProblems(wf.id, workflow));
 
   // The executors the configuration names, built exactly as `start` builds
@@ -249,7 +252,7 @@ async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: Loade
   // hooks are known to have loaded — a workflow already found unsound, or
   // whose hooks would not import, has no registry to build one against.
   const shared = loaded && registry
-    ? [...(await executorProblems(ws.dir, loaded, registry, steps)), ...notifyProblems(loaded.config, registry)]
+    ? [...(await executorProblems(ws.dir, loaded, registry, workflow, steps)), ...notifyProblems(loaded.config, registry)]
     : [];
   return { own, shared, source: registry?.source ?? null };
 }

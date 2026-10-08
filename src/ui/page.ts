@@ -620,7 +620,8 @@ function writesOf(row) {
   if (row.retry) {
     items.push(writeItem({
       id: row.id, key: row.id + ":retry", label: "Retry", busy: "Retrying…", path: row.retry, action: "retry",
-      ask: "Retry #" + row.id + "? This sends it back to the step that failed and re-runs a paid step.",
+      ask: "Retry #" + row.id + "? This sends it back to the step that failed and re-runs a paid step, " +
+        "unless its stage waits for a pairing, where it waits for you to pair on it.",
     }));
   }
   // A screened item's overrule: the refused step's next round runs once
@@ -629,7 +630,8 @@ function writesOf(row) {
   if (row.clear) {
     items.push(writeItem({
       id: row.id, key: row.id + ":clear", label: "Clear & retry", busy: "Clearing…", path: row.clear, action: "clear",
-      ask: "Retry #" + row.id + " without the security check? Its next round runs once unscreened — only if you have " +
+      ask: "Retry #" + row.id + " without the security check? Its next round runs once unscreened — on a stage that " +
+        "waits for a pairing, your next pairing there — only if you have " +
         "read what was refused and trust it. Anything written on the item after this voids it.",
     }));
   }
@@ -641,7 +643,8 @@ function writesOf(row) {
     for (const g of targets) {
       items.push(writeItem({
         id: row.id, key: row.id + ":goto:" + g.stage, label: g.stage, busy: "Sending…", path: g.path, action: "goto",
-        ask: "Send #" + row.id + " back to " + g.stage + "? This re-runs a paid step.",
+        ask: "Send #" + row.id + " back to " + g.stage + "? " +
+          (g.pairing ? "It waits there for you to pair on it: the agent never runs that step alone." : "This re-runs a paid step."),
       }));
     }
   }
@@ -2225,13 +2228,13 @@ function pairWrite(kind, stage) {
   let body = "";
   if (kind === "pair") {
     const fresh = !(pairing.view && pairing.view.open);
-    if (fresh && !confirm("Pair on " + stage + " for #" + row.id + "? Its round is held for you: the agent does not run it alone until you finish or release it.")) return;
+    if (fresh && !confirm("Pair on " + stage + " for #" + row.id + "? Its round is held for you: the agent does not run it alone until you finish or release it — or ever, if its stage waits for a pairing.")) return;
     body = stage;
   } else if (kind === "finish") {
     const note = prompt("Finish the pairing on #" + row.id + "? Your session is asked for the step's answer, a paid agent turn, and the item moves on. A note for it, if you like:", "");
     if (note === null) return;
     body = note;
-  } else if (!confirm("Release the pairing on #" + row.id + "? The agent runs the step alone from the next tick, and the pairing's checkout is removed.")) {
+  } else if (!confirm("Release the pairing on #" + row.id + "? The agent runs the step alone from the next tick — unless its stage waits for a pairing, where the item waits for the next one — and the pairing's checkout is removed.")) {
     return;
   }
   const id = row.id;
@@ -2260,7 +2263,9 @@ function pairWrite(kind, stage) {
         pairing.note = answer ? "Handed in: " + answer.stage + ", round " + answer.round + "." + left : "Handed in.";
       } else {
         pairing.command = null;
-        pairing.note = "Released: the agent runs it alone.";
+        pairing.note = answer && answer.next === "pairing"
+          ? "Released: it waits at " + answer.stage + " for the next pairing."
+          : "Released: the agent runs it alone.";
       }
       loadPairing();
       loadConversation();

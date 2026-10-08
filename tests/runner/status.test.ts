@@ -111,6 +111,16 @@ describe("statusRows, read from where the item is", () => {
     expect(laneFor(["go", "lr:stage:questions"])).toBe("needs-you");
   });
 
+  // Whether or not a pairing is open: the person has to pair, or finish one.
+  it("says an item at a stage that waits for a pairing is waiting on you, though the stage runs a step", () => {
+    const paired: Workflow = {
+      ...turns, stages: [...turns.stages, { id: "design", step: "design", waits: "pairing", triggers: [{ when: { "run.stage": "spec" } }] }],
+    };
+    const [row] = statusRows(paired, [candidate(["go", "lr:stage:design", "lr:working"])]);
+    expect(row).toMatchObject({ stage: "design", note: "waiting on you" });
+    expect(row && laneOf(row, paired)).toBe("needs-you");
+  });
+
   it("does not read lr:awaiting: an item at a stage that runs a step is not waiting on you", () => {
     expect(rowFor(["go", "lr:stage:spec", "lr:awaiting"])).toMatchObject({ stage: "spec", note: "queued" });
     expect(laneFor(["go", "lr:stage:spec", "lr:awaiting"])).toBe("waiting");

@@ -1,4 +1,5 @@
 import { runInNewContext, Script } from "node:vm";
+import type { BoardRow } from "#namespace.js";
 import { APP_CSS, APP_JS, FAVICON_SVG, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
 /**
@@ -982,7 +983,7 @@ describe("a stopped item's Retry", () => {
     override addEventListener(type?: string, f?: () => void): void { if (type && f) this.listeners.set(type, f); }
   }
   const doc = { createElement: (tag: string) => new Listening(tag), createElementNS: (_: string, tag: string) => new Listening(tag) };
-  const row = (retry: string | null, goto: Array<{ stage: string; path: string }> = [], clear: string | null = null) => ({
+  const row = (retry: string | null, goto: BoardRow["goto"] = [], clear: string | null = null) => ({
     id: "19", chat: { prompt: "p", links: { claude: "a:", claudeCli: "b:", cursor: "c:", codex: "d:" } }, retry, goto, clear,
   });
 
@@ -1064,6 +1065,15 @@ describe("a stopped item's Retry", () => {
     expect(seen.posts).toEqual([]);
   });
 
+  // A refused hand-in can stop an item at a stage that waits for a pairing,
+  // where Retry runs nothing paid: it only sends the item there to wait.
+  it("says a step whose stage waits for a pairing waits there for one", async () => {
+    const { menu, seen } = menuFor(row("/items/19/retry"), { confirm: false });
+    retryOf(menu)?.listeners.get("click")?.();
+    await settle();
+    expect(seen.confirms[0]).toMatch(/unless its stage waits for a pairing, where it waits for you to pair on it/);
+  });
+
   it("posts once, to the server's own path, with the header the server asks for — then closes, returns focus and polls", async () => {
     const { menu, seen } = menuFor(row("/items/19/retry"));
     retryOf(menu)?.listeners.get("click")?.();
@@ -1112,6 +1122,15 @@ describe("a stopped item's Retry", () => {
     await settle();
     expect(seen.confirms[0]).toMatch(/#19[\s\S]*build[\s\S]*paid step/);
     expect(seen.posts).toEqual([["/items/19/goto/build", { method: "POST", headers: { "x-landrace-action": "goto" } }]]);
+  });
+
+  // No agent runs a stage that waits for a pairing, so sending there runs nothing paid.
+  it("says a stage that waits for a pairing waits there for one, rather than re-running a paid step", async () => {
+    const { menu, seen } = menuFor(row(null, [{ stage: "design", path: "/items/19/goto/design", pairing: true }]));
+    gotoOf(menu, "design")?.listeners.get("click")?.();
+    await settle();
+    expect(seen.confirms[0]).toMatch(/#19[\s\S]*design[\s\S]*waits there for you to pair on it/);
+    expect(seen.confirms[0]).not.toMatch(/paid/);
   });
 
   it("shows a refusal on the menu entry that asked, and only there", async () => {
@@ -2695,6 +2714,50 @@ describe("the panel's Pairing section", () => {
     expect(open.text.join(" ")).toMatch(/Pairing on spec, round 2/);
     expect(open.buttons).toEqual([]);
     expect(section({ open: null, offers: [{ stage: "spec", round: 1, continue: false }] }, {}, readOnly).buttons).toEqual([]);
+  });
+});
+
+/*
+ * Release says who works the round next, from the server's answer: the
+ * agent, or — at a stage that waits for a pairing — the next pairing.
+ */
+describe("the panel's Release", () => {
+  const release = async (answer: object) => {
+    const confirms: string[] = [];
+    const context: Record<string, unknown> = {
+      panelHeld: "29", pairing: { busy: false, note: "", command: "cd x", view: null },
+      currentRow: () => ({ id: "29", panel: { release: "/items/29/release" } }),
+      confirm: (t: string) => { confirms.push(t); return true; },
+      fetch: () => Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(answer)) }),
+      renderPanel: () => {}, loadPairing: () => {}, loadConversation: () => {}, schedulePoll: () => {},
+    };
+    runInNewContext(`${fnSource("parseJson")}${fnSource("pairWrite")} pairWrite("release")`, context);
+    await new Promise((r) => setTimeout(r, 0));
+    return { confirms, note: (context.pairing as { note: string }).note };
+  };
+
+  it("asks first, saying a stage that waits for a pairing keeps the item", async () => {
+    expect((await release({ stage: "spec", round: 1, next: "agent" })).confirms[0]).toMatch(/#29[\s\S]*alone[\s\S]*waits for a pairing/);
+  });
+
+  it("says the agent runs it alone, or that the item waits for the next pairing", async () => {
+    expect((await release({ stage: "spec", round: 1, next: "agent" })).note).toBe("Released: the agent runs it alone.");
+    expect((await release({ stage: "design", round: 1, next: "pairing" })).note).toBe("Released: it waits at design for the next pairing.");
+  });
+});
+
+// The Pair confirm cannot promise the agent takes the round back on a
+// release: at a stage that waits for a pairing, it never does.
+describe("the panel's Pair", () => {
+  it("asks first, saying a stage that waits for a pairing is never run alone", () => {
+    const confirms: string[] = [];
+    const context: Record<string, unknown> = {
+      pairing: { busy: false, note: "", command: null, view: null },
+      currentRow: () => ({ id: "29", panel: { pair: "/items/29/pair" } }),
+      confirm: (t: string) => { confirms.push(t); return false; },
+    };
+    runInNewContext(`${fnSource("pairWrite")} pairWrite("pair", "design")`, context);
+    expect(confirms[0]).toMatch(/#29[\s\S]*until you finish or release it[\s\S]*or ever, if its stage waits for a pairing/);
   });
 });
 

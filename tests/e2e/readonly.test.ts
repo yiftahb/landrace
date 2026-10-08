@@ -430,6 +430,23 @@ describe("telling you an item placed by its own state waits on you", () => {
     expect(await w.sent()).toEqual([["1", "ask"]]);
   });
 
+  // A person's turn as much as `waits: person` is, though the stage runs a step.
+  it("tells you once of an item its state places at a stage that waits for a pairing, and runs no agent", async () => {
+    const design: Workflow = {
+      version: 1, name: "design", description: "test",
+      stages: [{ id: "design", step: "design", waits: "pairing", identity: { "node.state.labels": { $in: ["design-me"] } } }],
+    };
+    const state = createExternalState({ items: [{ id: "1", title: "Pick a vendor", labels: ["design-me"] }], readOnly: true });
+    const w = workspace(state, { workflow: design, steps: new Map() }, "design");
+
+    for (let tick = 0; tick < 3; tick++) {
+      expect(await w.tick()).toEqual([{ item: "1", workflow: "design", outcome: expect.stringMatching(/^wait after 1 pass\(es\): "design" is worked only with a person/) }]);
+    }
+
+    expect(await w.sent()).toEqual([["1", "design"]]);
+    expect(await w.row("1")).toMatchObject({ stage: "design", lane: "needs-you" });
+  });
+
   // Main's own path, unchanged: converge tells of the transition, and the
   // ticks after — which see the item at a stage only its label places it at
   // — tell nothing more.

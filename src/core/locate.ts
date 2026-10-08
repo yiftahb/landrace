@@ -11,6 +11,15 @@ import type { Location, Node, NodeLocation, Run, Snapshot, Stage, Workflow } fro
 export const identityOf = (stage: Stage) => stage.identity ?? { "run.stage": stage.id };
 
 /**
+ * Whether an item resting at this stage waits on a person: `waits: person`,
+ * or `waits: pairing`, whose step runs only once a person pairs on it — and,
+ * while they do, only until they finish. One function, so the board, a
+ * notification and the tick cannot disagree about whose turn it is.
+ */
+export const waitsOnAPerson = (stage: Stage | null | undefined): boolean =>
+  stage?.waits === "person" || stage?.waits === "pairing";
+
+/**
  * Whether an item's own state places it at this stage: a custom identity
  * reading only the item's own fields (`node.*`). An item is there because its
  * labels say so, not because a transition took it there, and it leaves when

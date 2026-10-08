@@ -340,9 +340,11 @@ export interface Stage {
    * you — on the board, in a notification, in `landrace status` and in
    * `landrace_waiting`. Read off the stage the item is located at, never off a
    * label, so a workflow that writes nothing to its tracker can still say an
-   * item waits on someone. `| undefined`: fed from Zod.
+   * item waits on someone. `pairing` is a person's turn too, at a stage whose
+   * step runs only in a pairing: the agent never runs it alone, so the item
+   * waits for a person to pair on it. `| undefined`: fed from Zod.
    */
-  waits?: "person" | undefined;
+  waits?: "person" | "pairing" | undefined;
   identity?: Condition;
   requires?: Condition;
   triggers?: Trigger[];
@@ -911,6 +913,12 @@ export type ExecutorContext = RuntimeContext & {
    * an effort it has no level for, rather than at that step's first run.
    */
   steps?: ReadonlyMap<string, Step>;
+  /**
+   * The ids of the workflow's stages that wait for a pairing: their step runs
+   * only with a person, so a factory that cannot start a pairing afresh
+   * refuses them at startup.
+   */
+  pairingStages?: readonly string[];
 };
 
 /**
@@ -2836,7 +2844,8 @@ export interface BoardRow {
    * actually accepted (a stage's step still owed, a cap not holding, and so
    * on), so an entry here is an offer, not a promise.
    */
-  goto: Array<{ stage: string; path: string }>;
+  /** `pairing` on a target that waits for a pairing: sending there runs no agent, so the page asks for no paid step. */
+  goto: Array<{ stage: string; path: string; pairing?: true }>;
   /**
    * Where the item panel reads and writes, built by the server from a
    * checked id like `retry`. Null on an artifact: only an item opens a panel.
@@ -2934,7 +2943,7 @@ export interface ItemPanel {
   pairing(item: string): Promise<PairingView>;
   pair(item: string, stage: string): Promise<PairStarted>;
   finish(item: string, note: string): Promise<PairFinished>;
-  release(item: string): Promise<{ stage: string; round: number }>;
+  release(item: string): Promise<PairReleased>;
 }
 
 /** One sidebar entry: a workflow and how many of its own items need the person. */
@@ -3113,6 +3122,16 @@ export interface PairFinished {
   stage: string;
   round: number;
   discarded: string[];
+}
+
+/**
+ * A pairing released, and who works its round next: the agent, alone from
+ * the next tick, or — at a stage that waits for a pairing — the next pairing.
+ */
+export interface PairReleased {
+  stage: string;
+  round: number;
+  next: "agent" | "pairing";
 }
 
 /** How the page's writes reach an item. `target` null is a Retry: `run.failedStage`, the failure that put the item where it is. */

@@ -1,5 +1,5 @@
 import { compareIds, isOpenItem, LABELS, labelsOf, stageFromLabels } from "#conventions.js";
-import { cannotPlace, deriveRel, locateNode, noteFields, renderNote, UNPLACED } from "#core/index.js";
+import { cannotPlace, deriveRel, locateNode, noteFields, renderNote, UNPLACED, waitsOnAPerson } from "#core/index.js";
 import type { Graph, Lane, ListedWorkflow, Node, NodeLocation, Stage, StatusRow, Workflow, WorkspaceListing } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { claimedBy, eligibilityOf, reportedBy, turnedAway } from "#runner/tick.js";
@@ -185,7 +185,7 @@ export function statusRows(workflow: Workflow, items: Node[], graph?: Graph): St
       ? SCREENED_NOTE
       : labels.includes(LABELS.blocked)
         ? BLOCKED_NOTE
-        : stage?.waits === "person"
+        : waitsOnAPerson(stage)
           ? "waiting on you"
           : labels.includes(LABELS.working)
             ? "working"

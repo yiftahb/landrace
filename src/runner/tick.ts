@@ -1,5 +1,5 @@
 import { keptItems, keptSlot, removeWorktree } from "#agent/worktree.js";
-import { claimItems, closedIdle, eligibilityOfNode, locateNode, placedByState } from "#core/index.js";
+import { claimItems, closedIdle, eligibilityOfNode, locateNode, placedByState, waitsOnAPerson } from "#core/index.js";
 import type {
   AgentSlot,
   Claims,
@@ -248,7 +248,7 @@ function noteArrivals(
     const at = seenAt(workflow, node);
     if (at === null) continue;
     const stage = workflow.deps.workflow.stages.find((s) => s.id === at.stage);
-    if (!sameStage(before.get(node.id), at) && stage?.waits === "person" && placedByState(stage)) arrived.set(node.id, at);
+    if (!sameStage(before.get(node.id), at) && stage !== undefined && waitsOnAPerson(stage) && placedByState(stage)) arrived.set(node.id, at);
     else runtime.seen.set(node.id, at);
   }
   return arrived;

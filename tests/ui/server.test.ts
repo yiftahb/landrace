@@ -718,7 +718,7 @@ describeLoopback("the page's routes follow the item's workflow", () => {
       pairing: async (item) => { calls.push([workflow, "pairing", item]); return { open: null, offers: [] }; },
       pair: async (item) => { calls.push([workflow, "pair", item]); return { stage: "spec", round: 1, session: "s", cwd: "/w", command: "c" }; },
       finish: async (item) => { calls.push([workflow, "finish", item]); return { stage: "spec", round: 1, discarded: [] }; },
-      release: async (item) => { calls.push([workflow, "release", item]); return { stage: "spec", round: 1 }; },
+      release: async (item) => { calls.push([workflow, "release", item]); return { stage: "spec", round: 1, next: "agent" }; },
     });
     const readsOf = (source: number): ItemReads => ({
       conversation: async (item) => { calls.push([`source ${source}`, "conversation", item]); return []; },

@@ -79,7 +79,7 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   server.tool(
     "landrace_waiting",
     said(
-      "List the items currently waiting on a human — the board's Needs you: at a stage that waits on a person, " +
+      "List the items currently waiting on a human — the board's Needs you: at a stage that waits on a person or for a pairing, " +
         "blocked, or halted — each with the workflow that claims it; with `workflow`, that workflow's and the " +
         "halts it is party to.",
     ),
@@ -155,7 +155,8 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
     said(
       "Send an item back to an earlier step — spec or build, say — from a stage where it is your turn. " +
         "The workflow says which steps each stage may send an item to, and how many rounds each may run; " +
-        "anything else is refused with the reason. The step re-runs on the next tick.",
+        "anything else is refused with the reason. The step re-runs on the next tick, unless its stage waits for a pairing: " +
+        "then the item waits there for one.",
     ),
     { item, stage: z.string().min(1).max(64) },
     guard(({ item: n, stage }) => tools.goto(n, stage)),
@@ -166,7 +167,8 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
     said(
       "Overrule the security check on an item it stopped: the refused step — or the stage named, where the " +
         "workflow lets the item go — runs its next round once without prompt screening, then every later round " +
-        "is screened as ever. Only after reading what was refused. Anything written on the item after the " +
+        "is screened as ever. On a stage that waits for a pairing, that round is its next pairing, started and handed " +
+        "in unscreened. Only after reading what was refused. Anything written on the item after the " +
         "clearance voids it. Refused where no security check stopped the item.",
     ),
     { item, stage: z.string().min(1).max(64).optional() },
@@ -224,7 +226,7 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
     "landrace_release",
     said(
       "Give a paired step back to the agent: the pairing ends, its checkout is removed, and the agent runs " +
-        "the step alone on the next tick.",
+        "the step alone on the next tick — unless its stage waits for a pairing, where the item waits for the next one.",
     ),
     { item },
     guard(({ item: n }) => tools.release(n)),
