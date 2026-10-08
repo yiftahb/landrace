@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **The board splits a tree across lanes.** Every item sits in the lane of its own state. A parent with children in several states appears in each of those lanes, and in each it shows only the children that belong there. A parent shown only for context is muted and keeps its own badge. A workflow page shows only that workflow's items, and Needs you only the items that need you, each under its parents. Lane counts, the sidebar and the tab title count items, never parents shown for context. Collapsing a row in one lane leaves it open in the others. Before, a whole tree sat in its most urgent item's lane, so an epic with one child needing you put every waiting and done child under Needs you too. `BoardRow` drops `pages` and gains `page` and `context`. See [The board](docs/cli.md#the-board).
 
+### Fixed
+
+- **`tick.concurrency` counts agents only.** Before, every item a tick checked took a slot, even one that needed no agent. While agents filled every slot, nothing else moved: no merge, no status change, no item whose blocker had just closed. With slow tracker reads and many waiting items, a tick could also run longer than `tick.interval`, and each new tick checked the waiting items again from the top, so a new item never started. Now only a step's agent takes a slot. Each tick checks every claimed item once, most urgent first, at most `tick.concurrency` at a time. A tick that starts while an earlier one is still checking is skipped, and the log says so with a `tick.skipped` event. Agents still running from earlier ticks never cause a skip. A step that finds no slot free is left owed, with nothing written for it, and its row reads `waiting for a free agent slot (tick.concurrency N)`. The next slot a run frees goes to the most urgent item turned away like this; otherwise a later tick runs it. See [Configuration](docs/configuration.md#landraceyaml).
+
 ## [1.4.0] - 2026-10-06
 
 ### Added

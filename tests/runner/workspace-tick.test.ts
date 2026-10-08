@@ -124,7 +124,7 @@ function world(
         steps: minimal.steps, source, pre: [state.pre], dispatcher: createDispatcher([state.post]), executor, ctx, log, scrub: (t) => t,
       },
     })),
-    preflights: [], intervalMs: 60_000, concurrency, converging: 0, listed: 0, stop, running: new Map(), seen: new Map(), log, ctx,
+    preflights: [], intervalMs: 60_000, concurrency, agents: 0, checking: false, asking: [], turnedAway: [], stop, running: new Map(), seen: new Map(), log, ctx,
   };
   return {
     runtime, events, listings,
@@ -361,7 +361,7 @@ describe("one tick over every workflow", () => {
  * more by the next while the first two still ran.
  */
 describe("tick.concurrency across overlapping ticks", () => {
-  const LEFT = "no free slot of tick.concurrency (2): left for a later tick";
+  const WAITING = "waiting for a free agent slot (tick.concurrency 2)";
 
   /*
    * A hold for each run, in the order the runs ask for one, released by hand:
@@ -391,7 +391,7 @@ describe("tick.concurrency across overlapping ticks", () => {
   const finishedOrOver = (w: World, a: Agents, n: number, max: number) =>
     until(() => w.named("tick.finished").length === n || a.runs.length > max, `tick ${n} to finish`);
 
-  it("starts nothing in a tick that overlaps runs holding every slot, and exactly one in the tick after one frees", async () => {
+  it("starts no agent in a tick that overlaps runs holding every slot, and exactly one when one frees", async () => {
     const state = createExternalState({
       items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:auto"] }, ...["3", "4", "5"].map((id) => ({ id, labels: [] }))],
     });
@@ -400,7 +400,7 @@ describe("tick.concurrency across overlapping ticks", () => {
     const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)]], 2);
 
     const first = w.once();
-    await until(() => a.runs.length === 2, "the first tick to fill both slots");
+    await until(() => a.runs.length === 2 && !w.runtime.checking, "the first tick to fill both slots");
     for (const id of ["3", "4", "5"]) state.label(id, "lr:auto");
 
     const second = w.once();
@@ -409,23 +409,26 @@ describe("tick.concurrency across overlapping ticks", () => {
     expect(await second).toEqual([
       { item: "1", workflow: "main", outcome: expect.stringMatching(/locked by/) },
       { item: "2", workflow: "main", outcome: expect.stringMatching(/locked by/) },
-      { item: "3", workflow: "main", outcome: LEFT },
-      { item: "4", workflow: "main", outcome: LEFT },
-      { item: "5", workflow: "main", outcome: LEFT },
+      { item: "3", workflow: "main", outcome: WAITING },
+      { item: "4", workflow: "main", outcome: WAITING },
+      { item: "5", workflow: "main", outcome: WAITING },
     ]);
-    expect(w.named("item.skipped").filter((e) => e.reason === LEFT).map((e) => e.item)).toEqual(["3", "4", "5"]);
+    expect(w.named("item.skipped").filter((e) => e.reason === WAITING).map((e) => e.item).sort()).toEqual(["3", "4", "5"]);
 
     h.release(0);
-    await until(() => w.runtime.converging === 1, "item 1's run to give up its slot");
-    const third = w.once();
-    await until(() => a.runs.length === 3, "the next tick to start one");
+    await until(() => a.runs.length === 3, "item 1's freed slot to start one");
     await new Promise((r) => setTimeout(r, 30));
     expect(a.runs).toHaveLength(3);
+    // Whichever of 1 and 2 asked for its hold first ended; 3 is the most urgent turned away.
+    expect([...w.runtime.running.keys()]).toContain("3");
+    expect(w.runtime.running.size).toBe(2);
     expect(a.peak()).toBe(2);
 
     h.all();
-    await Promise.all([first, third]);
-    expect(w.runtime.converging).toBe(0);
+    await first;
+    expect(a.runs).toHaveLength(5);
+    expect(a.peak()).toBe(2);
+    expect(w.runtime.agents).toBe(0);
   });
 
   it("holds the bound across two workflows sharing the workspace", async () => {
@@ -437,7 +440,7 @@ describe("tick.concurrency across overlapping ticks", () => {
     const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)], ["fast", "lr:fast", state, state.source, a.agent("fast", h.hold)]], 2);
 
     const first = w.once();
-    await until(() => a.runs.length === 2, "one run under each workflow");
+    await until(() => a.runs.length === 2 && !w.runtime.checking, "one run under each workflow");
     state.label("3", "lr:auto");
     state.label("4", "lr:fast");
 
@@ -447,14 +450,14 @@ describe("tick.concurrency across overlapping ticks", () => {
     expect(await second).toEqual([
       { item: "1", workflow: "main", outcome: expect.stringMatching(/locked by/) },
       { item: "2", workflow: "fast", outcome: expect.stringMatching(/locked by/) },
-      { item: "3", workflow: "main", outcome: LEFT },
-      { item: "4", workflow: "fast", outcome: LEFT },
+      { item: "3", workflow: "main", outcome: WAITING },
+      { item: "4", workflow: "fast", outcome: WAITING },
     ]);
 
     h.all();
     await first;
     expect(a.peak()).toBe(2);
-    expect(w.runtime.converging).toBe(0);
+    expect(w.runtime.agents).toBe(0);
   });
 
   /*
@@ -462,40 +465,36 @@ describe("tick.concurrency across overlapping ticks", () => {
    * next item of its own listing, however stale, before any later tick could
    * — so an urgent item filed since waited behind the whole of that queue.
    */
-  it("gives a freed slot to the freshest listing, never to the queue of a tick listed since", async () => {
+  it("gives a freed slot to the most urgent item the latest checks turned away, never to an older tick's", async () => {
     const state = createExternalState({
       items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: ["lr:auto"] }, { id: "3", labels: [], priority: 0 }],
     });
     const a = agents();
     const h = holds();
     const w = world([["main", "lr:auto", state, state.source, a.agent("main", h.hold)]], 1);
-    const left = "no free slot of tick.concurrency (1): left for a later tick";
-    const overtaken = "left for a later tick: a later tick has listed";
+    const waiting = "waiting for a free agent slot (tick.concurrency 1)";
 
     const first = w.once();
-    await until(() => a.runs.length === 1, "item 1's run to start");
+    await until(() => a.runs.length === 1 && !w.runtime.checking, "item 1's run to start and item 2 to be turned away");
     state.label("3", "lr:auto");
-    // Busy item 1 sits behind item 3, the first to find no slot: its row
-    // still says who holds it.
     expect(await w.once()).toEqual([
       { item: "1", workflow: "main", outcome: expect.stringMatching(/locked by/) },
-      { item: "2", workflow: "main", outcome: left },
-      { item: "3", workflow: "main", outcome: left },
+      { item: "2", workflow: "main", outcome: waiting },
+      { item: "3", workflow: "main", outcome: waiting },
     ]);
 
     h.release(0);
-    await finishedOrOver(w, a, 2, 1);
-    expect(a.runs).toHaveLength(1);
-    // Item 1's end freed the slot: item 2 is left because a later tick has
-    // listed, not for want of a slot.
-    expect((await first).find((r) => r.item === "2")).toEqual({ item: "2", workflow: "main", outcome: overtaken });
-
-    const third = w.once();
-    await until(() => a.runs.length === 2, "the next tick to start its most urgent item");
+    await until(() => a.runs.length === 2, "item 1's freed slot to start the most urgent item");
     expect([...w.runtime.running.keys()]).toEqual(["3"]);
     h.all();
-    await third;
-    expect(w.runtime.converging).toBe(0);
+    // The tick that waits for a run prints its outcome: the first tick, whose
+    // run freed the slot, and not the one that turned the item away and has
+    // long since printed.
+    const rows = await first;
+    expect(rows.find((r) => r.item === "2")?.outcome).toMatch(/^terminal/);
+    expect(rows.find((r) => r.item === "3")?.outcome).toMatch(/^terminal/);
+    expect(a.runs).toHaveLength(3);
+    expect(w.runtime.agents).toBe(0);
   });
 
   it("takes no slot for a busy item, and still starts the free one behind it", async () => {
@@ -513,7 +512,7 @@ describe("tick.concurrency across overlapping ticks", () => {
     await until(() => a.runs.length >= 2, "the overlapping tick to start item 2");
     await new Promise((r) => setTimeout(r, 30));
     expect(a.runs).toHaveLength(2);
-    expect(w.runtime.converging).toBe(2);
+    expect(w.runtime.agents).toBe(2);
 
     h.all();
     const rows = await second;
@@ -521,7 +520,7 @@ describe("tick.concurrency across overlapping ticks", () => {
     expect(rows.find((r) => r.item === "2")?.outcome).toMatch(/^terminal/);
     await first;
     expect(a.peak()).toBe(2);
-    expect(w.runtime.converging).toBe(0);
+    expect(w.runtime.agents).toBe(0);
   });
 
   /*
@@ -545,14 +544,172 @@ describe("tick.concurrency across overlapping ticks", () => {
     for (const id of ["3", "4", "5"]) state.label(id, "lr:auto");
 
     const second = w.once();
-    await until(() => a.runs.length === 3, "item 3 to take the last slot");
+    await until(() => a.runs.length === 3 && !w.runtime.checking, "one of 3, 4 and 5 to take the last slot");
+    // Checks run side by side: the one whose read answered first may ask first.
+    const took = [...w.runtime.running.keys()].find((id) => id !== "1" && id !== "2");
     h.release(2);
-    await until(() => a.runs.length === 4, "item 3's freed slot to go to the next item");
-    expect([...w.runtime.running.keys()].sort()).toEqual(["1", "2", "4"]);
+    await until(() => a.runs.length === 4, "the freed slot to go to the next item");
+    const next = ["3", "4", "5"].find((id) => id !== took);
+    expect([...w.runtime.running.keys()].sort()).toEqual(["1", "2", next]);
 
     h.all();
     await Promise.all([first, second]);
-    expect(w.runtime.converging).toBe(0);
+    expect(w.runtime.agents).toBe(0);
+  });
+});
+
+/*
+ * #136: a slot is an agent. Checking an item, entering a stage and its
+ * effects, and a merge take none; only a step's agent does. Probed against the
+ * old tick, a check took a slot whether or not an agent ran, and a tick every
+ * 100 ms over slow reads never reached a new item at all.
+ */
+describe("a slot is an agent", () => {
+  const WAITING = "waiting for a free agent slot (tick.concurrency 1)";
+
+  /** One stage, run by no step, that merges the item's pull request, moves its status and waits on a person. */
+  const PARK: Workflow = {
+    version: 1, name: "park", description: "test",
+    stages: [{
+      id: "parked", entry: true, waits: "person", triggers: [{ when: { "run.stage": null } }],
+      on_enter: [{ type: "pull.merge", branch: "landrace/{item}" }, { type: "tracker.status", value: "parked" }],
+    }],
+  };
+  const parking = (w: World): void => {
+    for (const wf of w.runtime.workflows) {
+      if (wf.id === "park") wf.deps.workflow = { ...PARK, eligible: wf.deps.workflow.eligible ?? [] };
+    }
+  };
+
+  it("checks a fresh item, merges it and moves its status while an agent holds every slot", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: [] }] });
+    const pull = state.openPull("2");
+    const a = agents();
+    const finish = gate();
+    const w = world([
+      ["main", "lr:auto", state, state.source, a.agent("main", () => finish.wait)],
+      ["park", "lr:park", state, state.source, a.agent("park")],
+    ], 1);
+    parking(w);
+
+    const first = w.once();
+    await until(() => a.runs.length === 1, "item 1's agent to take the only slot");
+    state.label("2", "lr:park");
+
+    expect(await w.once()).toEqual([
+      { item: "1", workflow: "main", outcome: expect.stringMatching(/locked by/) },
+      { item: "2", workflow: "park", outcome: expect.stringMatching(/^wait after 2 pass\(es\)/) },
+    ]);
+    expect(state.stage("2")).toBe("parked");
+    expect(state.pull(pull).merged).toBe(true);
+    expect(a.runs).toHaveLength(1);
+
+    finish.open();
+    await first;
+  });
+
+  it("leaves a step owed when no slot is free, writing nothing for it, and runs it once a slot frees", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: [] }] });
+    const a = agents();
+    const finish = gate();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main", () => finish.wait)]], 1);
+
+    const first = w.once();
+    await until(() => a.runs.length === 1, "item 1's agent to take the only slot");
+    state.label("2", "lr:auto");
+
+    expect((await w.once()).find((r) => r.item === "2")).toEqual({ item: "2", workflow: "main", outcome: WAITING });
+    expect(w.named("item.skipped").filter((e) => e.reason === WAITING)).toEqual([expect.objectContaining({ item: "2", workflow: "main" })]);
+    // Entered, so its stage is shown; its step's round is still owed.
+    expect(state.stage("2")).toBe("spec");
+    const entered = state.comments("2");
+    expect(entered).toHaveLength(1);
+
+    finish.open();
+    await first;
+    await until(async () => state.stage("2") === "done" && (await held("2", { root })) === null, "item 2's step to run");
+    // A later tick finds both at their end, and runs nothing again.
+    expect(await w.once()).toEqual([
+      { item: "1", workflow: "main", outcome: expect.stringMatching(/^wait after 1 pass/) },
+      { item: "2", workflow: "main", outcome: expect.stringMatching(/^wait after 1 pass/) },
+    ]);
+    expect(a.runs).toHaveLength(2);
+    const comments = state.comments("2");
+    expect(comments.slice(0, 1)).toEqual(entered);
+    expect(new Set(comments).size).toBe(comments.length);
+    expect(w.runtime.agents).toBe(0);
+  });
+
+  it("starts nothing turned away once the loop is stopping, and gives every slot back", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }, { id: "2", labels: [] }] });
+    const a = agents();
+    const w = world([["main", "lr:auto", state, state.source, a.agent("main", () => new Promise(() => {}))]], 1);
+
+    const first = w.once();
+    await until(() => a.runs.length === 1, "item 1's agent to take the only slot");
+    state.label("2", "lr:auto");
+    expect((await w.once()).find((r) => r.item === "2")?.outcome).toBe(WAITING);
+    expect(w.runtime.turnedAway.map((t) => t.node.id)).toEqual(["2"]);
+
+    const checks = () => w.named("lock.acquired").filter((e) => e.item === "2").length;
+    expect(checks()).toBe(1);
+    w.runtime.stop.abort();
+    expect((await first).find((r) => r.item === "1")?.outcome).toMatch(/^halt .*aborted/);
+    expect(a.runs).toEqual([{ workflow: "main", stopped: true }]);
+    expect(checks()).toBe(1);
+    expect(w.runtime.agents).toBe(0);
+  });
+
+  it("starts a new item behind slow parked ones when ticks come faster than a pass", async () => {
+    const parked = ["11", "12", "13", "14", "15", "16"];
+    const state = createExternalState({ items: [...parked.map((id) => ({ id, labels: ["lr:park"], priority: 0 })), { id: "20", labels: [] }] });
+    for (const id of parked) state.openPull(id);
+    let slow = false;
+    const reading: Source = { ...state.source, read: async (item, ctx) => {
+      if (slow) await new Promise((r) => setTimeout(r, 40));
+      return state.source.read(item, ctx);
+    } };
+    const a = agents();
+    const w = world([["main", "lr:auto", state, reading, a.agent("main")], ["park", "lr:park", state, reading, a.agent("park")]], 1);
+    parking(w);
+    await w.once();
+    expect(parked.map((id) => state.stage(id))).toEqual(parked.map(() => "parked"));
+
+    slow = true;
+    state.label("20", "lr:auto");
+    const ticks: Array<Promise<unknown>> = [];
+    const every = setInterval(() => ticks.push(w.once()), 100);
+    try {
+      await until(() => a.runs.length === 1, "the new item's agent to start", 3000);
+    } finally {
+      clearInterval(every);
+    }
+    await Promise.all(ticks);
+    expect(state.stage("20")).toBe("done");
+    expect(w.named("tick.skipped").length).toBeGreaterThan(0);
+  });
+
+  it("skips a tick that starts while an earlier one is still checking, and says why", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:park"] }] });
+    state.openPull("1");
+    const reads = gate();
+    const reading: Source = { ...state.source, read: async (item, ctx) => {
+      await reads.wait;
+      return state.source.read(item, ctx);
+    } };
+    const a = agents();
+    const w = world([["park", "lr:park", state, reading, a.agent("park")]], 1);
+    parking(w);
+
+    const first = w.once();
+    await until(() => w.named("lock.acquired").length === 1, "the first tick to start checking");
+
+    expect(await w.once()).toEqual([]);
+    expect(w.named("tick.skipped")).toEqual([expect.objectContaining({ reason: "an earlier tick is still checking its items" })]);
+    expect(w.named("tick.started")).toHaveLength(1);
+
+    reads.open();
+    expect(await first).toEqual([{ item: "1", workflow: "park", outcome: expect.stringMatching(/^wait/) }]);
   });
 });
 
@@ -625,5 +782,7 @@ describe("an item's kept write worktree", () => {
 
     expect((await sandboxes(repo)).map((line) => line.split("/").pop()).sort()).toEqual(["6.write"]);
     await removeWorktree("6", repo, keptSlot("6"));
-  });
+    // Five worktrees made and removed by real git: 2.5 s alone, and past
+    // jest's 5 s under the full suite's parallel load.
+  }, 20_000);
 });
