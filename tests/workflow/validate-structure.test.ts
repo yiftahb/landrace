@@ -305,6 +305,20 @@ describe("structural validation", () => {
     ]);
   });
 
+  // A goto is offered only from the stage an item already sits at, so a
+  // stage's own goto cannot bring an item there.
+  it("still refuses a stage that waits for a pairing, has no trigger, and only its own goto names", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "plan", waits: "person", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "design", step: "design.md", waits: "pairing", goto: ["design"] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "design" } }, { when: { "run.stage": "plan" } }] },
+    ]);
+    expect(validateStructure(w).filter((p) => p.rule === "reachability")).toEqual([
+      { rule: "reachability", message: 'nothing can reach stage "design"' },
+    ]);
+  });
+
   // Only a pairing stage: any other stage a goto names is still reached by
   // an agent's answer or a person's Go to step, neither of which the
   // structural rule reads.

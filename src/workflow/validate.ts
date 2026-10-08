@@ -119,8 +119,11 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   // A stage the item's own state places it at is reached by that state. A
   // stage that waits for a pairing is reached by pairing on it, from a stage
   // whose goto offers it: a trigger of its own could only read the crash
-  // window between the pair record and the stage's entry.
-  const offered = new Set(w.stages.flatMap((s) => gotoTargetsOf(s).map((g) => g.stage)));
+  // window between the pair record and the stage's entry. Its own goto does
+  // not count: a goto is offered only from the stage an item already sits at.
+  const offered = new Set(
+    w.stages.flatMap((s) => gotoTargetsOf(s).filter((g) => g.stage !== s.id).map((g) => g.stage)),
+  );
   for (const stage of w.stages) {
     if (stage.waits === "pairing" && offered.has(stage.id)) continue;
     if (!stage.entry && (stage.triggers?.length ?? 0) === 0 && !placedByState(stage)) {
