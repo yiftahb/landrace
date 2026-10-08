@@ -1803,6 +1803,9 @@ export function branchIsolationProblems(w: Workflow, isolation: string): Problem
  * an item would wait at it for good. Asked by `validate` and refused by
  * `start`, beside `branchIsolationProblems` and for the same reason.
  */
+/** The stages whose step runs only in a pairing: what an executor is built against, beside the steps. */
+export const pairingStages = (w: Workflow): string[] => w.stages.filter((s) => s.waits === "pairing").map((s) => s.id);
+
 export function pairingIsolationProblems(w: Workflow, isolation: string): Problem[] {
   if (isolation === "worktree") return [];
   return w.stages.flatMap((stage) => stage.waits !== "pairing" ? [] : [{

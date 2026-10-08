@@ -403,6 +403,27 @@ describe("buildWorkspaceRuntime", () => {
     await expect(buildMain(dir, { readOnly: true })).resolves.toBeDefined();
   });
 
+  // The executor is built against the stages that wait for a pairing, and
+  // Codex can only carry on a session an agent there never started.
+  it("refuses a stage that waits for a pairing under an executor that cannot start one afresh", async () => {
+    const codex = JSON.stringify(join(process.cwd(), "integrations", "codex", "index.ts"));
+    const { dir } = await fixture({
+      agent: "codex", agentKeys: "sandbox: { deny: [] }",
+      hookExtra: `\nconst { Codex } = await import((await import("node:url")).pathToFileURL(${codex}).href);\nexport const codex = new Codex();\n`,
+    });
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "steps", "design.md"), [
+      "---", "capabilities: [repo:read]", "output:", "  discriminator: kind", "  shapes: { done: {} }",
+      "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+      "---", "", "design", "",
+    ].join("\n"));
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW
+      .replace("    terminal: true\n", "    step: steps/design.md\n    waits: pairing\n")
+      .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+
+    await expect(buildMain(dir, {})).rejects.toThrow(/executor "codex" could not start: stage "spec" waits for a pairing, but the codex executor can only carry on/);
+  });
+
   /*
    * The item branch landrace.yaml names is the one every stage's branch is
    * held to, before any hook loads and again beside the hooks' coverage; and

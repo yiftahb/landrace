@@ -1479,6 +1479,18 @@ describe("a step's own skills, at startup", () => {
   });
 });
 
+describe("a stage that waits for a pairing, at startup", () => {
+  it("is accepted: a person can take a fresh session", async () => {
+    const root = await gitRepo();
+    const ctx: ExecutorContext = {
+      config: { agent: { adapter: "claude" } } as unknown as ExecutorContext["config"],
+      secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: root, redact: () => {},
+      pairingStages: ["design"],
+    };
+    await expect(claude.create(ctx)).resolves.toMatchObject({ handoff: expect.any(Function) });
+  });
+});
+
 describe("the factory's wiring, end to end", () => {
   it("carries the model, plugins and an allowlisted server's tools through a real run's argv", async () => {
     const root = await gitRepo();

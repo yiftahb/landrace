@@ -60,6 +60,16 @@ describe("the Codex integration", () => {
     expect(hookKindOf(hook)).toBe("executor");
   });
 
+  // Codex pairs only by carrying on the agent's own session, and an agent never runs such a stage alone.
+  it("refuses a stage that waits for a pairing, at startup", async () => {
+    const ctx: ExecutorContext = {
+      config: { agent: { adapter: "codex" } } as unknown as ExecutorContext["config"],
+      secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: await gitRepo(), redact: () => {},
+      pairingStages: ["design"],
+    };
+    await expect(new Codex().create(ctx)).rejects.toThrow(/stage "design" waits for a pairing, but the codex executor/);
+  });
+
   describe("its command line", () => {
     /*
      * `--ignore-user-config` and `--ignore-rules`: the operator's own

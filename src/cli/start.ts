@@ -61,7 +61,7 @@ import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
-import { admitProblems, branchIsolationProblems, claimProblems, createProblems, pairingIsolationProblems, validate } from "#workflow/validate.js";
+import { admitProblems, branchIsolationProblems, claimProblems, createProblems, pairingIsolationProblems, pairingStages, validate } from "#workflow/validate.js";
 import { loadWorkspace } from "#workflow/workspace.js";
 import { watchWake, wakePath } from "#wake.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
@@ -584,7 +584,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     // steps, whose efforts it refuses now rather than at each step's first run.
     // A context of its own per workflow, so a factory two workflows share is
     // built once for each, against that workflow's steps (see `executorFor`).
-    const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps };
+    const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps, pairingStages: pairingStages(workflow) };
     const screener = opts.readOnly ? undefined : await screenerFor(loaded.config, registry, ectx);
     workflows.push({
       id, name: workflow.name, description: workflow.description, source,

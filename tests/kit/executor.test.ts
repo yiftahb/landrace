@@ -174,6 +174,25 @@ describe("BaseExecutor", () => {
   });
 
   describe("create(), at startup", () => {
+    /*
+     * An agent never runs a stage that waits for a pairing alone, so there is
+     * never an agent session there to continue or fork: the person has to be
+     * able to start one fresh.
+     */
+    it("refuses a stage that waits for a pairing unless a person can take a fresh session, naming each stage", async () => {
+      const waiting = { ...ctxFor({ adapter: "tiny" }), pairingStages: ["design", "plan"] };
+      await expect(new Tiny("tiny").create(waiting)).rejects.toThrow(
+        /^stages "design", "plan" wait for a pairing, but the tiny executor can only carry on the agent's own session/);
+      await expect(new Tiny("tiny", []).create(waiting)).rejects.toThrow(
+        /^stages "design", "plan" wait for a pairing, but the tiny executor cannot hand a session to a person/);
+      await expect(new Tiny("tiny", ["take"]).create(waiting)).resolves.toBeDefined();
+      await expect(new Tiny("tiny").create({ ...waiting, pairingStages: [] })).resolves.toBeDefined();
+    });
+
+    it("says nothing of a pairing stage when it only screens beside another agent", async () => {
+      await expect(new Tiny("tiny").create({ ...ctxFor({ adapter: "other" }), pairingStages: ["design"] })).resolves.toBeDefined();
+    });
+
     it("reads agent.signature, the engine's own key, without refusing it", async () => {
       await expect(new Tiny("tiny").create(ctxFor({ adapter: "tiny", signature: false }))).resolves.toBeDefined();
     });

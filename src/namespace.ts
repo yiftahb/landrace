@@ -913,6 +913,12 @@ export type ExecutorContext = RuntimeContext & {
    * an effort it has no level for, rather than at that step's first run.
    */
   steps?: ReadonlyMap<string, Step>;
+  /**
+   * The ids of the workflow's stages that wait for a pairing: their step runs
+   * only with a person, so a factory that cannot start a pairing afresh
+   * refuses them at startup.
+   */
+  pairingStages?: readonly string[];
 };
 
 /**

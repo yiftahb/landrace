@@ -10,9 +10,9 @@ import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { WorkflowLoadError } from "#workflow/load.js";
-import { admitProblems, branchIsolationProblems, claimProblems, createProblems, pairingIsolationProblems, validate } from "#workflow/validate.js";
+import { admitProblems, branchIsolationProblems, claimProblems, createProblems, pairingIsolationProblems, pairingStages, validate } from "#workflow/validate.js";
 import { readWorkspace } from "#workflow/workspace.js";
-import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Source, Step, Workspace, WorkspaceRead } from "#namespace.js";
+import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Source, Step, Workflow, Workspace, WorkspaceRead } from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -108,10 +108,10 @@ function startRefusalProblems(message: string): Problem[] {
  * files outside the workflow itself, so a missing one is reported here too,
  * as `start` would refuse over it.
  */
-async function executorProblems(dir: string, loaded: LoadedConfig, registry: Registry, steps: ReadonlyMap<string, Step>): Promise<Problem[]> {
+async function executorProblems(dir: string, loaded: LoadedConfig, registry: Registry, workflow: Workflow, steps: ReadonlyMap<string, Step>): Promise<Problem[]> {
   const ctx: ExecutorContext = {
     config: loaded.config, secrets: loaded.secretValues, signal: new AbortController().signal,
-    log: () => {}, dir, redact: () => {}, steps,
+    log: () => {}, dir, redact: () => {}, steps, pairingStages: pairingStages(workflow),
   };
   try {
     // Screener before executor, the same order `start` builds them in:
@@ -252,7 +252,7 @@ async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: Loade
   // hooks are known to have loaded — a workflow already found unsound, or
   // whose hooks would not import, has no registry to build one against.
   const shared = loaded && registry
-    ? [...(await executorProblems(ws.dir, loaded, registry, steps)), ...notifyProblems(loaded.config, registry)]
+    ? [...(await executorProblems(ws.dir, loaded, registry, workflow, steps)), ...notifyProblems(loaded.config, registry)]
     : [];
   return { own, shared, source: registry?.source ?? null };
 }
