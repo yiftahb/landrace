@@ -326,6 +326,26 @@ export async function executorFor(
   throw new Error(unknownExecutor(key, id, registry));
 }
 
+/**
+ * The executor steps run with, refused when a stage waits for a pairing and
+ * it has no `handoff`: nobody could ever pair on that stage, and an item there
+ * would sit in Needs you for good. The kit refuses its own executors in its
+ * own words; this holds a plain `Executor` hook, or a factory not built on the
+ * kit, to the same. Not the screener's, which nobody pairs with.
+ */
+export async function stepExecutorFor(config: RuntimeConfig, registry: Registry, ctx: ExecutorContext): Promise<Executor> {
+  const executor = await executorFor(config, registry, ctx);
+  const pairing = ctx.pairingStages ?? [];
+  if (pairing.length && !executor.handoff) {
+    const named = pairing.map((id) => `"${id}"`).join(", ");
+    throw new Error(
+      `executor "${executor.id}" could not start: ${pairing.length === 1 ? `stage ${named} waits` : `stages ${named} wait`} ` +
+      `for a pairing, but the ${executor.id} executor cannot hand a session to a person, so nobody could ever pair on it`,
+    );
+  }
+  return executor;
+}
+
 const unknownExecutor = (key: string, id: string, registry: Registry): string => {
   const registered = [...registry.executors.keys()];
   return `${key} "${id}" names no executor: the loaded hooks register ` +
@@ -598,7 +618,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
         dispatcher: createDispatcher(registry.post),
         executor: opts.readOnly
           ? readOnlyExecutor(registeredExecutor(loaded.config, registry))
-          : await executorFor(loaded.config, registry, ectx),
+          : await stepExecutorFor(loaded.config, registry, ectx),
         childServer: childServerCommand(dir, id),
         ...(sandbox === null ? {} : { sandbox }),
         ...(screener ? { screen: screener } : {}),

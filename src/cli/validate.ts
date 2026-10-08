@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { executorFor, screenerFor } from "#cli/start.js";
+import { screenerFor, stepExecutorFor } from "#cli/start.js";
 import { configProblems, loadConfig } from "#config/load.js";
 import { ITEM_BRANCH } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
@@ -116,11 +116,11 @@ async function executorProblems(dir: string, loaded: LoadedConfig, registry: Reg
   try {
     // Screener before executor, the same order `start` builds them in:
     // `buildWorkspaceRuntime` resolves its screener before it ever reaches the object
-    // literal that awaits `executorFor` for the step — so a configuration
+    // literal that awaits `stepExecutorFor` for the step — so a configuration
     // broken both ways is reported over the same one `start` would actually
     // meet first.
     await screenerFor(loaded.config, registry, ctx);
-    await executorFor(loaded.config, registry, ctx);
+    await stepExecutorFor(loaded.config, registry, ctx);
     return [];
   } catch (e) {
     return startRefusalProblems(messageOf(e));

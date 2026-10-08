@@ -424,6 +424,33 @@ describe("buildWorkspaceRuntime", () => {
     await expect(buildMain(dir, {})).rejects.toThrow(/executor "codex" could not start: stage "spec" waits for a pairing, but the codex executor can only carry on/);
   });
 
+  // Not only the kit's: a plain Executor hook with no handoff could never be
+  // paired with either, and the item would sit in Needs you for good.
+  it("refuses a stage that waits for a pairing under a plain executor hook with no handoff, and accepts one with", async () => {
+    const pairing = async (handoff: boolean): Promise<string> => {
+      const { dir } = await fixture({
+        agent: "plain",
+        hookExtra: `\nexport const plain = brand("executor", { id: "plain", run: async () => ({ text: "", sessionId: null })${
+          handoff ? ', handoff: async () => ({ argv: [], cwd: "" })' : ""} });\n`,
+      });
+      await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+      await writeFile(join(workflowIn(dir), "steps", "design.md"), [
+        "---", "capabilities: [repo:read]", "output:", "  discriminator: kind", "  shapes: { done: {} }",
+        "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+        "---", "", "design", "",
+      ].join("\n"));
+      await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW
+        .replace("    terminal: true\n", "    step: steps/design.md\n    waits: pairing\n")
+        .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+      return dir;
+    };
+
+    await expect(buildMain(await pairing(false), {})).rejects.toThrow(
+      'executor "plain" could not start: stage "spec" waits for a pairing, but the plain executor cannot hand a session to a person, so nobody could ever pair on it',
+    );
+    await expect(buildMain(await pairing(true), {})).resolves.toBeDefined();
+  });
+
   /*
    * The item branch landrace.yaml names is the one every stage's branch is
    * held to, before any hook loads and again beside the hooks' coverage; and

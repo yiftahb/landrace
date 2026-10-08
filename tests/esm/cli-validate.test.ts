@@ -179,6 +179,36 @@ export const codex = new Codex();
     }]);
   });
 
+  // Not only the kit's: a plain Executor hook with no handoff can never be
+  // paired with, which `start` refuses too.
+  it("reports a stage that waits for a pairing under a plain executor hook with no handoff, and passes one with", async () => {
+    const executors = async (handoff: boolean): Promise<Problem[]> => {
+      const dir = join(await mkdtemp(join(tmpdir(), "lr-validate-")), ".landrace");
+      await mkdir(join(dir, "hooks"), { recursive: true });
+      await writeFile(join(dir, "hooks", "plain.ts"), `export const plain = Object.defineProperty(
+  { id: "plain", run: async () => ({ text: "", sessionId: null })${handoff ? ', handoff: async () => ({ argv: [], cwd: "" })' : ""} },
+  Symbol.for("landrace.hook.kind"), { value: "executor", enumerable: false },
+);
+`);
+      await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: plain }\n");
+      const main = workflowIn(dir);
+      await mkdir(join(main, "steps"), { recursive: true });
+      const minimal = join(process.cwd(), "tests", "fixtures", "minimal");
+      const workflow = await readFile(join(minimal, "workflow.yaml"), "utf8");
+      await writeFile(join(main, "workflow.yaml"), workflow
+        .replace("name: minimal\n", "name: minimal\nhooks: [../../hooks/plain.ts]\n")
+        .replace("    step: steps/spec.md\n", "    step: steps/spec.md\n    waits: pairing\n"));
+      await writeFile(join(main, "steps", "spec.md"), await readFile(join(minimal, "steps", "spec.md"), "utf8"));
+      return (await runValidate(dir)).problems.filter((p) => p.rule === "executor");
+    };
+
+    expect(await executors(false)).toEqual([{
+      rule: "executor",
+      message: 'executor "plain" could not start: stage "spec" waits for a pairing, but the plain executor cannot hand a session to a person, so nobody could ever pair on it',
+    }]);
+    expect(await executors(true)).toEqual([]);
+  });
+
   /**
    * The wiring itself, end to end through the command: a path nothing
    * provides, in a workflow whose one hook does declare what it provides.

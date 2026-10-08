@@ -88,7 +88,9 @@ stages:
 - **Release** ends the pairing and removes its checkout. The item waits at the stage for the next pairing; the agent does not take it.
 - While a pairing is open, the board shows the item under Held elsewhere, as it does every pairing. `landrace status` and `landrace_waiting` still list it as waiting on you.
 
-`validate` refuses `waits: pairing` on a stage with no `step` and on a terminal stage. `validate` and `start` both refuse it with `agent.isolation` other than `worktree`, since a pairing is worked in a checkout of its own, and under an executor that cannot start a fresh pairing, such as Codex, which can only carry on a session the agent started.
+A stage another stage lists in its `goto` is offered there as **Pair on `<stage>`** too, and pairing on it is how the item reaches it. So a `waits: pairing` stage that some stage's `goto` lists needs no trigger of its own.
+
+`validate` refuses `waits: pairing` on a stage with no `step` and on a terminal stage. `validate` and `start` both refuse it with `agent.isolation` other than `worktree`, since a pairing is worked in a checkout of its own, and under an executor that cannot start a fresh pairing: one with no `handoff` at all, whether built on the kit or not, and Codex, which can only carry on a session the agent started.
 
 ## Conditions
 
