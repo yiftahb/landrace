@@ -2457,6 +2457,21 @@ describe("an item a write just went through for", () => {
     expect(rows.find((r) => r.page === null)).toMatchObject({ lane: "waiting", children: [{ id: "10", children: [{ id: "2", badge: "waiting" }] }] });
   });
 
+  // A Waiting copy whose items were all sent stays in Waiting, and is still the
+  // one the others join; so are two copies moved in from two other lanes.
+  it("joins every copy of a root that ends in Waiting on a page, sent whole or not", () => {
+    const kid = (id: string, badge: string) => ({ id, kind: "item", context: false, badge, note: "", since: 1, retry: null, clear: null, goto: [], children: [] });
+    const copy = (lane: string, kids: unknown[]) => ({ ...kid("1", "waiting"), context: true, lane, page: "a", children: kids });
+    const v = { nextTickAt: 1000, rows: [copy("needs-you", [kid("2", "needs-you")]), copy("waiting", [kid("3", "waiting")])] };
+    const both = drawn(v, new Map([["2", move("needs-you")], ["3", move("waiting")]])).rows;
+    expect(both).toHaveLength(1);
+    expect(both[0]).toMatchObject({ lane: "waiting", children: [{ id: "3", badge: "waiting" }, { id: "2", badge: "waiting" }] });
+    const elsewhere = { nextTickAt: 1000, rows: [copy("needs-you", [kid("2", "needs-you")]), copy("held", [kid("4", "held")])] };
+    const two = drawn(elsewhere, new Map([["2", move("needs-you")], ["4", move("held")]])).rows;
+    expect(two).toHaveLength(1);
+    expect(two[0]).toMatchObject({ lane: "waiting", children: [{ id: "2", badge: "waiting" }, { id: "4", badge: "waiting" }] });
+  });
+
   // A row that is context in one copy and filed in the other is filed once joined.
   it("keeps a row filed when it joins a copy where it was only context", () => {
     const row = (id: string, context: boolean, badge: string, kids: unknown[] = []) => ({ id, kind: "item", context, badge, note: "", since: 1, retry: null, clear: null, goto: [], children: kids });

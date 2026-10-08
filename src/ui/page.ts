@@ -376,27 +376,30 @@ function withMoves(view, moves) {
       const m = moves.get(row.id);
       return !m || m.lane !== r.lane;
     });
-    if (filed === 0 || stays) return sent(r);
+    // A Waiting copy is already where a sent row goes: it stays the copy the
+    // moved ones join, sent whole or not.
+    if (filed === 0 || stays || r.lane === "waiting") return sent(r);
     const copy = { ...sent(r), lane: "waiting" };
     movedCopies.add(copy);
     return copy;
   });
-  // A copy moved into Waiting where its root already has one on that page
-  // joins it: two copies of one root in one lane share the lane's cycle guard
-  // key, and the first drawn hid the other's items while they still counted.
-  const joined = new Map();
-  for (const r of rows) {
-    if (!movedCopies.has(r) && r.lane === "waiting") joined.set(r.page + "\\n" + r.kind + ":" + r.id, r);
-  }
+  // Every copy of one root that ends in Waiting on a page becomes one: two
+  // copies of a root in one lane share the lane's cycle guard key, and the
+  // first drawn hid the other's items while they still counted. The server's
+  // own Waiting copy is the home when there is one, else the first moved.
+  const keyOf = (r) => r.page + "\\n" + r.kind + ":" + r.id;
+  const home = new Map();
+  for (const r of rows) if (r.lane === "waiting" && !movedCopies.has(r)) home.set(keyOf(r), r);
+  for (const r of movedCopies) if (!home.has(keyOf(r))) home.set(keyOf(r), r);
   const into = new Map();
   for (const r of movedCopies) {
-    const home = joined.get(r.page + "\\n" + r.kind + ":" + r.id);
-    if (home) into.set(home, { ...joinRows(into.get(home) || home, r), lane: home.lane, page: home.page });
+    const h = home.get(keyOf(r));
+    if (h !== r) into.set(h, { ...joinRows(into.get(h) || h, r), lane: "waiting", page: h.page });
   }
   return {
     ...view,
     rows: rows.flatMap((r) => {
-      if (movedCopies.has(r)) return joined.has(r.page + "\\n" + r.kind + ":" + r.id) ? [] : [r];
+      if (movedCopies.has(r) && home.get(keyOf(r)) !== r) return [];
       return [into.get(r) || r];
     }),
   };
