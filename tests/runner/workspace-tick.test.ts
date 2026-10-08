@@ -777,5 +777,7 @@ describe("an item's kept write worktree", () => {
 
     expect((await sandboxes(repo)).map((line) => line.split("/").pop()).sort()).toEqual(["6.write"]);
     await removeWorktree("6", repo, keptSlot("6"));
-  });
+    // Five worktrees made and removed by real git: 2.5 s alone, and past
+    // jest's 5 s under the full suite's parallel load.
+  }, 20_000);
 });

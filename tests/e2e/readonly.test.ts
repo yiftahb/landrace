@@ -363,7 +363,7 @@ describe("telling you an item placed by its own state waits on you", () => {
    * finds it not yet told of, and its converge waits on the other's lock:
    * whichever tells first is the one tell.
    */
-  it("tells you once of an item two overlapping ticks both find arriving", async () => {
+  it("tells you once of an item a tick finds arriving while a later tick is skipped for it", async () => {
     const state = requested();
     let hold: (() => void) | null = null;
     const held = new Promise<void>((resolve) => { hold = resolve; });
@@ -378,9 +378,9 @@ describe("telling you an item placed by its own state waits on you", () => {
     const w = workspace(state, review, "review", { source: slow });
 
     const first = w.tick();
-    // The first tick holds the item's lock while its read waits.
+    // The first tick is still checking while its read waits: the second checks nothing.
     while (reads === 0) await new Promise((resolve) => setImmediate(resolve));
-    expect((await w.tick()).find((r) => r.item === "1")?.outcome).toMatch(/lock/);
+    expect(await w.tick()).toEqual([]);
     (hold as unknown as () => void)();
     await first;
     await w.tick();
