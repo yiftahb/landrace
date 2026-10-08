@@ -89,13 +89,27 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
         return path;
       };
 
+  // An agent slot, taken at the first step this call runs and held until it
+  // ends: the passes after a step are the same run's, and a slot given back
+  // between two steps could go to another item while this one still works.
+  // Nothing before the first step takes one — reading an item, entering a
+  // stage, a merge — so those never wait behind running agents.
+  let slotted = false;
+  const take = async (): Promise<string | null> => {
+    if (slotted || !deps.slot) return null;
+    const refused = await deps.slot.take();
+    slotted = refused === null;
+    return refused;
+  };
+
   try {
-    const result = await converging(item, deps, enter);
+    const result = await converging(item, deps, enter, take);
     if (result.settled === "terminal" && root !== undefined) await removeWorktree(item, root, keptSlot(item));
     return result;
   } finally {
     if (entered && root !== undefined) await removeWorktree(item, root);
     if (kept && root !== undefined) await releaseWorktree(item, root);
+    if (slotted) deps.slot?.give();
   }
 }
 
@@ -103,6 +117,7 @@ async function converging(
   item: string,
   deps: ConvergeDeps,
   enterSandbox: ((on: WorktreeBranch | undefined, write: boolean) => Promise<string>) | null,
+  takeSlot: () => Promise<string | null>,
 ): Promise<ConvergeResult> {
   const maxPasses = deps.maxPasses ?? DEFAULT_MAX_PASSES;
   const scrub = scrubberFor(deps);
@@ -314,6 +329,13 @@ async function converging(
         if (!posted.ok) deps.log("effect.failed", { item, reason: posted.reason });
         return { passes: pass, settled: "halt", why: reason };
       }
+
+      // Before anything the step costs — its briefing, its worktree — and
+      // before anything it writes: refused, the round is still owed exactly
+      // as after a crash, and a later tick, or the run that frees a slot,
+      // runs it.
+      const refused = await takeSlot();
+      if (refused !== null) return { passes: pass, settled: "wait", why: refused };
       invoked.add(key);
 
       /*

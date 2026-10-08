@@ -1670,7 +1670,7 @@ export interface Dispatcher {
  * exporter should later subscribe to this rather than require a rewrite.
  */
 export type EventName =
-  | "tick.started" | "tick.finished"
+  | "tick.started" | "tick.skipped" | "tick.finished"
   | "item.evaluated" | "item.skipped" | "item.aborted"
   | "step.invoked" | "step.started" | "step.finished" | "step.completed" | "step.rejected" | "step.unchecked"
   | "agent.event"
@@ -1843,6 +1843,12 @@ export interface ConvergeDeps {
    * worktree's own commit is what a step's record carries.
    */
   startedAt?: (branch: string) => Promise<string | null>;
+  /**
+   * Taken just before a step's agent starts, and given back when the
+   * converge ends. Refused, the converge stops before the step and writes
+   * nothing for it, so the step is still owed. Absent, a step needs none.
+   */
+  slot?: AgentSlot;
 }
 
 export interface ConvergeResult {
@@ -2380,6 +2386,31 @@ export interface WorkflowRuntime {
  */
 export type ListedWorkflow = Pick<WorkflowRuntime, "id" | "source"> & { deps: Pick<WorkflowRuntime["deps"], "workflow"> };
 
+/** A step asking for an agent slot. */
+export interface SlotAsk {
+  node: Node;
+  grant: (granted: boolean) => void;
+}
+
+/**
+ * An item a check turned away for want of a slot. `start` checks it again,
+ * holding the slot just freed for it; `track` hands that run to the tick
+ * whose run freed the slot, which waits for it.
+ */
+export interface TurnedAway {
+  node: Node;
+  start: (track: (run: Promise<void>) => void) => void;
+}
+
+/**
+ * One converge's agent slot. `take` answers null once it holds one, or why
+ * not; `give` hands it back, and does nothing when none is held.
+ */
+export interface AgentSlot {
+  take: () => Promise<string | null>;
+  give: () => void;
+}
+
 /** Everything the loop needs, assembled once, so a tick is only a call. */
 export interface WorkspaceRuntime {
   dir: string;
@@ -2396,18 +2427,26 @@ export interface WorkspaceRuntime {
   preflights: Preflight[];
   intervalMs: number;
   /**
-   * How many converges may be in flight at once across the workspace: every
-   * workflow's, and every tick's still running, since ticks overlap.
+   * How many agents may run at once across the workspace: every workflow's,
+   * and every tick's, since a run outlives the checks of the tick that
+   * started it. Each tick also checks at most this many items at a time.
    */
   concurrency: number;
-  /** Converges in flight now, over every tick and workflow: what `concurrency` bounds. Starts at 0. */
-  converging: number;
+  /** Agent slots held now, over every tick and workflow: what `concurrency` bounds. Starts at 0. */
+  agents: number;
   /**
-   * How many ticks have listed. Only the latest listing hands out slots: a
-   * tick a later one has listed since takes none, so a freed slot goes to the
-   * most urgent item as it is now, not to an older tick's queue. Starts at 0.
+   * Whether a tick is checking its items now. A tick that starts meanwhile
+   * is skipped, rather than checking the same items from the top again.
+   * Starts false.
    */
-  listed: number;
+  checking: boolean;
+  /** Steps asking for a slot in this turn of the event loop, granted together, most urgent first. Starts empty. */
+  asking: SlotAsk[];
+  /**
+   * What the latest checks turned away for want of a slot, most urgent
+   * first: a slot a run of this process frees goes to the first. Starts empty.
+   */
+  turnedAway: TurnedAway[];
   /**
    * Ctrl-C. The same signal every hook and executor is handed, so aborting it
    * stops the agent subprocess, stops the next pass from starting, and lets
