@@ -2779,11 +2779,12 @@ export interface BoardRow {
   /** Items only: where this item itself stands. Null on an artifact row. */
   badge: Lane | null;
   /**
-   * Root rows only: the lane the whole branch is drawn in — the most urgent
-   * badge of any item in it, so a sub-item that needs you is never filed
-   * under a parent that merely waits. A branch with no item in it waits
-   * while its root is open and is discharged once it is closed. Null on a
-   * nested row, which is drawn in its root's lane.
+   * Root copies only: the lane this copy is drawn in. A root is drawn once
+   * per lane and page it holds a match in — an item whose own badge is that
+   * lane — so a parent whose children stand in three lanes is in all three,
+   * each time with only that lane's children. A branch with no item in it
+   * waits while its root is open and is discharged once it is closed. Null on
+   * a nested row, which is drawn in its copy's lane.
    */
   lane: Lane | null;
   stage: string | null;
@@ -2801,10 +2802,16 @@ export interface BoardRow {
   /** The running step's own `effort`, as `model` is its own `model`; null where it named none. */
   effort: string | null;
   /**
-   * Root rows only: the workflow pages that draw this branch, sorted by id —
-   * every page any row in the branch belongs to. Empty on a nested row.
+   * Root copies only: the workflow page that draws this copy, or null for
+   * Needs you. Null on a nested row too, which is drawn wherever its copy is.
    */
-  pages: string[];
+  page: string | null;
+  /**
+   * Drawn only for the path to a match below it: not filed in this copy's
+   * lane, or not this copy's page's. The page mutes it. A match's own
+   * artifacts come with it; a context row's do not.
+   */
+  context: boolean;
   /** Items only. */
   chat: Chat | null;
   /** Stopped by a security check rather than for any other reason — the page draws a shield. */
@@ -2859,11 +2866,26 @@ export interface BoardRow {
   children: BoardRow[];
 }
 
+/**
+ * Where a board row is a match: the lane of its item's own badge, on that
+ * item's own pages. An artifact's is its nearest item's above it.
+ */
+export interface BoardPlace {
+  lane: Lane;
+  pages: readonly string[];
+}
+
 /** One relationship of a board row's node: the node at its other end, as the listing has it. */
 export interface BoardRelated {
   type: string;
   /** `out` where the row's node is the edge's `from`, `in` where it is its `to` — `rel`'s own two ways. */
   dir: "in" | "out";
+  /**
+   * The relationship in the row's node's own words — `blocked by` or `blocks`,
+   * never one word for both ends, which reads as each blocking the other. A
+   * symmetric edge is its type alone; a type with no words its type and an arrow.
+   */
+  label: string;
   id: string;
   /** One line. */
   title: string;
@@ -2924,21 +2946,22 @@ export interface ItemPanel {
   release(item: string): Promise<PairReleased>;
 }
 
-/** One sidebar entry: a workflow and how many root branches on its page need the person. */
+/** One sidebar entry: a workflow and how many of its own items need the person. */
 export interface BoardWorkflow {
   id: string;
   name: string;
-  /** Root rows on this workflow's page whose lane is "needs-you" — the sidebar's dot when above zero. */
+  /** The items needing the person that are this workflow's own — the sidebar's dot when above zero. Context rows never count. */
   needsYou: number;
 }
 
 export interface BoardView {
   generatedAt: number;
   /**
-   * The root rows in display order, which the page draws as given: lane by
-   * lane, most urgent first; within Needs you by priority, then least
+   * The root copies in display order, which the page draws as given, each
+   * page taking its own (`page`): lane by lane, most urgent first; within a
+   * lane by the copy's best match — within Needs you by priority, then least
    * recently updated; within any other lane most recently updated first.
-   * Each branch's children follow its lane's order, at every depth.
+   * Each copy's children follow its lane's order, at every depth.
    */
   rows: BoardRow[];
   /** When the next scheduled tick is due, epoch ms; null when nothing is scheduled. */
@@ -2949,7 +2972,7 @@ export interface BoardView {
   workspace: string;
   /** The sidebar, by name case-folded, then id. */
   workflows: BoardWorkflow[];
-  /** Root rows whose lane is "needs-you", across every workflow — the home page's count, the tab title's. */
+  /** Items needing the person, across every workflow, each once — the home page's count, the tab title's. Context rows never count. */
   needsYou: number;
   /**
    * Whether a listing has been taken yet. Before it, `rows` is empty because
