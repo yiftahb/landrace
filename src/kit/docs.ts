@@ -8,7 +8,7 @@
  * opens stay with the integration.
  */
 import { createHash } from "node:crypto";
-import { DOCUMENT_KIND, RELATIONS } from "#conventions.js";
+import { ARTIFACT_PUBLISH_EFFECT, DOCUMENT_KIND, RELATIONS } from "#conventions.js";
 import type {
   BriefTable, Effect, EffectTable, Graph, HookContext, Node, PreflightContext, RelationDecl, RuntimeContext, Snapshot,
 } from "#namespace.js";
@@ -20,7 +20,7 @@ import type {
  * spelling would be a path no workflow could read.
  */
 export const SPEC = "spec";
-export const PUBLISH = "artifact.publish";
+export const PUBLISH = ARTIFACT_PUBLISH_EFFECT;
 
 /** What a step is told when there is no page to hand it — said, so the prompt never shows a bare placeholder. */
 export const NO_SPEC = "No spec has been published for this item.";
