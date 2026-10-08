@@ -175,7 +175,8 @@ describe("mcp tools", () => {
       workflows: [{ id: "main", workflow: turns }], listing, nest: new Set(), running: new Map(), elsewhere: new Map(),
       now: 0, pid: 1, nextTickAt: null, folder: "landrace", workspace: "/repo/landrace", listed: true,
     });
-    const needsYou = board.rows.filter((row) => row.badge === "needs-you").map((row) => row.id);
+    // The Needs you page's own copies: a workflow page draws the same items again.
+    const needsYou = board.rows.filter((row) => row.page === null && row.badge === "needs-you").map((row) => row.id);
     expect(waiting.map((w) => w.item)).toEqual([...needsYou].sort(compareIds));
   });
 

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The board splits a tree across lanes.** Every item sits in the lane of its own state. A parent with children in several states appears in each of those lanes, and in each it shows only the children that belong there. A parent shown only for context is muted and keeps its own badge. A workflow page shows only that workflow's items, and Needs you only the items that need you, each under its parents. Lane counts, the sidebar and the tab title count items, never parents shown for context. Collapsing a row in one lane leaves it open in the others. Before, a whole tree sat in its most urgent item's lane, so an epic with one child needing you put every waiting and done child under Needs you too. `BoardRow` drops `pages` and gains `page` and `context`. See [The board](docs/cli.md#the-board).
+
 ## [1.4.0] - 2026-10-06
 
 ### Added
