@@ -330,7 +330,7 @@ Signed:
 - a conversation turn's reply on the item, asked from the board or with `landrace_ask`;
 - a pairing's hand-in, which the agent's closing turn writes.
 
-Not signed: the engine's own records, such as an entry record or "Recorded the output of …", and its refusals and halts; a route effect whose `body` the workflow wrote; labels and statuses; a pull request's title and description; `tracker.field` values; an issue body a step files with `tracker.create` or `landrace_create_child`; a person's words sent with `landrace_reply` or Ask; and a body the agent left empty. Commit messages are not touched.
+Not signed: the engine's own records, such as an entry record or "Recorded the output of …", and its refusals and halts; a `body` the workflow wrote on a route effect, though a `pull.review`'s findings and replies under it are still signed; labels and statuses; a pull request's title and description; `tracker.field` values; an issue body a step files with `tracker.create` or `landrace_create_child`; a person's words sent with `landrace_reply` or Ask; and a body the agent left empty. Commit messages are not touched.
 
 `agent.signature: false` in `landrace.yaml` turns the line off — see [Configuration](configuration.md#landraceyaml).
 
