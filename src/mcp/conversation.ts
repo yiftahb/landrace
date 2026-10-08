@@ -18,6 +18,7 @@ import type {
   Conversation,
   ConversationDeps,
   Entry,
+  ExecutorAnswer,
   JoinedSession,
   Snapshot,
   Stage,
@@ -26,7 +27,7 @@ import type {
 } from "#namespace.js";
 import { withLock } from "#runner/lock.js";
 import { buildSnapshot } from "#runner/snapshot.js";
-import { sandboxBefore, sandboxTrespass } from "#runner/step.js";
+import { sandboxBefore, sandboxTrespass, signatureOf } from "#runner/step.js";
 import { stepTimeoutMs } from "#runner/budget.js";
 
 /**
@@ -287,10 +288,9 @@ export function createConversation(deps: ConversationDeps): Conversation {
             // would otherwise read back as control state we wrote.
             await say(item, snapshot, neutraliseMarkers(message));
 
-            let text: string;
-            let sessionId: string | null;
+            let answer: ExecutorAnswer;
             try {
-              ({ text, sessionId } = await deps.executor.run(turn, {
+              answer = await deps.executor.run(turn, {
                 round,
                 resume: session,
                 // The step's own declaration, both halves of it. A turn is an
@@ -329,7 +329,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
                 // lock's release rather than holding that item for the rest
                 // of the run.
                 signal: turnSignal,
-              }));
+              });
             } catch (e) {
               // Said as the limit, not as whatever the executor said when the
               // abort reached it — the same reason runStep does this: "aborted"
@@ -347,6 +347,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
             const trespass = await sandboxTrespass(sandbox, start.before);
             if (trespass) throw new Error(`this conversation turn was refused: ${trespass}`);
 
+            const { text, sessionId } = answer;
             const reply = prose(text);
             const resolved = isResolved(text);
             // Cut to fit rather than refused, and this is the one place in the
@@ -355,7 +356,10 @@ export function createConversation(deps: ConversationDeps): Conversation {
             // ride in the marker beside it — and the caller below receives the
             // whole reply either way. Throwing here lost the answer *and* the
             // session the next turn would have resumed from.
-            await say(item, snapshot, neutraliseMarkers(fitRecordBody(reply)), {
+            // Signed as a step's answer is: the agent wrote it. The caller
+            // gets the reply as the agent gave it.
+            const { signature } = signatureOf(answer, step, deps.ctx.config?.agent?.signature);
+            await say(item, snapshot, neutraliseMarkers(fitRecordBody(reply, signature)), {
               kind: CONVERSATION_KIND,
               stage,
               round,
