@@ -50,7 +50,7 @@ function world(over: Partial<ItemPanel> = {}) {
       return { stage: "spec", round: 1, session: "s", cwd: "/w/7.pair", command: "cd /w/7.pair && agent" };
     },
     finish: async (...a) => { calls.push(["finish", ...a]); return { stage: "spec", round: 1, discarded: [] }; },
-    release: async (...a) => { calls.push(["release", ...a]); return { stage: "spec", round: 1 }; },
+    release: async (...a) => { calls.push(["release", ...a]); return { stage: "spec", round: 1, next: "agent" }; },
     ...over,
   };
   const opts: UiOptions = { port: 0, view: async () => empty, panel, tick: (): WakeResult => { wakes++; return "started"; } };

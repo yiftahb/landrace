@@ -1,0 +1,39 @@
+version: 1
+name: pairing
+description: test
+stages:
+  - id: triage
+    entry: true
+    step: steps/triage.md
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Triage, round {round}." }
+      - { type: tracker.status, value: triage }
+  # Worked only with a person: the agent never runs its step alone.
+  - id: design
+    step: steps/design.md
+    waits: pairing
+    triggers:
+      - name: triaged
+        when: { "run.stage": triage, "run.outputs.triage.kind": triaged }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Design, round {round}." }
+      - { type: tracker.status, value: design }
+  - id: review
+    waits: person
+    goto:
+      - { stage: design, when: { "run.counters.design": { $lt: 3 } } }
+    triggers:
+      - name: designed
+        when: { "run.stage": design, "run.outputs.design.kind": designed }
+    on_enter:
+      - { type: tracker.status, value: review }
+  - id: done
+    terminal: true
+    triggers:
+      - name: approved
+        when: { "run.stage": review, "node.state.labels": { $in: [approved] } }
+    on_enter:
+      - { type: tracker.status, value: done }

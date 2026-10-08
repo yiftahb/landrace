@@ -2920,7 +2920,7 @@ export interface ItemPanel {
   pairing(item: string): Promise<PairingView>;
   pair(item: string, stage: string): Promise<PairStarted>;
   finish(item: string, note: string): Promise<PairFinished>;
-  release(item: string): Promise<{ stage: string; round: number }>;
+  release(item: string): Promise<PairReleased>;
 }
 
 /** One sidebar entry: a workflow and how many root branches on its page need the person. */
@@ -3098,6 +3098,16 @@ export interface PairFinished {
   stage: string;
   round: number;
   discarded: string[];
+}
+
+/**
+ * A pairing released, and who works its round next: the agent, alone from
+ * the next tick, or — at a stage that waits for a pairing — the next pairing.
+ */
+export interface PairReleased {
+  stage: string;
+  round: number;
+  next: "agent" | "pairing";
 }
 
 /** How the page's writes reach an item. `target` null is a Retry: `run.failedStage`, the failure that put the item where it is. */

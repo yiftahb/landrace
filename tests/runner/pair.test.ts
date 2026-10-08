@@ -424,7 +424,8 @@ describe("releasing a pairing", () => {
     const a = agent();
     const { deps, tracker, run } = owed(a.executor);
     const first = await startPair(deps, "29", "spec");
-    expect(await releasePair(deps, "29")).toEqual({ stage: "spec", round: 1 });
+    expect(await releasePair(deps, "29")).toEqual({ stage: "spec", round: 1, next: "agent" });
+    expect(tracker.comments.get(29)?.at(-1)?.body).toMatch(/^Released the pairing on spec, round 1: the agent runs it alone\./);
 
     expect(records(tracker, "release")).toEqual([expect.objectContaining({ marker: "release:spec:1:1" })]);
     expect((await run())?.pairing).toBeNull();

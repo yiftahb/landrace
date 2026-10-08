@@ -2474,6 +2474,35 @@ describe("the panel's Pairing section", () => {
 });
 
 /*
+ * Release says who works the round next, from the server's answer: the
+ * agent, or — at a stage that waits for a pairing — the next pairing.
+ */
+describe("the panel's Release", () => {
+  const release = async (answer: object) => {
+    const confirms: string[] = [];
+    const context: Record<string, unknown> = {
+      panelHeld: "29", pairing: { busy: false, note: "", command: "cd x", view: null },
+      currentRow: () => ({ id: "29", panel: { release: "/items/29/release" } }),
+      confirm: (t: string) => { confirms.push(t); return true; },
+      fetch: () => Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(answer)) }),
+      renderPanel: () => {}, loadPairing: () => {}, loadConversation: () => {}, schedulePoll: () => {},
+    };
+    runInNewContext(`${fnSource("parseJson")}${fnSource("pairWrite")} pairWrite("release")`, context);
+    await new Promise((r) => setTimeout(r, 0));
+    return { confirms, note: (context.pairing as { note: string }).note };
+  };
+
+  it("asks first, saying a stage that waits for a pairing keeps the item", async () => {
+    expect((await release({ stage: "spec", round: 1, next: "agent" })).confirms[0]).toMatch(/#29[\s\S]*alone[\s\S]*waits for a pairing/);
+  });
+
+  it("says the agent runs it alone, or that the item waits for the next pairing", async () => {
+    expect((await release({ stage: "spec", round: 1, next: "agent" })).note).toBe("Released: the agent runs it alone.");
+    expect((await release({ stage: "design", round: 1, next: "pairing" })).note).toBe("Released: it waits at design for the next pairing.");
+  });
+});
+
+/*
  * A pairing's command is right until it has been run: the seeded line then
  * refuses its own session id, and only the server's next answer resumes it.
  * So the panel hands it out once and asks again.

@@ -2128,7 +2128,7 @@ function pairWrite(kind, stage) {
     const note = prompt("Finish the pairing on #" + row.id + "? Your session is asked for the step's answer, a paid agent turn, and the item moves on. A note for it, if you like:", "");
     if (note === null) return;
     body = note;
-  } else if (!confirm("Release the pairing on #" + row.id + "? The agent runs the step alone from the next tick, and the pairing's checkout is removed.")) {
+  } else if (!confirm("Release the pairing on #" + row.id + "? The agent runs the step alone from the next tick — unless its stage waits for a pairing, where the item waits for the next one — and the pairing's checkout is removed.")) {
     return;
   }
   const id = row.id;
@@ -2157,7 +2157,9 @@ function pairWrite(kind, stage) {
         pairing.note = answer ? "Handed in: " + answer.stage + ", round " + answer.round + "." + left : "Handed in.";
       } else {
         pairing.command = null;
-        pairing.note = "Released: the agent runs it alone.";
+        pairing.note = answer && answer.next === "pairing"
+          ? "Released: it waits at " + answer.stage + " for the next pairing."
+          : "Released: the agent runs it alone.";
       }
       loadPairing();
       loadConversation();

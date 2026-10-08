@@ -224,7 +224,7 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
     "landrace_release",
     said(
       "Give a paired step back to the agent: the pairing ends, its checkout is removed, and the agent runs " +
-        "the step alone on the next tick.",
+        "the step alone on the next tick — unless its stage waits for a pairing, where the item waits for the next one.",
     ),
     { item },
     guard(({ item: n }) => tools.release(n)),

@@ -19,7 +19,7 @@ import {
 } from "#conventions.js";
 import { assess, gotoDeclined, gotoNotListed, gotoTargetsOf, nextRound, planEffects, reconcile, stageBranch } from "#core/index.js";
 import type {
-  Effect, Entry, ExecutorAnswer, PairDeps, PairFinished, PairingView, PairOffer, PairStarted, Pairing, Snapshot, Stage, Step,
+  Effect, Entry, ExecutorAnswer, PairDeps, PairFinished, PairingView, PairOffer, PairReleased, PairStarted, Pairing, Snapshot, Stage, Step,
 } from "#namespace.js";
 import { buildBriefing } from "#runner/artifacts.js";
 import { stepTimeoutMs } from "#runner/budget.js";
@@ -376,21 +376,27 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
   });
 }
 
-/** Give the round back to the agent: a release record closes the pairing, and the next tick runs the step alone. */
-export function releasePair(deps: PairDeps, item: string): Promise<{ stage: string; round: number }> {
+/**
+ * End a pairing without its answer: a release record closes it, and the next
+ * tick runs the step alone — or, at a stage that waits for a pairing, which
+ * `decide` never hands the agent, the item waits there for the next one.
+ */
+export function releasePair(deps: PairDeps, item: string): Promise<PairReleased> {
   return locked(deps, item, "release", async () => {
     const snapshot = await snapshotOf(deps, item);
     const open = snapshot.run?.pairing ?? null;
     if (open === null) throw new Error(`#${item} has no pairing to release`);
+    const next = deps.workflow.stages.find((s) => s.id === open.stage)?.waits === "pairing" ? "pairing" : "agent";
     await apply(deps, item, snapshot, [{
       type: RECORD_EFFECT, kind: RELEASE_KIND, stage: open.stage, round: open.round,
       marker: `${RELEASE_KIND}:${open.stage}:${open.round}:${open.n}`,
-      body: `Released the pairing on ${open.stage}, round ${open.round}: the agent runs it alone.`,
+      body: `Released the pairing on ${open.stage}, round ${open.round}: ` +
+        (next === "pairing" ? `the item waits at ${open.stage} for the next pairing.` : "the agent runs it alone."),
     }]);
     if (deps.sandbox) {
       await removeWorktree(item, deps.sandbox.root, slotOf(item));
       await rm(await seedOf(deps.sandbox.root, item), { force: true });
     }
-    return { stage: open.stage, round: open.round };
+    return { stage: open.stage, round: open.round, next };
   });
 }
