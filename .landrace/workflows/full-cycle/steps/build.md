@@ -62,7 +62,9 @@ over. Done when you know every file you will touch. That means every place
 the code draws each thing the spec names: a rule about a kind of thing — a
 lane's header, a control — holds for each one however it is built, not only
 the form an example or an aside in the spec describes, and its test tries each
-form. It also means every place that still states what the change replaces, in
+form. A change to what follows a state holds for every action that can reach
+it — each control, tool and record that leads in, not only those the spec
+lists. It also means every place that still states what the change replaces, in
 code, a comment, `README.md` or `docs/` — a list or pattern of the old set
 written out by hand, a sentence on how it used to work — found by searching
 for the old, not only by reading what you edit. And it means the code that
@@ -115,7 +117,7 @@ only field is `kind`, set to `done`.
 
 ## Rules
 
-- A change a user sees — a command, flag, configuration key, `validate` or `start` refusal, workflow stage, effect, integration or default, added or changed — updates the `docs/` page that is that fact's one home, in the same change, whichever pages the spec lists: a new key that `validate` can refuse is two facts, on two pages. Change `README.md` only where the change alters what it states: the quick start, the workflows table, the integrations table. Both follow the "README and docs" standards in the agent instructions. Never add reference material to the README. Each sentence saying what happens — in a page, a comment, a check script's header — is one you traced through the code on every path, the engine's around your change included, and for each form its input takes; a spec's wording is what to build, not proof the sentence is true, and a script "checks" only what it calls.
+- A change a user sees — a command, flag, configuration key, `validate` or `start` refusal, workflow stage, effect, integration or default, added or changed — updates the `docs/` page that is that fact's one home, in the same change, whichever pages the spec lists: a new key that `validate` can refuse is two facts, on two pages. Change `README.md` only where the change alters what it states: the quick start, the workflows table, the integrations table. Both follow the "README and docs" standards in the agent instructions. Never add reference material to the README. Each sentence saying what happens — in a page, a comment, a check script's header, a confirm, a tool description, a record's body, a refusal's reason — is one you traced through the code on every path, the engine's around your change included, and for each form its input takes; a spec's wording is what to build, not proof the sentence is true, and a script "checks" only what it calls.
 - A step prompt is read alone, so it restates its promises — what is checked, who reads a commit, what merges with no person. A change to one keeps every check the spec does not drop, and changes every sentence that states it: in that prompt, in the prompts it extends or that extend it, and in the tests that pin their wording.
 - Work on the branch you are on — do not create, switch or rename branches.
 - Your commands run in a sandbox: they can write only inside this worktree and the repository's git directory, and reach only the hosts the operator allowed.
