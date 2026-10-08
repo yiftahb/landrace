@@ -1,5 +1,5 @@
 import {
-  compareIds, compareWork, edgeDirection, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, RELATED_FACT_WORDS, RELATED_FACTS, stageFromLabels,
+  compareIds, compareWork, edgeDirection, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, RELATED_FACT_WORDS, RELATED_FACTS, RELATIONS, stageFromLabels,
 } from "#conventions.js";
 import { claimItems, eligibilityOfNode, gotoTargetsOf, writesNothing } from "#core/index.js";
 import { BLOCKED_NOTE, engineNoteOf, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
@@ -59,6 +59,22 @@ const stopped = (row: StatusRow): boolean => engineNoteOf(row) === BLOCKED_NOTE 
 /** By type, then the node's own edges before the ones pointing at it, then the other end's id. */
 const byRelation = (a: BoardRelated, b: BoardRelated): number =>
   (a.type < b.type ? -1 : a.type > b.type ? 1 : 0) || (a.dir === b.dir ? 0 : a.dir === "out" ? -1 : 1) || compareIds(a.id, b.id);
+
+/**
+ * Each relationship the engine knows, in the words of the node at either end.
+ * One word for both ends — `blocked-by` with only an arrow between them — read
+ * as two items each blocking the other.
+ */
+const RELATION_WORDS: ReadonlyMap<string, Readonly<Record<"in" | "out", string>>> = new Map([
+  [RELATIONS.blockedBy, { out: "blocked by", in: "blocks" }],
+  [RELATIONS.childOf, { out: "child of", in: "parent of" }],
+  [RELATIONS.implements, { out: "implements", in: "implemented by" }],
+  [RELATIONS.documents, { out: "documents", in: "documented by" }],
+]);
+
+/** A symmetric edge reads the same from both ends, so it has no arrow; a type with no words keeps one. */
+const relationLabel = (type: string, dir: "in" | "out", symmetric: boolean): string =>
+  symmetric ? type : RELATION_WORDS.get(type)?.[dir] ?? `${type} ${dir === "out" ? "→" : "←"}`;
 
 /** The path the page posts a Retry to — built here, from an id already checked, never by the page. */
 const retryPath = (id: string): string | null => (isItemId(id) ? `/items/${id}/retry` : null);
@@ -271,7 +287,7 @@ export function boardView(input: {
       const state = other.unreadable === true ? "unreadable" : other.closed ?? "open";
       const status = other.state.status;
       return [{
-        type: r.type, dir, id: other.id, title: oneLine(other.title), link: safeUrl(other.link), state,
+        type: r.type, dir, label: relationLabel(r.type, dir, r.symmetric === true), id: other.id, title: oneLine(other.title), link: safeUrl(other.link), state,
         // Never over unreadable: a status a link named does not say the state could be read.
         ...(state !== "unreadable" && typeof status === "string" && status.trim() !== "" ? { status: oneLine(status) } : {}),
       }];

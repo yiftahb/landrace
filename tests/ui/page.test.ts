@@ -2086,14 +2086,14 @@ describe("the item panel's relationships", () => {
       RELATED: related, FACTS: facts, document: fakeDocument,
     }) as FakeElement[];
 
-  it("lists each related item under Related, by type and way, number, title and state", () => {
+  it("lists each related item under Related, by the server's words for it, number, title and state", () => {
     const [head, list] = draw([
-      { type: "blocked-by", dir: "out", id: "10", title: "Auth", link: "https://x/10", state: "open" },
-      { type: "x", dir: "in", id: "13", title: "<b>Later</b>", link: "", state: "dropped" },
+      { type: "blocked-by", dir: "out", label: "blocked by", id: "10", title: "Auth", link: "https://x/10", state: "open" },
+      { type: "x", dir: "in", label: "x ←", id: "13", title: "<b>Later</b>", link: "", state: "dropped" },
     ]);
     expect(head?.text).toBe("Related");
     expect(list?.children.map((li) => li.children.map((c) => c.textContent))).toEqual([
-      ["blocked-by →", "#10 Auth", "open"],
+      ["blocked by", "#10 Auth", "open"],
       ["x ←", "#13 <b>Later</b>", "dropped"],
     ]);
     const anchors = descendants(list as FakeElement).filter((e) => e.tag === "a");
@@ -2101,8 +2101,8 @@ describe("the item panel's relationships", () => {
   });
 
   it("shows a related item's status in place of its state where its tracker gave one", () => {
-    const [, list] = draw([{ type: "relates", dir: "out", id: "ENG-5", title: "Fix", link: "", state: "open", status: "In Progress" }]);
-    expect(list?.children.map((li) => li.children.map((c) => c.textContent))).toEqual([["relates →", "#ENG-5 Fix", "In Progress"]]);
+    const [, list] = draw([{ type: "relates", dir: "out", label: "relates", id: "ENG-5", title: "Fix", link: "", state: "open", status: "In Progress" }]);
+    expect(list?.children.map((li) => li.children.map((c) => c.textContent))).toEqual([["relates", "#ENG-5 Fix", "In Progress"]]);
   });
 
   it("draws text only, never markup", () => {
@@ -2118,13 +2118,13 @@ describe("the item panel's relationships", () => {
   // read among them, said to be unreadable.
   it("says what its tracker reports of the item's relationships, in words, above them", () => {
     const [head, ...rest] = draw(
-      [{ type: "blocked-by", dir: "out", id: "x.o.r.1", title: "Upstream", link: "", state: "unreadable" }],
+      [{ type: "blocked-by", dir: "out", label: "blocked by", id: "x.o.r.1", title: "Upstream", link: "", state: "unreadable" }],
       ["Not all of its related items could be read", "In a dependency cycle"],
     );
     expect(head?.text).toBe("Related");
     expect(rest.map((e) => e.tag)).toEqual(["p", "p", "ul"]);
     expect(rest.slice(0, 2).map((e) => e.text)).toEqual(["Not all of its related items could be read", "In a dependency cycle"]);
-    expect(rest[2]?.children.map((li) => li.children.map((c) => c.textContent))).toEqual([["blocked-by →", "#x.o.r.1 Upstream", "unreadable"]]);
+    expect(rest[2]?.children.map((li) => li.children.map((c) => c.textContent))).toEqual([["blocked by", "#x.o.r.1 Upstream", "unreadable"]]);
   });
 
   it("says them where nothing could be read to list", () => {

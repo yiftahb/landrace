@@ -196,12 +196,12 @@ describe("boardView: every relationship of an item", () => {
     );
     const row = flatten(view(g).rows).find((r) => r.id === "12");
     expect(row?.related).toEqual([
-      { type: "blocked-by", dir: "out", id: "9", title: "t9", link: "https://x/9", state: "done" },
-      { type: "blocked-by", dir: "out", id: "10", title: "t10", link: "https://x/10", state: "open" },
-      { type: "blocked-by", dir: "in", id: "13", title: "t13", link: "https://x/13", state: "open" },
-      { type: "child-of", dir: "out", id: "1", title: "t1", link: "https://x/1", state: "open" },
+      { type: "blocked-by", dir: "out", label: "blocked by", id: "9", title: "t9", link: "https://x/9", state: "done" },
+      { type: "blocked-by", dir: "out", label: "blocked by", id: "10", title: "t10", link: "https://x/10", state: "open" },
+      { type: "blocked-by", dir: "in", label: "blocks", id: "13", title: "t13", link: "https://x/13", state: "open" },
+      { type: "child-of", dir: "out", label: "child of", id: "1", title: "t1", link: "https://x/1", state: "open" },
       // Only an http(s) link becomes an href, and a title is one line.
-      { type: "x", dir: "out", id: "8", title: "bad name", link: "", state: "dropped" },
+      { type: "x", dir: "out", label: "x →", id: "8", title: "bad name", link: "", state: "dropped" },
     ]);
     expect(flatten(view(g).rows).find((r) => r.id === "13")?.related.map((r) => [r.dir, r.id])).toEqual([["out", "10"], ["out", "12"]]);
   });
@@ -227,6 +227,44 @@ describe("boardView: every relationship of an item", () => {
     }
   });
 
+  // A blocks B: B is blocked by A, and A blocks B. One word for both ends
+  // reads as each blocking the other — a cycle there is not.
+  it("names one blocked-by link from each end in that end's own words", () => {
+    const g = graph([item("A"), item("B")], [edge("B", "A", "blocked-by")]);
+    const labels = (id: string) => flatten(view(g).rows).find((r) => r.id === id)?.related.map((r) => [r.label, r.id]);
+    expect(labels("B")).toEqual([["blocked by", "A"]]);
+    expect(labels("A")).toEqual([["blocks", "B"]]);
+  });
+
+  it("names each relationship the engine knows from both ends", () => {
+    const g = graph(
+      [item("12"), item("1"), item("20"), item("21"), item("22"), item("23")],
+      [
+        edge("12", "1", "child-of"), edge("20", "12", "child-of"),
+        edge("12", "21", "implements"), edge("22", "12", "implements"),
+        edge("12", "23", "documents"), edge("23", "12", "documents"),
+      ],
+    );
+    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => [r.type, r.label, r.id])).toEqual([
+      ["child-of", "child of", "1"], ["child-of", "parent of", "20"],
+      ["documents", "documents", "23"], ["documents", "documented by", "23"],
+      ["implements", "implements", "21"], ["implements", "implemented by", "22"],
+    ]);
+  });
+
+  it("names a symmetric edge by its type alone, with no arrow, from both ends", () => {
+    const g = graph([item("12"), item("10")], [{ from: "12", to: "10", type: "relates", symmetric: true }]);
+    for (const id of ["12", "10"]) {
+      expect(flatten(view(g).rows).find((r) => r.id === id)?.related.map((r) => r.label)).toEqual(["relates"]);
+    }
+  });
+
+  it("keeps an arrow for a type it has no words for, pointing each way", () => {
+    const g = graph([item("12"), item("10")], [edge("12", "10", "duplicates")]);
+    expect(flatten(view(g).rows).find((r) => r.id === "12")?.related.map((r) => r.label)).toEqual(["duplicates →"]);
+    expect(flatten(view(g).rows).find((r) => r.id === "10")?.related.map((r) => r.label)).toEqual(["duplicates ←"]);
+  });
+
   it("lists none for an item nothing relates to", () => {
     expect(view(graph([item("12")])).rows[0]?.related).toEqual([]);
   });
@@ -246,7 +284,7 @@ describe("boardView: every relationship of an item", () => {
       [edge("12", "ENG-5", "relates")],
     );
     expect(flatten(view(g).rows).find((r) => r.id === "12")?.related).toEqual([
-      { type: "relates", dir: "out", id: "ENG-5", title: "tENG-5", link: "https://x/ENG-5", state: "open", status: "In Progress" },
+      { type: "relates", dir: "out", label: "relates →", id: "ENG-5", title: "tENG-5", link: "https://x/ENG-5", state: "open", status: "In Progress" },
     ]);
   });
 
