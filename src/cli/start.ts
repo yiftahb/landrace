@@ -61,7 +61,7 @@ import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
 import { serveBoard } from "#ui/server.js";
-import { admitProblems, branchIsolationProblems, claimProblems, createProblems, validate } from "#workflow/validate.js";
+import { admitProblems, branchIsolationProblems, claimProblems, createProblems, pairingIsolationProblems, validate } from "#workflow/validate.js";
 import { loadWorkspace } from "#workflow/workspace.js";
 import { watchWake, wakePath } from "#wake.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
@@ -497,7 +497,11 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // describe.
   refuseUnsound(dir, ws.workflows.map(({ id, workflow, steps }): [string, Problem[]] => [id, [
     ...validate(workflow, steps, undefined, loaded.config.branch),
-    ...(opts.readOnly ? [] : [...branchIsolationProblems(workflow, loaded.config.agent.isolation), ...admitProblems(id, workflow)]),
+    ...(opts.readOnly ? [] : [
+      ...branchIsolationProblems(workflow, loaded.config.agent.isolation),
+      ...pairingIsolationProblems(workflow, loaded.config.agent.isolation),
+      ...admitProblems(id, workflow),
+    ]),
   ]]));
 
   const hooked: Array<{ loaded: LoadedWorkflow; registry: Registry; source: Source }> = [];

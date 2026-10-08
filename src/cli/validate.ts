@@ -10,7 +10,7 @@ import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
 import { snapshotProvides } from "#runner/snapshot.js";
 import { WorkflowLoadError } from "#workflow/load.js";
-import { admitProblems, branchIsolationProblems, claimProblems, createProblems, validate } from "#workflow/validate.js";
+import { admitProblems, branchIsolationProblems, claimProblems, createProblems, pairingIsolationProblems, validate } from "#workflow/validate.js";
 import { readWorkspace } from "#workflow/workspace.js";
 import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Source, Step, Workspace, WorkspaceRead } from "#namespace.js";
 
@@ -240,7 +240,10 @@ async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: Loade
   }
   // What `start` refuses about the workflow against its runtime, said here
   // too: validate passing what start will refuse is the two disagreeing.
-  if (loaded) own.push(...branchIsolationProblems(workflow, loaded.config.agent.isolation));
+  if (loaded) {
+    own.push(...branchIsolationProblems(workflow, loaded.config.agent.isolation));
+    own.push(...pairingIsolationProblems(workflow, loaded.config.agent.isolation));
+  }
   own.push(...admitProblems(wf.id, workflow));
 
   // The executors the configuration names, built exactly as `start` builds

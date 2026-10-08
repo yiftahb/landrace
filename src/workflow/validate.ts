@@ -129,15 +129,25 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
     if (stage.waits === "person" && stage.step !== undefined) {
       problems.push({
         rule: "waits",
-        message: `stage "${stage.id}" waits on a person and runs step ${stage.step}: a person's turn runs no agent, so it cannot do both`,
+        message: `stage "${stage.id}" waits on a person and runs step ${stage.step}: a person's turn runs no agent, so it cannot do both. ` +
+          "A step worked only with a person is waits: pairing",
+      });
+    }
+    // A pairing works the stage's own step: with none, there is nothing to
+    // pair on, and the item would wait in Needs you for a pairing nobody can start.
+    if (stage.waits === "pairing" && stage.step === undefined) {
+      problems.push({
+        rule: "waits",
+        message: `stage "${stage.id}" waits for a pairing and runs no step: a pairing works the stage's step, and it has none`,
       });
     }
     // Needs you asks a stage's waits before it asks terminal, so an item at
     // one saying both sat in Needs you, its work done, until it was closed.
-    if (stage.waits === "person" && stage.terminal === true) {
+    if (stage.waits !== undefined && stage.terminal === true) {
+      const how = stage.waits === "person" ? "waits on a person" : "waits for a pairing";
       problems.push({
         rule: "waits",
-        message: `stage "${stage.id}" is terminal and waits on a person: an item's work is done at a terminal stage, so it waits on no one there`,
+        message: `stage "${stage.id}" is terminal and ${how}: an item's work is done at a terminal stage, so it waits on no one there`,
       });
     }
   }
@@ -1783,6 +1793,24 @@ export function branchIsolationProblems(w: Workflow, isolation: string): Problem
       `stage "${stage.id}" names the branch "${stage.branch}", but agent.isolation is "${isolation}": a branch is ` +
       "where a step's worktree is checked out, and without worktree isolation there is none, so the agent would " +
       "commit wherever this checkout is. Set agent.isolation: worktree, or drop the branch",
+  }]);
+}
+
+/**
+ * A stage that waits for a pairing runs its step only in one, and a pairing
+ * is cut a checkout of its own (`startPair` refuses without one). With
+ * `agent.isolation` anything but `worktree` nobody could ever pair there, so
+ * an item would wait at it for good. Asked by `validate` and refused by
+ * `start`, beside `branchIsolationProblems` and for the same reason.
+ */
+export function pairingIsolationProblems(w: Workflow, isolation: string): Problem[] {
+  if (isolation === "worktree") return [];
+  return w.stages.flatMap((stage) => stage.waits !== "pairing" ? [] : [{
+    rule: "waits",
+    message:
+      `stage "${stage.id}" waits for a pairing, but agent.isolation is "${isolation}": a pairing is worked in a ` +
+      "checkout of its own, and without worktree isolation there is none, so nobody could pair on it and the item " +
+      "would wait there for good. Set agent.isolation: worktree, or drop waits: pairing",
   }]);
 }
 

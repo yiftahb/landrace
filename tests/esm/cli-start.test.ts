@@ -386,6 +386,23 @@ describe("buildWorkspaceRuntime", () => {
     await expect(buildMain(dir, { readOnly: true })).resolves.toBeDefined();
   });
 
+  // In `validate`'s words: a pairing is cut a checkout of its own.
+  it("refuses a stage that waits for a pairing when steps do not run in worktrees", async () => {
+    const { dir } = await fixture({ agentKeys: "isolation: none" });
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "steps", "design.md"), [
+      "---", "capabilities: [repo:read]", "output:", "  discriminator: kind", "  shapes: { done: {} }",
+      "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+      "---", "", "design", "",
+    ].join("\n"));
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW
+      .replace("    terminal: true\n", "    step: steps/design.md\n    waits: pairing\n")
+      .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+
+    await expect(buildMain(dir, {})).rejects.toThrow(/waits: stage "spec" waits for a pairing, but agent\.isolation is "none"/);
+    await expect(buildMain(dir, { readOnly: true })).resolves.toBeDefined();
+  });
+
   /*
    * The item branch landrace.yaml names is the one every stage's branch is
    * held to, before any hook loads and again beside the hooks' coverage; and

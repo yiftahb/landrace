@@ -425,7 +425,7 @@ describe("landrace next, over a workspace", () => {
 describe("landrace validate, a stage's branch, and worktree isolation", () => {
   const exec = promisify(execFile);
 
-  const repo = async (isolation: string, config = ""): Promise<string> => {
+  const repo = async (isolation: string, config = "", key = 'branch: "landrace/{item}"'): Promise<string> => {
     const root = await mkdtemp(join(tmpdir(), "landrace-validate-branch-"));
     await exec("git", ["init", "-q"], { cwd: root });
     const dir = join(root, ".landrace");
@@ -437,7 +437,7 @@ stages:
   - id: build
     entry: true
     step: steps/build.md
-    branch: "landrace/{item}"
+    ${key}
     triggers: [{ when: { "run.stage": null } }]
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "round {round}" }
@@ -481,6 +481,15 @@ build
     // anything — the filtered equality below is the actual assertion.
     expect(r.problems.filter(notExecutor)).toEqual([
       { rule: "branch", message: expect.stringMatching(/stage "build"[\s\S]*agent\.isolation[\s\S]*"none"/) },
+    ]);
+  });
+
+  // A pairing is cut a checkout of its own, and without worktrees there is none.
+  it("reports a stage that waits for a pairing when there is no worktree to pair in", async () => {
+    expect((await runValidate(await repo("worktree", "", "waits: pairing"))).problems.filter(notExecutor)).toEqual([]);
+    const r = await runValidate(await repo("none", "", "waits: pairing"));
+    expect(r.problems.filter(notExecutor)).toEqual([
+      { rule: "waits", message: expect.stringMatching(/stage "build" waits for a pairing, but agent\.isolation is "none"/) },
     ]);
   });
 

@@ -253,7 +253,41 @@ describe("structural validation", () => {
     ]);
     expect(validateStructure(w).filter((p) => p.rule === "waits")).toEqual([{
       rule: "waits",
-      message: 'stage "ask" waits on a person and runs step ask.md: a person\'s turn runs no agent, so it cannot do both',
+      message: 'stage "ask" waits on a person and runs step ask.md: a person\'s turn runs no agent, so it cannot do both. ' +
+        "A step worked only with a person is waits: pairing",
+    }]);
+  });
+
+  it("accepts a stage that waits for a pairing and runs a step", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "design", step: "design.md", waits: "pairing", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "design" } }] },
+    ]);
+    expect(validateStructure(w)).toEqual([]);
+  });
+
+  // A pairing works the stage's own step: with none, there is nothing to pair on.
+  it("refuses a stage that waits for a pairing and runs no step, naming it", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "design", waits: "pairing", triggers: [{ when: { "run.stage": "a" } }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "design" } }] },
+    ]);
+    expect(validateStructure(w).filter((p) => p.rule === "waits")).toEqual([{
+      rule: "waits",
+      message: 'stage "design" waits for a pairing and runs no step: a pairing works the stage\'s step, and it has none',
+    }]);
+  });
+
+  it("refuses a terminal stage that waits for a pairing, naming it", () => {
+    const w = wf([
+      { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }] },
+      { id: "z", step: "z.md", terminal: true, waits: "pairing", triggers: [{ when: { "run.stage": "a" } }] },
+    ]);
+    expect(validateStructure(w).filter((p) => p.rule === "waits")).toEqual([{
+      rule: "waits",
+      message: 'stage "z" is terminal and waits for a pairing: an item\'s work is done at a terminal stage, so it waits on no one there',
     }]);
   });
 
