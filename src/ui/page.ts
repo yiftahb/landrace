@@ -620,7 +620,8 @@ function writesOf(row) {
   if (row.retry) {
     items.push(writeItem({
       id: row.id, key: row.id + ":retry", label: "Retry", busy: "Retrying…", path: row.retry, action: "retry",
-      ask: "Retry #" + row.id + "? This sends it back to the step that failed and re-runs a paid step.",
+      ask: "Retry #" + row.id + "? This sends it back to the step that failed and re-runs a paid step, " +
+        "unless its stage waits for a pairing, where it waits for you to pair on it.",
     }));
   }
   // A screened item's overrule: the refused step's next round runs once

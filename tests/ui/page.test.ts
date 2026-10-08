@@ -1065,6 +1065,15 @@ describe("a stopped item's Retry", () => {
     expect(seen.posts).toEqual([]);
   });
 
+  // A refused hand-in can stop an item at a stage that waits for a pairing,
+  // where Retry runs nothing paid: it only sends the item there to wait.
+  it("says a step whose stage waits for a pairing waits there for one", async () => {
+    const { menu, seen } = menuFor(row("/items/19/retry"), { confirm: false });
+    retryOf(menu)?.listeners.get("click")?.();
+    await settle();
+    expect(seen.confirms[0]).toMatch(/unless its stage waits for a pairing, where it waits for you to pair on it/);
+  });
+
   it("posts once, to the server's own path, with the header the server asks for — then closes, returns focus and polls", async () => {
     const { menu, seen } = menuFor(row("/items/19/retry"));
     retryOf(menu)?.listeners.get("click")?.();
