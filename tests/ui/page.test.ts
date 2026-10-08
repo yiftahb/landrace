@@ -299,61 +299,63 @@ describe("the page's search", () => {
 });
 
 describe("the page's expand state", () => {
-  const isOpen = (stored: [string, boolean][], row: Tree): boolean =>
-    (runInNewContext(`const userExpanded = new Map(${JSON.stringify(stored)});${fnSource("isOpen")}isOpen`) as (r: Tree) => boolean)(row);
+  const isOpen = (stored: [string, boolean][], row: Tree, lane = "waiting"): boolean =>
+    (runInNewContext(`const userExpanded = new Map(${JSON.stringify(stored)});${fnSource("rowKey")}${fnSource("isOpen")}isOpen`) as (r: Tree, l: string) => boolean)(row, lane);
 
   // Everything starts open: the board is read top to bottom, and a branch that
   // arrives shut hides the very item someone came to look at.
   it("opens every row until the person closes it, whatever the row itself carries", () => {
     const row = { ...node("12", "Payments revamp", [node("31", "API endpoints")]), expanded: false };
     expect(isOpen([], row)).toBe(true);
-    expect(isOpen([["12", false]], row)).toBe(false);
-    expect(isOpen([["12", true]], row)).toBe(true);
-    // Another row's choice is not this one's.
-    expect(isOpen([["40", false]], row)).toBe(true);
+    expect(isOpen([["waiting/12", false]], row)).toBe(false);
+    expect(isOpen([["waiting/12", true]], row)).toBe(true);
+    // Another row's choice is not this one's, nor the same row's in another lane.
+    expect(isOpen([["waiting/40", false]], row)).toBe(true);
+    expect(isOpen([["waiting/12", false]], row, "needs-you")).toBe(true);
   });
 
   it("holds a match's ancestors open during a search without storing it as anyone's choice", () => {
     const run = runInNewContext(`
-      const userExpanded = new Map([["12", false]]);
+      const userExpanded = new Map([["waiting/12", false]]);
       const touched = new Set();
-      ${fnSource("isOpen")}${fnSource("openOf")}
+      ${fnSource("rowKey")}${fnSource("isOpen")}${fnSource("openOf")}
       ({ userExpanded, touched, openOf })`) as {
-      userExpanded: Map<string, boolean>; touched: Set<string>; openOf: (row: Tree, search: Search) => boolean;
+      userExpanded: Map<string, boolean>; touched: Set<string>; openOf: (row: Tree, search: Search, lane: string) => boolean;
     };
     const row = node("12", "Payments revamp");
     const search = { self: new Set(["31"]), below: new Set(["12"]) };
-    expect(run.openOf(row, search)).toBe(true);
-    expect(run.userExpanded.get("12")).toBe(false);
+    expect(run.openOf(row, search, "waiting")).toBe(true);
+    expect(run.userExpanded.get("waiting/12")).toBe(false);
     // Off the search, the stored choice is back.
-    expect(run.openOf(row, null)).toBe(false);
+    expect(run.openOf(row, null, "waiting")).toBe(false);
     // A row clicked mid-search answers the click rather than snapping open.
-    run.touched.add("12");
-    expect(run.openOf(row, search)).toBe(false);
+    run.touched.add("waiting/12");
+    expect(run.openOf(row, search, "waiting")).toBe(false);
   });
 
   it("Collapse all / Expand all store a choice for every row that can open, and redraw at once from the last view", () => {
     const run = runInNewContext(`
       const userExpanded = new Map();
-      let lastView = { rows: ${JSON.stringify(TREE)} };
+      let lastView = { rows: ${JSON.stringify(TREE.map((r) => ({ ...r, lane: "waiting" })))} };
       let renders = 0;
       function render(view) { if (view === lastView) renders++; }
-      ${fnSource("setAll")}
+      ${fnSource("rowKey")}${fnSource("someRow")}${fnSource("setAll")}
       ({ userExpanded, setAll, renders: () => renders })`) as {
       userExpanded: Map<string, boolean>; setAll: (open: boolean) => void; renders: () => number;
     };
     run.setAll(false);
-    expect([...run.userExpanded].sort()).toEqual([["12", false], ["31", false], ["40", false]]);
+    expect([...run.userExpanded].sort()).toEqual([["waiting/12", false], ["waiting/31", false], ["waiting/40", false]]);
     expect(run.renders()).toBe(1);
     run.setAll(true);
-    expect([...run.userExpanded].sort()).toEqual([["12", true], ["31", true], ["40", true]]);
+    expect([...run.userExpanded].sort()).toEqual([["waiting/12", true], ["waiting/31", true], ["waiting/40", true]]);
   });
 
   it("wires the search box and the one button to a redraw", () => {
     expect(APP_JS).toContain('const toggleAll = document.getElementById("toggle-all");');
     expect(APP_JS).toMatch(/searchBox\.addEventListener\("input"/);
-    // Read from the box on every render, so a poll redraws the same search.
-    expect(APP_JS).toContain("searchOf(view.rows, searchBox.value)");
+    // Read from the box on every render, so a poll redraws the same search — each lane's over its own copies.
+    expect(fnSource("render")).toContain("laneDraw(view.rows, page, lane.dataset.lane, searchBox.value, now)");
+    expect(fnSource("laneDraw")).toContain("searchOf(all, query)");
   });
 });
 
@@ -366,7 +368,7 @@ describe("the one Collapse all / Expand all button", () => {
   const load = (rows: Tree[] = TREE) => runInNewContext(`
     const userExpanded = new Map();
     const touched = new Set();
-    let lastView = { rows: ROWS };
+    let lastView = { rows: ROWS.map((r) => ({ ...r, lane: "waiting" })) };
     let query = "";
     let drawn = [];
     const toggleAll = { textContent: "Collapse all", clicks: [], addEventListener(type, f) { if (type === "click") this.clicks.push(f); } };
@@ -377,10 +379,10 @@ describe("the one Collapse all / Expand all button", () => {
       lastView = view;
       const search = searchOf(view.rows, query);
       const seen = new Set();
-      drawn = treeRows(view.rows, 0, seen, 0, [], search, false);
+      drawn = treeRows(view.rows, 0, seen, 0, [], search, false, "waiting");
       labelToggleAll(anyOpen(view.rows, seen));
     }
-    ${["isOpen", "openOf", "shows", "normalise", "matches", "searchOf", "treeRows", "anyOpen", "labelToggleAll", "setAll"].map(fnSource).join("")}
+    ${["rowKey", "someRow", "isOpen", "openOf", "shows", "normalise", "matches", "searchOf", "treeRows", "anyOpen", "labelToggleAll", "setAll"].map(fnSource).join("")}
     ${listener}
     render(lastView);
     ({
@@ -388,7 +390,7 @@ describe("the one Collapse all / Expand all button", () => {
       drawn: () => drawn,
       stored: () => [...userExpanded].sort(),
       click: () => { for (const f of toggleAll.clicks) f(); },
-      close: (id) => { userExpanded.set(id, false); touched.add(id); render(lastView); },
+      close: (id) => { userExpanded.set(rowKey("waiting", id), false); touched.add(rowKey("waiting", id)); render(lastView); },
       search: (q) => { query = q; touched.clear(); render(lastView); },
       listeners: () => toggleAll.clicks.length,
     })`, { ROWS: rows }) as {
@@ -404,7 +406,7 @@ describe("the one Collapse all / Expand all button", () => {
     expect(run.label()).toBe("Collapse all");
     run.click();
     expect(run.drawn()).toEqual(["0:12", "0:40"]);
-    expect(run.stored()).toEqual([["12", false], ["31", false], ["40", false]]);
+    expect(run.stored()).toEqual([["waiting/12", false], ["waiting/31", false], ["waiting/40", false]]);
     expect(run.label()).toBe("Expand all");
   });
 
@@ -446,7 +448,7 @@ describe("the one Collapse all / Expand all button", () => {
     expect(run.label()).toBe("Collapse all");
     run.click();
     expect(run.drawn()).toEqual(["0:40+", "1:41"]);
-    expect(run.stored()).toEqual([["12", false], ["31", false], ["40", false]]);
+    expect(run.stored()).toEqual([["waiting/12", false], ["waiting/31", false], ["waiting/40", false]]);
     expect(run.label()).toBe("Expand all");
     run.click();
     expect(run.label()).toBe("Collapse all");
@@ -634,16 +636,28 @@ describe("the chosen row", () => {
     }
   });
 
-  it("is the panel's item, marked on its row alone", () => {
-    const stale = { attrs: new Map([["aria-selected", "true"]]), removeAttribute(k: string) { this.attrs.delete(k); }, setAttribute(k: string, v: string) { this.attrs.set(k, v); } };
-    const chosen = { attrs: new Map<string, string>(), removeAttribute(k: string) { this.attrs.delete(k); }, setAttribute(k: string, v: string) { this.attrs.set(k, v); } };
+  // A parent is drawn in each lane its children are in: each of its rows is marked.
+  it("is the panel's item, marked on each of its rows alone", () => {
+    const li = (item: string, selected = false) => ({
+      item, attrs: new Map(selected ? [["aria-selected", "true"]] : []),
+      removeAttribute(k: string) { this.attrs.delete(k); }, setAttribute(k: string, v: string) { this.attrs.set(k, v); },
+    });
+    const stale = li("9", true);
+    const chosen = li("12");
+    const twin = li("12");
+    const rows = [stale, chosen, twin, li("120")];
     const mark = (panelId: string | null) => runInNewContext(`${fnSource("markSelected")} markSelected()`, {
-      panelId, document: { querySelectorAll: () => [stale] },
-      byKey: (key: string) => (key === "12:open" ? { closest: () => chosen } : null),
+      panelId, CSS: { escape: (v: string) => v },
+      document: {
+        querySelectorAll: (sel: string) => {
+          const item = /data-item="([^"]*)"/.exec(sel)?.[1];
+          if (item !== undefined) return rows.filter((r) => r.item === item);
+          return sel.includes("aria-selected") ? rows.filter((r) => r.attrs.has("aria-selected")) : rows;
+        },
+      },
     });
     mark("12");
-    expect(stale.attrs.has("aria-selected")).toBe(false);
-    expect(chosen.attrs.get("aria-selected")).toBe("true");
+    expect(rows.map((r) => r.attrs.get("aria-selected") ?? null)).toEqual([null, "true", "true", null]);
     chosen.attrs.clear();
     mark(null);
     expect(chosen.attrs.size).toBe(0);
@@ -738,15 +752,142 @@ describe("a change of query", () => {
   });
 });
 
+/*
+ * A root is drawn in each lane it holds a match in, its own badge's or a
+ * child's: one page-wide cycle guard drew the epic in Needs you and skipped
+ * it in Waiting and Done, and one open state per id closed it in every lane
+ * at once.
+ */
+describe("a tree split across lanes", () => {
+  interface Copy { id: string; kind: string; title: string; lane?: string; page?: string | null; context: boolean; children: Copy[] }
+  const at = (id: string, context: boolean, children: Copy[] = [], kind = "item"): Copy => ({ id, kind, title: `t${id}`, context, children });
+  // Epic 1 on page a: context over 2 in Needs you, a match itself in Waiting with 3 under it, context over 4 in Done.
+  const COPIES: Copy[] = [
+    { ...at("1", true, [at("2", false, [at("pr-2", false, [], "pull-request")])]), lane: "needs-you", page: "a" },
+    { ...at("1", false, [at("3", false), at("5", false)]), lane: "waiting", page: "a" },
+    { ...at("1", true, [at("4", false)]), lane: "discharged", page: "a" },
+  ];
+  const load = (stored: [string, boolean][] = []) => runInNewContext(`
+    const userExpanded = new Map(STORED);
+    const touched = new Set();
+    function itemRowFor(row, depth, now, open, lane) { return depth + ":" + row.id + (open ? "+" : ""); }
+    function artifactRowFor(row, depth, open, now, lane) { return depth + ":" + row.id + (open ? "+" : ""); }
+    ${["rowKey", "isOpen", "openOf", "shows", "normalise", "matches", "searchOf", "treeRows", "rootsOn", "laneRoots", "someRow", "matchCount", "laneDraw"].map(fnSource).join("")}
+    ({ draw: (lane, query) => laneDraw(ROWS, "a", lane, query || "", 0), rowKey })`, { ROWS: COPIES, STORED: stored }) as {
+    draw: (lane: string, query?: string) => { items: string[]; count: number; drawn: Set<string> } | null;
+    rowKey: (lane: string, id: string) => string;
+  };
+
+  it("draws a parent in every lane it is in, each lane with a cycle guard of its own", () => {
+    const run = load();
+    expect(run.draw("needs-you")?.items).toEqual(["0:1+", "1:2+", "2:pr-2"]);
+    expect(run.draw("waiting")?.items).toEqual(["0:1+", "1:3", "1:5"]);
+    expect(run.draw("discharged")?.items).toEqual(["0:1+", "1:4"]);
+    expect([...(run.draw("waiting")?.drawn ?? [])]).toEqual([run.rowKey("waiting", "1"), run.rowKey("waiting", "3"), run.rowKey("waiting", "5")]);
+    expect(fnSource("render")).toContain("laneDraw(view.rows, page, lane.dataset.lane, searchBox.value, now)");
+  });
+
+  it("keeps a row's open or closed state per lane: closing the epic in Waiting leaves it open in Needs you", () => {
+    const keyed = load().rowKey("waiting", "1");
+    const run = load([[keyed, false]]);
+    expect(run.draw("waiting")?.items).toEqual(["0:1"]);
+    expect(run.draw("needs-you")?.items).toEqual(["0:1+", "1:2+", "2:pr-2"]);
+  });
+
+  it("counts a lane's matches, never its roots or context rows, nor a match's artifacts", () => {
+    const run = load();
+    expect([run.draw("needs-you")?.count, run.draw("waiting")?.count, run.draw("discharged")?.count]).toEqual([1, 3, 1]);
+    expect(fnSource("render")).toContain('lane.querySelector(".lane-count").textContent = String(drawn === null ? 0 : drawn.count)');
+  });
+
+  it("counts a branch with no item in it as one", () => {
+    const c = runInNewContext(`${fnSource("shows")}${fnSource("matchCount")} matchCount`) as (r: Copy, search: null) => number;
+    expect(c({ ...at("pr-1", false, [at("doc-1", false, [], "document")], "pull-request") }, null)).toBe(1);
+  });
+
+  // Summing whole copies, a search for one of Waiting's three matches drew one
+  // and still read 3.
+  it("counts under a search only the matches it leaves on screen", () => {
+    const run = load();
+    const waiting = run.draw("waiting", "t3");
+    expect(waiting?.items).toEqual(["0:1+", "1:3"]);
+    expect(waiting?.count).toBe(1);
+    expect(run.draw("waiting", "t1")?.count).toBe(3);
+    expect(run.draw("needs-you", "t1")?.count).toBe(1);
+  });
+
+  it("searches each lane's copies on their own", () => {
+    const run = load();
+    expect(run.draw("needs-you", "t4")?.items).toEqual([]);
+    expect(run.draw("discharged", "t4")?.items).toEqual(["0:1+", "1:4"]);
+  });
+
+  it("toggles a row in its own lane alone, and keys its controls by lane so another lane's copy keeps its focus", () => {
+    const listeners: Array<() => void> = [];
+    const stored = runInNewContext(`
+      const userExpanded = new Map();
+      const touched = new Set();
+      let renders = 0;
+      function render() { renders++; }
+      function schedulePoll() {}
+      const lastView = {};
+      ${["rowKey", "el", "toggleFor"].map(fnSource).join("")}
+      const t = toggleFor(ROW, true, "waiting");
+      t.addEventListener = undefined;
+      ({ t, userExpanded, touched })`, {
+      ROW: at("1", false, [at("3", false)]),
+      document: { createElement: (tag: string) => Object.assign(new FakeElement(tag), { addEventListener: (_: string, f: () => void) => { listeners.push(f); } }) },
+    }) as { t: FakeElement; userExpanded: Map<string, boolean>; touched: Set<string> };
+    for (const f of listeners) f();
+    expect([...stored.userExpanded]).toEqual([["waiting/1", false]]);
+    expect([...stored.touched]).toEqual(["waiting/1"]);
+    expect(stored.t.getAttribute("data-key")).toBe("waiting/1:toggle");
+  });
+});
+
+describe("a context row", () => {
+  const row = (context: boolean) => ({
+    id: "12", kind: "item", title: "Epic", link: "https://x/12", closed: null, badge: "waiting", stage: "build",
+    priority: null, note: "queued", since: null, round: null, model: null, screened: false, children: [], workflow: null, tag: null, context,
+    panel: { activity: "/items/12/activity" }, retry: null, clear: null, goto: [],
+    chat: { prompt: "p", links: {} },
+  });
+  const build = (r: ReturnType<typeof row>): FakeElement => runInNewContext(`
+    ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
+    ${["rowKey", "routeOf", "pageOf", "pageNow", "tagsOn", "el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
+    function actionFor() { return el("div", "actions"); }
+    itemRowFor(ROW, 0, 0, false, "needs-you")`, {
+      ROW: r, document: fakeDocument, lastView: { workflows: [] }, location: { hash: "#/" },
+    }) as FakeElement;
+  const has = (li: FakeElement, cls: string) => descendants(li).some((d) => d.className.split(" ").includes(cls));
+
+  it("is drawn muted, its own badge still shown, and still opens its panel", () => {
+    const li = build(row(true));
+    expect(li.className.split(" ")).toContain("opacity-60");
+    expect(build(row(false)).className.split(" ")).not.toContain("opacity-60");
+    expect(descendants(li).find((d) => d.className.split(" ").includes("badge"))?.text).toBe("Waiting");
+    const title = descendants(li).find((d) => d.className.split(" ").includes("title"));
+    expect(title?.tag).toBe("button");
+    expect(title?.getAttribute("data-key")).toBe("needs-you/12:open");
+    expect(li.getAttribute("data-item")).toBe("12");
+  });
+
+  // Its own actions are on its own row, in its own lane: a second menu under one key opened the first.
+  it("offers no actions menu of its own", () => {
+    expect(has(build(row(true)), "actions")).toBe(false);
+    expect(has(build(row(false)), "actions")).toBe(true);
+  });
+});
+
 describe("the tree walk", () => {
   // The row builders stubbed to "<depth>:<id>", "+" when drawn open.
   const walk = (query: string, expanded: Record<string, boolean> = {}): string[] => [...(runInNewContext(`
-    const userExpanded = new Map(${JSON.stringify(Object.entries(expanded))});
+    const userExpanded = new Map(${JSON.stringify(Object.entries(expanded).map(([id, open]) => ["waiting/" + id, open]))});
     const touched = new Set();
     function itemRowFor(row, depth, now, open) { return depth + ":" + row.id + (open ? "+" : ""); }
     function artifactRowFor(row, depth, open) { return depth + ":" + row.id + (open ? "+" : ""); }
-    ${["isOpen", "openOf", "shows", "normalise", "matches", "searchOf", "treeRows"].map(fnSource).join("")}
-    treeRows(ROWS, 0, new Set(), 0, [], searchOf(ROWS, ${JSON.stringify(query)}), false)`, { ROWS: TREE }) as string[])];
+    ${["rowKey", "isOpen", "openOf", "shows", "normalise", "matches", "searchOf", "treeRows"].map(fnSource).join("")}
+    treeRows(ROWS, 0, new Set(), 0, [], searchOf(ROWS, ${JSON.stringify(query)}), false, "waiting")`, { ROWS: TREE }) as string[])];
 
   it("draws the whole tree open with no query, and a row's children only while it is open", () => {
     expect(walk("")).toEqual(["0:12+", "1:31+", "2:pr:118", "1:32", "0:40+", "1:41"]);
@@ -809,7 +950,7 @@ describe("a row's title line", () => {
   it("gives a parent row's toggle its own column, so the number, the note and wrapped chips share one edge", () => {
     const src = fnSource("itemRowFor");
     expect(src).not.toMatch(/top\.append\(toggleFor/);
-    expect(src).toMatch(/main\.append\(toggleSlot\(row, open\)\);/);
+    expect(src).toMatch(/main\.append\(toggleSlot\(row, open, lane\)\);/);
     expect(src).toMatch(/body\.append\(top, bottom\);\s*main\.append\(body\);/);
   });
 
@@ -1017,7 +1158,7 @@ describe("an item row stopped by a security check", () => {
   }
   const build = (row: ItemRow): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
-    ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
+    ${["rowKey", "el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
     itemRowFor(ROW, 0, 0, false)`, { ROW: row, document: fakeDocument }) as FakeElement;
   const screened: ItemRow = {
     id: "19", kind: "item", title: "Payments revamp", link: "https://github.com/a/b/issues/19", closed: null,
@@ -1060,7 +1201,7 @@ describe("an item row's workflow", () => {
   });
   const build = (r: ReturnType<typeof row>, showTags = true): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
-    ${["routeOf", "pageOf", "pageNow", "tagsOn", "el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
+    ${["rowKey", "routeOf", "pageOf", "pageNow", "tagsOn", "el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
     itemRowFor(ROW, 0, 0, false)`, {
       ROW: r, document: fakeDocument,
       lastView: { workflows: [{ id: "fast", name: "Fastlane", needsYou: 0 }] }, location: { hash: showTags ? "#/" : "#/w/fast" },
@@ -1096,7 +1237,7 @@ describe("a row's toggle column", () => {
   });
   const build = (r: ReturnType<typeof row>): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${blockSource("BADGES")}
-    ${["el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
+    ${["rowKey", "el", "elapsed", "external", "treeItem", "shieldMark", "toggleFor", "toggleSlot", "itemRowFor"].map(fnSource).join("")}
     itemRowFor(ROW, 0, 0, ROW.children.length > 0)`, { ROW: r, document: fakeDocument }) as FakeElement;
   const slot = (li: FakeElement): FakeElement | undefined => li.children[0]?.children[0];
   const width = (e: FakeElement | undefined): string[] => (e?.className ?? "").split(" ").filter((c) => c.startsWith("w-"));
@@ -1121,8 +1262,8 @@ describe("an artifact row", () => {
   const NOW = Date.parse("2026-09-28T12:00:00Z");
   const build = (row: Artifact, depth = 1): FakeElement => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}
-    ${["el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "kindMark", "ago", "external", "treeItem", "toggleFor", "toggleSlot", "artifactRowFor"].map(fnSource).join("")}
-    artifactRowFor(ROW, ${depth}, ROW.children.length > 0, NOW)`, { ROW: row, NOW, document: fakeDocument }) as FakeElement;
+    ${["rowKey", "el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "kindMark", "ago", "external", "treeItem", "toggleFor", "toggleSlot", "artifactRowFor"].map(fnSource).join("")}
+    artifactRowFor(ROW, ${depth}, ROW.children.length > 0, NOW, "waiting")`, { ROW: row, NOW, document: fakeDocument }) as FakeElement;
   const spec: Artifact = {
     id: "spec-19", kind: "document", title: "Spec: Payments revamp", link: "https://acme.github.io/widgets/specs/19/",
     system: { name: "GitHub Pages", icon: { bg: "#24292f", glyph: "GH" } }, closed: null, children: [],
@@ -1149,7 +1290,7 @@ describe("an artifact row", () => {
   it("is one link to the row's own url, opening in a new tab, keyed so focus survives a poll", () => {
     const a = link(build(spec));
     expect(a).toMatchObject({ href: spec.link, target: "_blank", rel: "noopener noreferrer" });
-    expect(a?.getAttribute("data-key")).toBe("spec-19:link");
+    expect(a?.getAttribute("data-key")).toBe("waiting/spec-19:link");
     expect(descendants(build(spec)).filter((d) => d.tag === "a")).toHaveLength(1);
   });
 
@@ -1243,7 +1384,7 @@ describe("an artifact row", () => {
     expect(leaf.className.split(" ")).toContain("pl-16");
     expect(leaf.children.map((c) => c.tag)).toEqual(["span", "a"]);
     const parent = build({ ...pr, children: [spec] }, 2);
-    expect(parent.children.map((c) => [c.tag, c.getAttribute("data-key")])).toEqual([["button", "pr:118:toggle"], ["a", "pr:118:link"]]);
+    expect(parent.children.map((c) => [c.tag, c.getAttribute("data-key")])).toEqual([["button", "waiting/pr:118:toggle"], ["a", "waiting/pr:118:link"]]);
   });
 });
 
@@ -1514,14 +1655,14 @@ describe("the page", () => {
   });
 
   it("keys every external link (<id>:link), so a keyboard user on one keeps their place across a poll", () => {
-    expect(APP_JS).toContain('"data-key", row.id + ":link"');
+    expect(APP_JS).toContain('"data-key", rowKey(lane, row.id) + ":link"');
   });
 
   it("redraws a toggle from the last view at once, not after a network round trip that may fail", () => {
     expect(APP_JS).toContain("lastView = view;");
     // `open` is what the row is drawn as — a search may be holding it open —
     // so a click always flips what the person sees.
-    expect(APP_JS).toMatch(/userExpanded\.set\(row\.id, !open\);\s*touched\.add\(row\.id\);\s*render\(lastView\);/);
+    expect(APP_JS).toMatch(/userExpanded\.set\(rowKey\(lane, row\.id\), !open\);\s*touched\.add\(rowKey\(lane, row\.id\)\);\s*render\(lastView\);/);
   });
 
   it("greys a dropped node", () => {
@@ -1635,9 +1776,21 @@ describe("the item panel's address", () => {
 
   it("finds an item anywhere in the tree", () => {
     const rows = [{ id: "1", children: [{ id: "2", children: [{ id: "3", children: [] }] }] }];
-    const find = (id: string): unknown => runInNewContext(`${fnSource("findRow")} findRow(ROWS, ID)`, { ROWS: rows, ID: id });
+    const find = (id: string): unknown => runInNewContext(`${fnSource("someRow")}${fnSource("findRow")} findRow(ROWS, ID)`, { ROWS: rows, ID: id });
     expect(find("3")).toEqual({ id: "3", children: [] });
     expect(find("9")).toBeNull();
+  });
+
+  // Only the copy an item is filed in holds its pull requests and spec: read
+  // from a context copy, its panel listed no artifacts.
+  it("reads an item from the row it is filed in, not from a parent's copy that shows it only for context", () => {
+    const pr = { id: "pr-1", kind: "pull-request", context: false, children: [] };
+    const context = { id: "1", lane: "needs-you", context: true, children: [{ id: "2", context: false, children: [] }] };
+    const filed = { id: "1", lane: "waiting", context: false, children: [pr] };
+    for (const rows of [[context, filed], [filed, context]]) {
+      const found = runInNewContext(`${fnSource("someRow")}${fnSource("findRow")} findRow(ROWS, "1")`, { ROWS: rows }) as { children: unknown[] };
+      expect(found.children).toEqual([pr]);
+    }
   });
 
   it("opens on a row click by pushing the hash, so Back closes it", () => {
@@ -1883,7 +2036,7 @@ describe("a selected item no longer on the board", () => {
       panelTitle: { set textContent(v: string) { seen.title = v; } },
       closePanel: () => { seen.cleared++; }, closeMenu: () => {}, el: () => ({}),
     };
-    for (const f of ["findRow", "currentRow", "bareRow", "panelTitleOf", "viewListed", "renderPanel"]) runInNewContext(fnSource(f), c);
+    for (const f of ["someRow", "findRow", "currentRow", "bareRow", "panelTitleOf", "viewListed", "renderPanel"]) runInNewContext(fnSource(f), c);
     runInNewContext("renderPanel()", c);
     return seen;
   };
@@ -2256,13 +2409,13 @@ describe("an item a write just went through for", () => {
   const view = (lane: string, nextTickAt: number | null = 1000) => ({
     nextTickAt,
     rows: [
-      { id: "19", lane, badge: lane, note: "blocked: needs a human", since: 1, retry: "/items/19/retry", clear: "/items/19/clear", goto: [{ stage: "spec", path: "/items/19/goto/spec" }], children: [] },
-      { id: "20", lane: "needs-you", badge: "needs-you", note: "waiting on you", since: 1, retry: null, clear: null, goto: [], children: [] },
+      { id: "19", kind: "item", context: false, lane, badge: lane, note: "blocked: needs a human", since: 1, retry: "/items/19/retry", clear: "/items/19/clear", goto: [{ stage: "spec", path: "/items/19/goto/spec" }], children: [] },
+      { id: "20", kind: "item", context: false, lane: "needs-you", badge: "needs-you", note: "waiting on you", since: 1, retry: null, clear: null, goto: [], children: [] },
     ],
   });
   type Drawn = ReturnType<typeof view>;
-  const drawn = (v: Drawn, moves: Map<string, Move>): Drawn =>
-    runInNewContext(`${fnSource("withMoves")} withMoves(VIEW, MOVES)`, { VIEW: v, MOVES: moves }) as Drawn;
+  const drawn = <V extends { nextTickAt: number | null; rows: unknown[] }>(v: V, moves: Map<string, Move>): V =>
+    runInNewContext(`${["findRow", "someRow", "withMoves", "joinRows"].map(fnSource).join("")} withMoves(VIEW, MOVES)`, { VIEW: v, MOVES: moves }) as V;
 
   it("shows it in Waiting, with nothing left to click, while the server still has it where it was", () => {
     const moves = new Map([["19", move("needs-you")]]);
@@ -2271,6 +2424,78 @@ describe("an item a write just went through for", () => {
     expect(sent?.goto).toHaveLength(0);
     expect(sent?.note).toMatch(/next tick/);
     expect(other).toMatchObject({ id: "20", lane: "needs-you", badge: "needs-you" });
+  });
+
+  // An item filed by its own badge: a child is sent from inside its parent's
+  // copy, and the copy stays where it is for the other items filed in it.
+  it("follows the item's own badge, at any depth, and moves a copy only when every item filed in it was sent", () => {
+    const kid = (id: string, badge: string) => ({ id, kind: "item", context: false, badge, note: "", since: 1, retry: `/items/${id}/retry`, clear: null, goto: [], children: [] });
+    const tree = (lane: string, kids: unknown[]) => ({
+      nextTickAt: 1000,
+      rows: [{ id: "1", kind: "item", context: true, lane, page: "a", badge: "waiting", note: "", since: 1, retry: null, clear: null, goto: [], children: kids }],
+    });
+    const shared = drawn(tree("needs-you", [kid("2", "needs-you"), kid("3", "needs-you")]), new Map([["2", move("needs-you")]]));
+    expect(shared.rows[0]).toMatchObject({ lane: "needs-you", children: [{ id: "2", badge: "waiting", retry: null }, { id: "3", badge: "needs-you" }] });
+    const alone = drawn(tree("needs-you", [kid("2", "needs-you")]), new Map([["2", move("needs-you")]]));
+    expect(alone.rows[0]).toMatchObject({ lane: "waiting", children: [{ id: "2", badge: "waiting" }] });
+    const moves = new Map([["2", move("needs-you")]]);
+    drawn(tree("needs-you", [kid("2", "running")]), moves);
+    expect(moves.size).toBe(0);
+  });
+
+  // The spec's epic: one child needing you, the rest waiting. Moved whole, the
+  // sent copy took the guard key `waiting/1` ahead of the server's Waiting
+  // copy, which was then skipped, its items gone while still counted.
+  it("merges a copy moved into Waiting into that root's Waiting copy on the same page", () => {
+    const kid = (id: string, badge: string, kids: unknown[] = []) => ({ id, kind: "item", context: false, badge, note: "", since: 1, retry: null, clear: null, goto: [], children: kids });
+    const ctx = (id: string, kids: unknown[]) => ({ ...kid(id, "waiting", kids), context: true });
+    const copy = (lane: string, page: string | null, kids: unknown[]) => ({ ...ctx("1", kids), lane, page });
+    const v = {
+      nextTickAt: 1000,
+      rows: [
+        copy("needs-you", "a", [ctx("10", [kid("2", "needs-you")])]),
+        copy("waiting", "a", [ctx("10", [kid("3", "waiting"), kid("4", "waiting")])]),
+        copy("needs-you", null, [ctx("10", [kid("2", "needs-you")])]),
+        copy("waiting", "b", [kid("5", "waiting")]),
+      ],
+    };
+    const rows = drawn(v, new Map([["2", move("needs-you")]])).rows as Array<ReturnType<typeof copy>>;
+    const onA = rows.filter((r) => r.page === "a");
+    expect(onA).toHaveLength(1);
+    expect(onA[0]).toMatchObject({ lane: "waiting", children: [{ id: "10", context: true, children: [{ id: "3" }, { id: "4" }, { id: "2", badge: "waiting" }] }] });
+    // Another page's copy is its own; with none there to join, a copy moves whole.
+    expect(rows.find((r) => r.page === "b")?.children).toMatchObject([{ id: "5" }]);
+    expect(rows.find((r) => r.page === null)).toMatchObject({ lane: "waiting", children: [{ id: "10", children: [{ id: "2", badge: "waiting" }] }] });
+  });
+
+  // A Waiting copy whose items were all sent stays in Waiting, and is still the
+  // one the others join; so are two copies moved in from two other lanes.
+  it("joins every copy of a root that ends in Waiting on a page, sent whole or not", () => {
+    const kid = (id: string, badge: string) => ({ id, kind: "item", context: false, badge, note: "", since: 1, retry: null, clear: null, goto: [], children: [] });
+    const copy = (lane: string, kids: unknown[]) => ({ ...kid("1", "waiting"), context: true, lane, page: "a", children: kids });
+    const v = { nextTickAt: 1000, rows: [copy("needs-you", [kid("2", "needs-you")]), copy("waiting", [kid("3", "waiting")])] };
+    const both = drawn(v, new Map([["2", move("needs-you")], ["3", move("waiting")]])).rows;
+    expect(both).toHaveLength(1);
+    expect(both[0]).toMatchObject({ lane: "waiting", children: [{ id: "3", badge: "waiting" }, { id: "2", badge: "waiting" }] });
+    const elsewhere = { nextTickAt: 1000, rows: [copy("needs-you", [kid("2", "needs-you")]), copy("held", [kid("4", "held")])] };
+    const two = drawn(elsewhere, new Map([["2", move("needs-you")], ["4", move("held")]])).rows;
+    expect(two).toHaveLength(1);
+    expect(two[0]).toMatchObject({ lane: "waiting", children: [{ id: "2", badge: "waiting" }, { id: "4", badge: "waiting" }] });
+  });
+
+  // A row that is context in one copy and filed in the other is filed once joined.
+  it("keeps a row filed when it joins a copy where it was only context", () => {
+    const row = (id: string, context: boolean, badge: string, kids: unknown[] = []) => ({ id, kind: "item", context, badge, note: "", since: 1, retry: null, clear: null, goto: [], children: kids });
+    const v = {
+      nextTickAt: 1000,
+      rows: [
+        { ...row("1", true, "waiting", [row("2", false, "needs-you")]), lane: "needs-you", page: "a" },
+        { ...row("1", false, "waiting"), lane: "waiting", page: "a" },
+      ],
+    };
+    const rows = drawn(v, new Map([["2", move("needs-you")]])).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: "1", context: false, lane: "waiting", children: [{ id: "2", badge: "waiting" }] });
   });
 
   it("lets go once the server moves it, and draws the server's own row", () => {
@@ -2299,7 +2524,7 @@ describe("an item a write just went through for", () => {
   it("remembers where the server had it and when, and only on a board a tick will move", () => {
     const remember = (v: Drawn) => {
       const moves = new Map<string, Move>();
-      runInNewContext(`${fnSource("moved")} moved("19"); moved("7");`, { lastView: v, moves, Date: { now: () => 5 } });
+      runInNewContext(`${fnSource("someRow")}${fnSource("findRow")}${fnSource("moved")} moved("19"); moved("7");`, { lastView: v, moves, Date: { now: () => 5 } });
       return [...moves];
     };
     expect(remember(view("needs-you"))).toEqual([["19", { lane: "needs-you", next: 1000, ticks: 0, at: 5 }]]);
@@ -2970,11 +3195,15 @@ describe("routing and the sidebar", () => {
   });
 
   it("draws Needs You from every workflow's needing roots, and a workflow page from its own", () => {
+    // The server's copies: one per page and lane, Needs you's under page null.
     const rows = [
-      { id: "1", lane: "needs-you", pages: ["a"] },
-      { id: "2", lane: "running", pages: ["a"] },
-      { id: "3", lane: "needs-you", pages: ["b"] },
-      { id: "4", lane: "not-admitted", pages: ["a", "b"] },
+      { id: "1", lane: "needs-you", page: null },
+      { id: "3", lane: "needs-you", page: null },
+      { id: "1", lane: "needs-you", page: "a" },
+      { id: "3", lane: "needs-you", page: "b" },
+      { id: "2", lane: "running", page: "a" },
+      { id: "4", lane: "not-admitted", page: "a" },
+      { id: "4", lane: "not-admitted", page: "b" },
     ];
     expect(call<{ id: string }[]>("rootsOn", rows, null).map((r) => r.id)).toEqual(["1", "3"]);
     expect(call<{ id: string }[]>("rootsOn", rows, "a").map((r) => r.id)).toEqual(["1", "2", "4"]);
@@ -3023,9 +3252,11 @@ describe("the render rules of the sidebar pages", () => {
   };
   const run = <T>(c: Record<string, unknown>, code: string): T => runInNewContext(code, c) as T;
   const ROWS = [
-    { id: "1", lane: "needs-you", pages: ["a"] },
-    { id: "2", lane: "running", pages: ["a"] },
-    { id: "3", lane: "needs-you", pages: ["b"] },
+    { id: "1", lane: "needs-you", page: null },
+    { id: "3", lane: "needs-you", page: null },
+    { id: "1", lane: "needs-you", page: "a" },
+    { id: "2", lane: "running", page: "a" },
+    { id: "3", lane: "needs-you", page: "b" },
   ];
 
   it("draws only the needs-you lane on Needs You, and every lane on a workflow page", () => {
@@ -3256,6 +3487,21 @@ describe("the empty Needs You", () => {
     expect(allSet(null, [], { self: new Set(), below: new Set() }, true)).toBe(false);
   });
 
+  // A Reply on the last item that needs you moves Needs You's own copy into
+  // Waiting until the next tick: home is all set then, not an empty lane.
+  it("is all set once the last needs-you copy was sent, though the copy is still on the page", () => {
+    const row = { id: "19", kind: "item", context: false, lane: "needs-you", page: null, badge: "needs-you", note: "", since: 1, retry: null, clear: null, goto: [], children: [] };
+    const moves = new Map([["19", { lane: "needs-you", next: 1000, ticks: 0, at: 5 }]]);
+    const c: Record<string, unknown> = { VIEW: { nextTickAt: 1000, rows: [row] }, MOVES: moves };
+    runInNewContext(["findRow", "someRow", "withMoves", "joinRows", "rootsOn", "laneRoots", "allSet"].map(fnSource).join(""), c);
+    const done = runInNewContext(`
+      const view = withMoves(VIEW, MOVES);
+      const page = null, search = null;
+      const home = laneRoots(view.rows, page, "needs-you", () => true);
+      [view.rows.map((r) => r.lane), allSet(page, home, search, true)]`, c) as [string[], boolean];
+    expect(done).toEqual([["waiting"], true]);
+  });
+
   it("is not all set before anything has been listed: no data is not an all-clear", () => {
     expect(allSet(null, [], null, false)).toBe(false);
   });
@@ -3304,11 +3550,12 @@ describe("the empty Needs You", () => {
     expect(run("laneHidden(...args)", [[], null, true])).toBe(true);
     expect(run("laneHidden(...args)", [[], null, false])).toBe(false);
     const render = fnSource("render");
-    expect(render).toContain("allSet(page, rootsOn(view.rows, page), search, view.listed)");
-    expect(render).toContain("hidden = allSetHidden(page, rootsOn(view.rows, page), search, view.listed)");
+    expect(render).toContain("const home = laneRoots(view.rows, page, \"needs-you\", () => true)");
+    expect(render).toContain("allSet(page, home, search, view.listed)");
+    expect(render).toContain("hidden = allSetHidden(page, home, search, view.listed)");
     expect(render).toContain("hidden = !listing");
     // The unlisted home replaces the empty lane too, as the beach does.
     expect(render).toContain("const listing = listingShown(page, view.listed)");
-    expect(render).toContain("laneHidden(drawn, search, done || listing)");
+    expect(render).toContain("laneHidden(drawn === null ? null : roots, search, done || listing)");
   });
 });

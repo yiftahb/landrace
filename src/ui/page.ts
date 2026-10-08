@@ -334,38 +334,87 @@ let openMenuKey = null;
 const writeNotes = new Map();
 const writing = new Set();
 
-// Items a write just went through for, by id: the lane the server had each
-// in, when, and the ticks armed since. The server moves an item only once a
-// tick lists the tracker again — up to a whole interval after the click, and
-// a Reply wakes no tick at all — so until then the page shows it in Waiting.
-// ponytail: top-level rows only; a child's lane is its root's, and stays put.
+// Items a write just went through for, by id: the lane of the item's own
+// badge when the server last drew it, when, and the ticks armed since. The
+// server moves an item only once a tick lists the tracker again — up to a
+// whole interval after the click, and a Reply wakes no tick at all — so until
+// then the page shows it as Waiting.
 const moves = new Map();
 
 function moved(id) {
-  const row = lastView && lastView.rows.find((r) => r.id === id);
+  const row = lastView && findRow(lastView.rows, id);
   // No tick scheduled, nothing will move it: Waiting would be a lie.
-  if (row && lastView.nextTickAt !== null) moves.set(id, { lane: row.lane, next: lastView.nextTickAt, ticks: 0, at: Date.now() });
+  if (row && lastView.nextTickAt !== null) moves.set(id, { lane: row.badge, next: lastView.nextTickAt, ticks: 0, at: Date.now() });
 }
 
-// A fresh view with each moving item in Waiting, until the server moves it
-// itself or two ticks have been armed since — one came and went and left it
-// where it was, so the server's word stands again.
+// A fresh view with each moving item badged Waiting wherever it is drawn,
+// until the server moves it itself or two ticks have been armed since — one
+// came and went and left it where it was, so the server's word stands again.
+// A copy moves to Waiting only when every item filed in it was sent; one
+// holding another stays, since that one has not moved.
 function withMoves(view, moves) {
   for (const [id, m] of moves) {
     if (view.nextTickAt !== m.next) { m.ticks += 1; m.next = view.nextTickAt; }
-    const row = view.rows.find((r) => r.id === id);
-    if (!row || row.lane !== m.lane || m.ticks >= 2 || view.nextTickAt === null) moves.delete(id);
+    const row = findRow(view.rows, id);
+    if (!row || row.badge !== m.lane || m.ticks >= 2 || view.nextTickAt === null) moves.delete(id);
   }
   if (moves.size === 0) return view;
+  // Nothing left to click: the server has taken one write, and would judge a
+  // second against the state the first is leaving.
+  const sent = (r) => {
+    const m = moves.get(r.id);
+    const kids = r.children.map(sent);
+    return m ? { ...r, badge: "waiting", note: "Sent — moves on the next tick", since: m.at, retry: null, clear: null, goto: [], children: kids }
+      : { ...r, children: kids };
+  };
+  const movedCopies = new Set();
+  const rows = view.rows.map((r) => {
+    let filed = 0;
+    const stays = someRow([r], (row) => {
+      if (row.context || row.kind !== "item") return false;
+      filed++;
+      const m = moves.get(row.id);
+      return !m || m.lane !== r.lane;
+    });
+    // A Waiting copy is already where a sent row goes: it stays the copy the
+    // moved ones join, sent whole or not.
+    if (filed === 0 || stays || r.lane === "waiting") return sent(r);
+    const copy = { ...sent(r), lane: "waiting" };
+    movedCopies.add(copy);
+    return copy;
+  });
+  // Every copy of one root that ends in Waiting on a page becomes one: two
+  // copies of a root in one lane share the lane's cycle guard key, and the
+  // first drawn hid the other's items while they still counted. The server's
+  // own Waiting copy is the home when there is one, else the first moved.
+  const keyOf = (r) => r.page + "\\n" + r.kind + ":" + r.id;
+  const home = new Map();
+  for (const r of rows) if (r.lane === "waiting" && !movedCopies.has(r)) home.set(keyOf(r), r);
+  for (const r of movedCopies) if (!home.has(keyOf(r))) home.set(keyOf(r), r);
+  const into = new Map();
+  for (const r of movedCopies) {
+    const h = home.get(keyOf(r));
+    if (h !== r) into.set(h, { ...joinRows(into.get(h) || h, r), lane: "waiting", page: h.page });
+  }
   return {
     ...view,
-    rows: view.rows.map((r) => {
-      const m = moves.get(r.id);
-      // Nothing left to click: the server has taken one write, and would
-      // judge a second against the state the first is leaving.
-      return m ? { ...r, lane: "waiting", badge: "waiting", note: "Sent — moves on the next tick", since: m.at, retry: null, clear: null, goto: [] } : r;
+    rows: rows.flatMap((r) => {
+      if (movedCopies.has(r) && home.get(keyOf(r)) !== r) return [];
+      return [into.get(r) || r];
     }),
   };
+}
+
+// One row from two copies of it: filed if either files it, its children the
+// first's then the second's that the first lacks, a child in both joined too.
+function joinRows(a, b) {
+  const base = a.context && !b.context ? b : a;
+  const key = (r) => r.kind + ":" + r.id;
+  const theirs = new Map(b.children.map((c) => [key(c), c]));
+  const ours = new Set(a.children.map(key));
+  const children = a.children.map((c) => (theirs.has(key(c)) ? joinRows(c, theirs.get(key(c))) : c))
+    .concat(b.children.filter((c) => !ours.has(key(c))));
+  return { ...base, context: a.context && b.context, children };
 }
 
 function menuKeyOf(id) { return id + ":menu"; }
@@ -705,15 +754,21 @@ const BADGES = {
 const INDENT = ["pl-4", "pl-10", "pl-16", "pl-22", "pl-28"];
 const indentOf = (depth) => INDENT[Math.min(depth, INDENT.length - 1)];
 
-// A person's own expand/collapse choices, by node id. Kept across every
-// render: a poll landing every two seconds must never undo what someone just
-// clicked. Every row starts open and stays so until someone closes it: the
-// board is read top to bottom, and a branch that arrives shut hides the very
-// item someone came to look at. An entry lives until its node leaves the
-// view (see forgetGone), so a returning id starts open again rather than
-// carrying a choice made about another node.
+// A row's key on the board: a parent is drawn in each lane it holds a match
+// in, and each of those is a row of its own — closing the epic in Waiting
+// must leave it open in Needs you, and focus restored by key must land on the
+// copy that had it. No lane name holds a "/".
+function rowKey(lane, id) { return lane + "/" + id; }
+
+// A person's own expand/collapse choices, by lane and node id (rowKey). Kept
+// across every render: a poll landing every two seconds must never undo what
+// someone just clicked. Every row starts open and stays so until someone
+// closes it: the board is read top to bottom, and a branch that arrives shut
+// hides the very item someone came to look at. An entry lives until its row
+// leaves the view (see forgetGone), so a returning id starts open again
+// rather than carrying a choice made about another node.
 const userExpanded = new Map();
-function isOpen(row) { return userExpanded.get(row.id) !== false; }
+function isOpen(row, lane) { return userExpanded.get(rowKey(lane, row.id)) !== false; }
 
 // Rows opened or closed by hand since the query last changed. A search holds
 // the path to each match open without writing to userExpanded — clearing the
@@ -722,23 +777,35 @@ function isOpen(row) { return userExpanded.get(row.id) !== false; }
 const touched = new Set();
 
 // Whether a row is drawn open: held open while a search has a match beneath
-// it, else open unless the person closed it.
-function openOf(row, search) {
-  if (search && search.below.has(row.id) && !touched.has(row.id)) return true;
-  return isOpen(row);
+// it, else open unless the person closed it — in this lane.
+function openOf(row, search, lane) {
+  if (search && search.below.has(row.id) && !touched.has(rowKey(lane, row.id))) return true;
+  return isOpen(row, lane);
+}
+
+// Every row of every copy, with its copy's lane, until \`f\` returns true. The
+// cycle guard is each copy's own: a root's copy on another page may hold
+// rows this one does not.
+function someRow(rows, f) {
+  for (const root of rows) {
+    const seen = new Set();
+    const stack = [root];
+    while (stack.length) {
+      const row = stack.pop();
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      if (f(row, root.lane) === true) return true;
+      stack.push(...row.children);
+    }
+  }
+  return false;
 }
 
 function forgetGone(rows) {
   const present = new Set();
-  const stack = [...rows];
-  while (stack.length) {
-    const row = stack.pop();
-    if (present.has(row.id)) continue;
-    present.add(row.id);
-    stack.push(...row.children);
-  }
-  for (const id of userExpanded.keys()) if (!present.has(id)) userExpanded.delete(id);
-  for (const id of touched) if (!present.has(id)) touched.delete(id);
+  someRow(rows, (row, lane) => { present.add(rowKey(lane, row.id)); });
+  for (const key of userExpanded.keys()) if (!present.has(key)) userExpanded.delete(key);
+  for (const key of touched) if (!present.has(key)) touched.delete(key);
 }
 
 // Collapse all / Expand all: stored exactly as a click on each row would be,
@@ -747,21 +814,13 @@ function forgetGone(rows) {
 // what someone just searched for is never what "Collapse all" meant.
 function setAll(open) {
   if (!lastView) return;
-  const seen = new Set();
-  const stack = [...lastView.rows];
-  while (stack.length) {
-    const row = stack.pop();
-    if (seen.has(row.id)) continue;
-    seen.add(row.id);
-    if (row.children.length) userExpanded.set(row.id, open);
-    stack.push(...row.children);
-  }
+  someRow(lastView.rows, (row, lane) => { if (row.children.length) userExpanded.set(rowKey(lane, row.id), open); });
   render(lastView);
 }
 
 // What the one Collapse all / Expand all button offers: Collapse all while a
 // drawn row is open by the person's choice, else Expand all. Only \`drawn\`
-// rows count: a row shut by hand keeps its children's state out of sight, and
+// rows count, by rowKey: a row shut by hand keeps its children's state out of sight, and
 // a Collapse all over a screen of shut rows would change nothing anyone could
 // see. A shut Not admitted or Done lane's rows are drawn all the same — it
 // opens natively, with no render to relabel the button. A row a search holds
@@ -769,16 +828,7 @@ function setAll(open) {
 // read by the hold, a held path would keep the button on a Collapse all that
 // no click could ever answer.
 function anyOpen(rows, drawn) {
-  const seen = new Set();
-  const stack = [...rows];
-  while (stack.length) {
-    const row = stack.pop();
-    if (seen.has(row.id)) continue;
-    seen.add(row.id);
-    if (drawn.has(row.id) && row.children.length && isOpen(row)) return true;
-    stack.push(...row.children);
-  }
-  return false;
+  return someRow(rows, (row, lane) => drawn.has(rowKey(lane, row.id)) && row.children.length > 0 && isOpen(row, lane));
 }
 
 // The button's text is its accessible name, so a screen reader hears the same
@@ -876,9 +926,9 @@ function syncDetails(lane, holds, started, ended) {
 
 // Keyed like every other control, so render()'s restore-by-key keeps a
 // keyboard user on this link across a poll instead of dropping them to <body>.
-function external(a, row) {
+function external(a, row, lane) {
   a.href = row.link;
-  a.setAttribute("data-key", row.id + ":link");
+  a.setAttribute("data-key", rowKey(lane, row.id) + ":link");
   a.target = "_blank";
   a.rel = "noopener noreferrer";
   return a;
@@ -971,8 +1021,14 @@ function treeItem(row, depth, cls, open) {
   // The chosen row stands out: focused, or open in the panel (aria-selected).
   // A tint, not a grey: neutral-100 on a white card was there and unseen.
   const chosen = " focus-within:bg-blue-50 dark:focus-within:bg-blue-950 aria-selected:bg-blue-50 dark:aria-selected:bg-blue-950";
-  const li = el("li", cls + " " + indentOf(depth) + chosen + (row.closed === "dropped" ? " opacity-50" : ""));
+  // A context row is only the path to a match below it — filed in another
+  // lane, or another workflow's — so it is muted, its own badge still on it.
+  const muted = row.closed === "dropped" ? " opacity-50" : row.context ? " opacity-60" : "";
+  const li = el("li", cls + " " + indentOf(depth) + chosen + muted);
   li.setAttribute("role", "treeitem");
+  // The node a row draws, whichever lane's copy it is in: the panel's item is
+  // marked on each.
+  li.setAttribute("data-item", row.id);
   // The tree is drawn flat, one <li> per visible node, so depth is told to
   // assistive tech here rather than by nesting.
   li.setAttribute("aria-level", String(depth + 1));
@@ -984,19 +1040,19 @@ function treeItem(row, depth, cls, open) {
 // document can sit under a pull request too, and a row nobody can open would
 // hide its children for good. Keyed like the menu, so render()'s restore-by-key
 // keeps a keyboard user's focus on it across the re-render its own click causes.
-function toggleFor(row, open) {
+function toggleFor(row, open, lane) {
   const toggle = el("button", "inline-flex h-4 w-4 shrink-0 items-center justify-center text-neutral-400", open ? "▾" : "▸");
   toggle.type = "button";
   toggle.setAttribute("aria-expanded", open ? "true" : "false");
   toggle.setAttribute("aria-label", (open ? "Collapse " : "Expand ") + row.title);
-  toggle.setAttribute("data-key", row.id + ":toggle");
+  toggle.setAttribute("data-key", rowKey(lane, row.id) + ":toggle");
   // Redrawn at once from the view already on screen — render() reads
   // userExpanded, so there is no second drawing path — and never held on a
   // /board.json round trip that may be slow or fail. The poll it brings
   // forward then catches up whatever the server has changed since.
   toggle.addEventListener("click", () => {
-    userExpanded.set(row.id, !open);
-    touched.add(row.id);
+    userExpanded.set(rowKey(lane, row.id), !open);
+    touched.add(rowKey(lane, row.id));
     render(lastView);
     schedulePoll(0);
   });
@@ -1007,14 +1063,14 @@ function toggleFor(row, open) {
 // there is nothing to open. Without it a row with children put its number one
 // indent step right of a sibling with none — exactly where a child of that
 // sibling's goes — and #21, with a spec under it, read as nested under #20.
-function toggleSlot(row, open) {
-  if (row.children.length) return toggleFor(row, open);
+function toggleSlot(row, open, lane) {
+  if (row.children.length) return toggleFor(row, open, lane);
   const blank = el("span", "inline-block h-4 w-4 shrink-0");
   blank.setAttribute("aria-hidden", "true");
   return blank;
 }
 
-function itemRowFor(row, depth, now, open) {
+function itemRowFor(row, depth, now, open, lane) {
   // Stacked below the sm breakpoint, side-by-side above it — a breakpoint, not a
   // content-based flex-wrap. flex-wrap's own line-breaking runs on each
   // item's *hypothetical* (content) size: flex-1's 0% basis told the browser
@@ -1028,12 +1084,12 @@ function itemRowFor(row, depth, now, open) {
   // inside the title line it pushed the number right but not the note or a
   // wrapped chip, which then started under the toggle instead of the number.
   const main = el("div", "flex min-w-0 w-full items-baseline gap-2 sm:w-auto sm:flex-1");
-  main.append(toggleSlot(row, open));
+  main.append(toggleSlot(row, open, lane));
   const body = el("div", "min-w-0 flex-1");
 
   const top = el("div", "flex flex-wrap items-baseline gap-x-2 gap-y-1");
   const num = el("span", "num shrink-0 font-mono text-sm text-blue-600 dark:text-blue-400");
-  if (row.link) num.append(external(el("a", null, "#" + row.id + " ↗"), row));
+  if (row.link) num.append(external(el("a", null, "#" + row.id + " ↗"), row, lane));
   else num.textContent = "#" + row.id;
   // No flex-grow: title takes only the room its own text needs (shrinking,
   // via min-w-0, when that's not enough), so the stage chip sits right after
@@ -1046,7 +1102,7 @@ function itemRowFor(row, depth, now, open) {
     : el("span", "title min-w-0 wrap-anywhere font-medium text-neutral-900 dark:text-neutral-100", row.title);
   if (row.panel) {
     title.type = "button";
-    title.setAttribute("data-key", row.id + ":open");
+    title.setAttribute("data-key", rowKey(lane, row.id) + ":open");
     title.addEventListener("click", () => openPanel(row.id));
   }
   top.append(num, title);
@@ -1091,7 +1147,9 @@ function itemRowFor(row, depth, now, open) {
   body.append(top, bottom);
   main.append(body);
   li.append(main);
-  if (row.chat) li.append(actionFor(row));
+  // A context row's actions are on its own row, in its own lane — and a
+  // second menu under the same key would open the first.
+  if (row.chat && !row.context) li.append(actionFor(row));
   // Anywhere else on the row opens the panel too — never a click meant for
   // its own link, toggle, title button or menu.
   if (row.panel) {
@@ -1111,13 +1169,13 @@ function itemRowFor(row, depth, now, open) {
 // crowded the title out, so they live in the marks' tooltips and the link's
 // accessible name.
 // No link, no anchor: a row that goes nowhere must not look like it does.
-function artifactRowFor(row, depth, open, now) {
+function artifactRowFor(row, depth, open, now, lane) {
   const li = treeItem(row, depth, "flex items-center gap-2 py-1 pr-4 text-sm", open);
   // The padding is the link's own, so the whole band it lights up on hover
   // is what a click lands on; the negative margin puts the mark back in the
   // column an item's number takes at this depth.
   const line = row.link
-    ? external(el("a", "-mx-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-neutral-800 dark:focus-visible:outline-blue-400"), row)
+    ? external(el("a", "-mx-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-neutral-800 dark:focus-visible:outline-blue-400"), row, lane)
     : el("span", "flex min-w-0 flex-1 items-center gap-2 py-1.5");
   const kindIcon = kindMark(row);
   if (kindIcon) line.append(kindIcon);
@@ -1138,24 +1196,26 @@ function artifactRowFor(row, depth, open, now) {
     arrow.setAttribute("aria-hidden", "true");
     line.append(arrow);
   }
-  li.append(toggleSlot(row, open), line);
+  li.append(toggleSlot(row, open, lane), line);
   return li;
 }
 
 // Depth-first, drawing a row's children only while it is open. \`seen\` is the
-// cycle guard's second half: the server already draws each node once, and
-// this makes sure a board.json that somehow did not still cannot hang the tab.
+// cycle guard's second half, one per lane: the server already draws each node
+// once in a copy, and this makes sure a board.json that somehow did not still
+// cannot hang the tab. Shared across lanes, it drew a parent in the first lane
+// it was in and skipped it in every other.
 // Under a search, a row is drawn only if it matches, leads to a match, or
 // sits inside a matched row — whose children are drawn whole, so a matched
 // parent opens onto everything beneath it like any other row.
-function treeRows(rows, depth, seen, now, out, search, inMatch) {
+function treeRows(rows, depth, seen, now, out, search, inMatch, lane) {
   for (const row of rows) {
-    if (seen.has(row.id)) continue;
+    if (seen.has(rowKey(lane, row.id))) continue;
     if (!inMatch && !shows(row, search)) continue;
-    seen.add(row.id);
-    const open = row.children.length > 0 && openOf(row, search);
-    out.push(row.kind === "item" ? itemRowFor(row, depth, now, open) : artifactRowFor(row, depth, open, now));
-    if (open) treeRows(row.children, depth + 1, seen, now, out, search, inMatch || (search !== null && search.self.has(row.id)));
+    seen.add(rowKey(lane, row.id));
+    const open = row.children.length > 0 && openOf(row, search, lane);
+    out.push(row.kind === "item" ? itemRowFor(row, depth, now, open, lane) : artifactRowFor(row, depth, open, now, lane));
+    if (open) treeRows(row.children, depth + 1, seen, now, out, search, inMatch || (search !== null && search.self.has(row.id)), lane);
   }
   return out;
 }
@@ -1204,8 +1264,10 @@ function pageOf(view, route) {
   return route.workflow !== null && view.workflows.some((w) => w.id === route.workflow) ? route.workflow : null;
 }
 
+// The server's copies for this page: Needs You's are page null, and hold
+// only needs-you matches.
 function rootsOn(rows, page) {
-  return rows.filter((r) => (page === null ? r.lane === "needs-you" : r.pages.includes(page)));
+  return rows.filter((r) => r.page === page);
 }
 
 // The page the hash names, judged against the view last drawn: the one place a
@@ -1225,6 +1287,40 @@ function tagsOn(page) {
 function laneRoots(rows, page, lane, keep) {
   if (page === null && lane !== "needs-you") return null;
   return rootsOn(rows, page).filter((r) => r.lane === lane && keep(r));
+}
+
+// What a copy adds to its lane's count: its items filed there — never a
+// context row, nor an artifact, which comes with its item — or, for a
+// branch with no item at all, its root, drawn as one. Under a search, only
+// the items it leaves on screen, matched or inside a matched row: summing
+// whole copies, a search that drew one of Waiting's three matches read 3.
+// Open or closed does not matter; a collapsed match is still in the lane.
+function matchCount(copy, search) {
+  let n = !copy.context && copy.kind !== "item" ? 1 : 0;
+  const seen = new Set();
+  const walk = (row, inMatch) => {
+    if (seen.has(row.id)) return;
+    seen.add(row.id);
+    if (!inMatch && !shows(row, search)) return;
+    const kept = inMatch || !search || search.self.has(row.id);
+    if (kept && !row.context && row.kind === "item") n++;
+    for (const child of row.children) walk(child, inMatch || (search !== null && search.self.has(row.id)));
+  };
+  walk(copy, false);
+  return n;
+}
+
+// One lane of this page, drawn: its copies, its own search over them, its
+// own cycle guard, and its count. null where the page does not draw the
+// lane. \`drawn\` holds the rowKey of every row put on screen.
+function laneDraw(rows, page, lane, query, now) {
+  const all = laneRoots(rows, page, lane, () => true);
+  if (all === null) return null;
+  const search = searchOf(all, query);
+  const roots = all.filter((r) => shows(r, search));
+  const drawn = new Set();
+  const items = treeRows(roots, 0, drawn, now, [], search, false, lane);
+  return { roots, items, drawn, search, count: roots.reduce((n, r) => n + matchCount(r, search), 0) };
 }
 
 // A lane this page does not draw is hidden; so is one a search left empty,
@@ -1331,31 +1427,35 @@ function render(view) {
   setTitle(view.needsYou);
 
   forgetGone(view.rows);
-  const search = searchOf(view.rows, searchBox.value);
+  const search = normalise(searchBox.value) === "" ? null : searchBox.value;
   const started = search !== null && !searching;
   const ended = search === null && searching;
   searching = search !== null;
-  // One seen-set for the whole page: a node is drawn once, in one lane.
+  // Every row drawn, by rowKey, in every lane: each lane guards its own.
   const seen = new Set();
   let matched = 0;
-  const done = allSet(page, rootsOn(view.rows, page), search, view.listed);
+  // By lane, not page: a sent copy is moved to Waiting but stays on Needs You's page.
+  const home = laneRoots(view.rows, page, "needs-you", () => true);
+  const done = allSet(page, home, search, view.listed);
   const listing = listingShown(page, view.listed);
-  document.getElementById("all-set").hidden = allSetHidden(page, rootsOn(view.rows, page), search, view.listed);
+  document.getElementById("all-set").hidden = allSetHidden(page, home, search, view.listed);
   document.getElementById("listing").hidden = !listing;
   for (const lane of document.querySelectorAll("[data-lane]")) {
-    // Whole branches, filed by their root's lane — the server's cascade — and
-    // counted as branches, so a lane's number is how many things to look at.
-    // Needs You draws only its own lane; a workflow page draws every lane of its own roots.
-    const drawn = laneRoots(view.rows, page, lane.dataset.lane, (r) => shows(r, search));
-    const roots = drawn === null ? [] : drawn;
-    const items = treeRows(roots, 0, seen, now, [], search, false);
+    // The server's copies, each holding the items filed in this lane under
+    // their parents, and counted by those items, so a lane's number is how
+    // many things to look at. Needs You draws only its own lane; a workflow
+    // page draws every lane of its own copies.
+    const drawn = laneDraw(view.rows, page, lane.dataset.lane, searchBox.value, now);
+    const roots = drawn === null ? [] : drawn.roots;
+    const items = drawn === null ? [] : drawn.items;
+    if (drawn !== null) for (const key of drawn.drawn) seen.add(key);
     lane.querySelector("ul").replaceChildren(
       ...(items.length ? items : [el("li", "px-4 py-6 text-sm italic text-neutral-400 dark:text-neutral-600", "None")]),
     );
-    lane.querySelector(".lane-count").textContent = String(roots.length);
+    lane.querySelector(".lane-count").textContent = String(drawn === null ? 0 : drawn.count);
     // Without a query every lane stays, saying "None" when empty — a lane that
     // vanished would read as a fault. With one, a lane nothing matched is noise.
-    lane.hidden = laneHidden(drawn, search, done || listing);
+    lane.hidden = laneHidden(drawn === null ? null : roots, search, done || listing);
     // A match inside a closed Not admitted / Done lane would show only as a count.
     if (lane.tagName === "DETAILS") syncDetails(lane, search !== null && roots.length > 0, started, ended);
     matched += roots.length;
@@ -1559,17 +1659,19 @@ const replyButton = document.getElementById("panel-reply");
 const askButton = document.getElementById("panel-ask");
 const resolveButton = document.getElementById("panel-resolve");
 
+// A node, from the row it is filed in where there is one: only that copy
+// holds its pull requests and spec, and a parent's copy that shows it for
+// context would leave the panel's Artifacts empty.
 function findRow(rows, id) {
-  const seen = new Set();
-  const stack = [...rows];
-  while (stack.length) {
-    const row = stack.pop();
-    if (seen.has(row.id)) continue;
-    seen.add(row.id);
-    if (row.id === id) return row;
-    stack.push(...row.children);
-  }
-  return null;
+  let context = null;
+  let filed = null;
+  someRow(rows, (row) => {
+    if (row.id !== id) return false;
+    if (!row.context) { filed = row; return true; }
+    if (context === null) context = row;
+    return false;
+  });
+  return filed || context;
 }
 
 // The panel's row: an item the board still lists, with the paths the
@@ -2202,13 +2304,12 @@ function showPanel(id) {
   renderPanel();
 }
 
-// The panel's item, marked on its own row of the list — looked up by key,
-// since a render replaces every row.
+// The panel's item, marked on each of its rows — a parent is drawn in every
+// lane its children are in — looked up afresh, since a render replaces every row.
 function markSelected() {
   for (const li of document.querySelectorAll('[role="treeitem"][aria-selected="true"]')) li.removeAttribute("aria-selected");
-  const title = panelId === null ? null : byKey(panelId + ":open");
-  const li = title ? title.closest('[role="treeitem"]') : null;
-  if (li) li.setAttribute("aria-selected", "true");
+  if (panelId === null) return;
+  for (const li of document.querySelectorAll('[role="treeitem"][data-item="' + CSS.escape(panelId) + '"]')) li.setAttribute("aria-selected", "true");
 }
 
 // A row click: pushed onto the hash, so Back clears the panel's item and a

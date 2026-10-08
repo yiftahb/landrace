@@ -41,6 +41,31 @@ const view = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
 type Rows = ReturnType<typeof view>["rows"];
 const shape = (rows: Rows): unknown => rows.map((r) => (r.children.length ? [r.id, shape(r.children)] : r.id));
 const flatten = (rows: Rows): Rows => rows.flatMap((r) => [r, ...flatten(r.children)]);
+/** The root copies one page draws — `null` is Needs you — each once. */
+const on = (rows: Rows, page: string | null): Rows => rows.filter((r) => r.page === page);
+/** The workflow pages that draw `id` as a match, not as context, sorted. */
+const matchedOn = (rows: Rows, id: string): string[] =>
+  [...new Set(rows.flatMap((r) => (r.page !== null && flatten([r]).some((x) => x.id === id && !x.context) ? [r.page] : [])))].sort();
+/** A tree as `shape` draws it, a context row's id behind a `~`. */
+const marked = (rows: Rows): unknown =>
+  rows.map((r) => (r.context ? `~${r.id}` : r.id)).map((id, i) => {
+    const kids = rows[i]?.children ?? [];
+    return kids.length ? [id, marked(kids)] : id;
+  });
+
+/** Two workflows on one source: `a` owns what is labelled `a`, `b` what is labelled `b`. */
+const only = (label: string, name: string): Workflow => ({
+  ...workflow, name, eligible: [{ when: { "node.state.labels": { $in: [label] } }, else: `no ${label} label` }],
+});
+const A = only("a", "Alpha");
+const B = only("b", "beta");
+const TWO = [{ id: "a", workflow: A }, { id: "b", workflow: B }];
+const shared = (g: Graph) => ({
+  graphs: [g], sourceOf: new Map([["a", 0], ["b", 0]]),
+  claims: claimItems([{ id: "a", workflow: A, source: 0 }, { id: "b", workflow: B, source: 0 }], [g]),
+});
+const two = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
+  view(g, { workflows: TWO, listing: shared(g), ...over });
 
 describe("laneOf", () => {
   const row = (note: string, stage: string | null = "spec") => ({ item: "1", title: "t", stage, note });
@@ -285,10 +310,11 @@ describe("boardView: every relationship of an item", () => {
       },
     });
     const ten = flatten(both.rows).find((r) => r.id === "10");
-    expect(ten).toMatchObject({ title: "t10", workflow: "t", pages: ["t"] });
-    expect(flatten(both.rows).filter((r) => r.id === "10")).toHaveLength(1);
+    expect(ten).toMatchObject({ title: "t10", workflow: "t" });
+    expect(matchedOn(both.rows, "10")).toEqual(["t"]);
+    expect(flatten(on(both.rows, "t")).filter((r) => r.id === "10")).toHaveLength(1);
     // Closed, it is drawn where its own source's workflows are, not where another's relationship names it.
-    expect(flatten(both.rows).find((r) => r.id === "11")?.pages).toEqual(["t"]);
+    expect(matchedOn(both.rows, "11")).toEqual(["t"]);
   });
 
   // The panel keys each entry by type, direction and id, so an edge a source
@@ -451,9 +477,9 @@ describe("boardView: an item's panel", () => {
 
   it("names its panel's paths on every item — waiting, running, needing you or closed", () => {
     const running = new Map<string, Running>([["8", { stage: "spec", round: 1, model: null, effort: null, since: 1 }]]);
-    const rows = view(graph([
+    const rows = on(view(graph([
       item("7"), item("8"), item("9", {}, ["go", "lr:stage:blocked", "lr:blocked"]), item("10", { closed: "done" }),
-    ]), { running }).rows;
+    ]), { running }).rows, "t");
     // Drawn lane by lane: needs you, running, waiting, done.
     expect(rows.map((r) => r.panel?.conversation)).toEqual([
       "/items/9/conversation", "/items/8/conversation", "/items/7/conversation", "/items/10/conversation",
@@ -560,7 +586,7 @@ describe("boardView: the tree", () => {
 
   it("keeps a closed or dropped node, marked so the page can grey it", () => {
     const g = graph([item("1"), item("2", { closed: "dropped" }), item("3", { closed: "done" })], [edge("2", "1"), edge("3", "1")]);
-    const kids = view(g).rows[0]?.children;
+    const kids = view(g).rows.find((r) => r.lane === "discharged")?.children;
     expect(kids?.map((r) => [r.id, r.closed])).toEqual([["2", "dropped"], ["3", "done"]]);
   });
 
@@ -570,48 +596,53 @@ describe("boardView: the tree", () => {
       edge("2", "1"), edge("3", "1"),
     ]);
     const rows = view(g, { running }).rows;
-    expect(rows[0]?.children.map((r) => r.badge)).toEqual(["discharged", "discharged"]);
+    expect(rows.map((r) => [r.page, r.lane])).toEqual([["t", "waiting"], ["t", "discharged"]]);
+    expect(rows[1]?.children.map((r) => r.badge)).toEqual(["discharged", "discharged"]);
   });
 });
 
 describe("boardView: lanes", () => {
   const blocked = ["go", "lr:blocked"];
 
-  it("puts a branch whose child needs you in needs-you, and the child keeps its own badge", () => {
-    const rows = view(graph([item("1"), item("2", {}, blocked)], [edge("2", "1")])).rows;
-    expect(rows[0]).toMatchObject({ id: "1", lane: "needs-you", badge: "waiting" });
-    expect(rows[0]?.children[0]).toMatchObject({ id: "2", badge: "needs-you" });
+  /** Each copy `t`'s page draws: its lane, and its tree with context rows behind a `~`. */
+  const split = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
+    on(view(g, over).rows, "t").map((r) => [r.lane, marked([r])]);
+  const run: Running = { stage: "build", round: 1, model: null, effort: null, since: 5 };
+
+  it("files a child that needs you in needs-you under its parent as context, and the parent in its own lane", () => {
+    const g = graph([item("1"), item("2", {}, blocked)], [edge("2", "1")]);
+    expect(split(g)).toEqual([["needs-you", [["~1", ["2"]]]], ["waiting", ["1"]]]);
+    expect(on(view(g).rows, "t")[0]?.children[0]).toMatchObject({ id: "2", badge: "needs-you", context: false });
   });
 
-  it("raises a branch for a grandchild that needs you", () => {
+  it("files a grandchild in its own lane, the whole path to it context", () => {
     const g = graph([item("1"), item("2"), item("3", {}, blocked)], [edge("2", "1"), edge("3", "2")]);
-    expect(view(g).rows[0]?.lane).toBe("needs-you");
+    expect(split(g)).toEqual([["needs-you", [["~1", [["~2", ["3"]]]]]], ["waiting", [["1", ["2"]]]]]);
   });
 
-  it("puts a branch with a running child in running", () => {
-    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, effort: null, since: 5 }]]);
-    expect(view(graph([item("1"), item("2")], [edge("2", "1")]), { running }).rows[0]?.lane).toBe("running");
+  it("files a running child in running, and leaves it out of its parent's copy", () => {
+    const g = graph([item("1"), item("2")], [edge("2", "1")]);
+    expect(split(g, { running: new Map([["2", run]]) })).toEqual([["running", [["~1", ["2"]]]], ["waiting", ["1"]]]);
   });
 
-  it("ranks needs-you over running over elsewhere over waiting, whichever sub-branch they sit in", () => {
-    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, effort: null, since: 5 }]]);
+  it("gives each sub-branch's items their own lanes, never one lane for the branch", () => {
     const g = graph([item("1"), item("2"), item("3"), item("4", {}, blocked)], [edge("2", "1"), edge("3", "1"), edge("4", "3")]);
-    expect(view(g, { running }).rows[0]?.lane).toBe("needs-you");
-    expect(view(graph([item("1"), item("2"), item("3")], [edge("2", "1"), edge("3", "1")]), { running }).rows[0]?.lane)
-      .toBe("running");
+    expect(split(g, { running: new Map([["2", run]]) })).toEqual([
+      ["needs-you", [["~1", [["~3", ["4"]]]]]], ["running", [["~1", ["2"]]]], ["waiting", [["1", ["3"]]]],
+    ]);
   });
 
-  it("never lets a closed item raise its branch, whatever its stale labels say", () => {
+  it("files a closed child in done, whatever its stale labels say", () => {
     const g = graph([item("1"), item("2", { closed: "done" }, blocked), item("3", { closed: "dropped" }, blocked)], [
       edge("2", "1"), edge("3", "1"),
     ]);
-    const rows = view(g).rows;
-    expect(rows[0]).toMatchObject({ lane: "waiting" });
+    expect(split(g)).toEqual([["waiting", ["1"]], ["discharged", [["~1", ["2", "3"]]]]]);
   });
 
-  it("still raises a closed parent's branch for an open child that needs you", () => {
+  it("draws a closed parent as context over an open child that needs you, and itself in done", () => {
     const g = graph([item("1", { closed: "done" }), item("2", {}, blocked)], [edge("2", "1")]);
-    expect(view(g).rows[0]).toMatchObject({ badge: "discharged", lane: "needs-you" });
+    expect(split(g)).toEqual([["needs-you", [["~1", ["2"]]]], ["discharged", ["1"]]]);
+    expect(on(view(g).rows, "t")[0]).toMatchObject({ badge: "discharged", context: true });
   });
 
   it("puts an item with no sub-items in the lane of its own badge", () => {
@@ -620,22 +651,24 @@ describe("boardView: lanes", () => {
     const g = graph([
       item("1", {}, blocked), item("2"), item("3"), item("4"), item("5", {}, []), item("6", { closed: "done" }),
     ]);
-    const rows = view(g, { running, elsewhere: new Map([["3", other]]) }).rows;
+    const rows = on(view(g, { running, elsewhere: new Map([["3", other]]) }).rows, "t");
     expect(rows.map((r) => [r.id, r.lane, r.badge])).toEqual([
       ["1", "needs-you", "needs-you"], ["2", "running", "running"], ["3", "elsewhere", "elsewhere"],
       ["4", "waiting", "waiting"], ["5", "not-admitted", "not-admitted"], ["6", "discharged", "discharged"],
     ]);
   });
 
-  it("files a branch under Held elsewhere for a grandchild held elsewhere, whatever its root's own badge", () => {
+  it("files a grandchild held elsewhere in Held elsewhere, its root and parent context there", () => {
     const other: Held = { item: "3", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
     const g = graph([item("1", {}, []), item("2", {}, []), item("3")], [edge("2", "1"), edge("3", "2")]);
-    expect(view(g, { elsewhere: new Map([["3", other]]) }).rows[0]).toMatchObject({ badge: "not-admitted", lane: "elsewhere" });
+    expect(split(g, { elsewhere: new Map([["3", other]]) })).toEqual([
+      ["elsewhere", [["~1", [["~2", ["3"]]]]]], ["not-admitted", [["1", ["2"]]]],
+    ]);
   });
 
-  it("never lets an artifact raise a branch", () => {
+  it("files an artifact with its item, never in a lane of its own", () => {
     const g = graph([item("1", {}, []), pr("pr-9")], [edge("pr-9", "1", "implements")]);
-    expect(view(g).rows[0]).toMatchObject({ lane: "not-admitted" });
+    expect(split(g)).toEqual([["not-admitted", [["1", ["pr-9"]]]]]);
   });
 
   it("puts a branch with no item in it in waiting while open, and in discharged once closed", () => {
@@ -645,7 +678,7 @@ describe("boardView: lanes", () => {
 
   it("gives a lane only to a root: a nested row is drawn in its root's", () => {
     const g = graph([item("1"), item("2", {}, blocked), pr("pr-9")], [edge("2", "1"), edge("pr-9", "2", "implements")]);
-    const nested = flatten(view(g).rows).filter((r) => r.id !== "1");
+    const nested = flatten(on(view(g).rows, "t")).filter((r) => r.id !== "1");
     expect(nested.map((r) => [r.id, r.lane])).toEqual([["2", null], ["pr-9", null]]);
   });
 });
@@ -665,7 +698,7 @@ describe("boardView: the order within a lane", () => {
       item("1", { updatedAt: 1 }, blocked), item("2", { priority: 1, updatedAt: 5 }, blocked),
       item("3", { priority: 0, updatedAt: 9 }, blocked),
     ]);
-    expect(ids(view(g).rows)).toEqual(["3", "2", "1"]);
+    expect(ids(on(view(g).rows, "t"))).toEqual(["3", "2", "1"]);
   });
 
   it("puts the least recently updated first within a priority in Needs you, and the undated below both", () => {
@@ -673,7 +706,7 @@ describe("boardView: the order within a lane", () => {
       item("4", { priority: 1, updatedAt: 30 }, blocked), item("5", { priority: 1 }, blocked),
       item("6", { priority: 1, updatedAt: 10 }, blocked), item("7", { updatedAt: 2 }, blocked), item("8", {}, blocked),
     ]);
-    expect(ids(view(g).rows)).toEqual(["6", "4", "5", "7", "8"]);
+    expect(ids(on(view(g).rows, "t"))).toEqual(["6", "4", "5", "7", "8"]);
   });
 
   const held = (id: string): Held => ({ item: id, holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" });
@@ -695,7 +728,7 @@ describe("boardView: the order within a lane", () => {
     expect(ids(view(graph([item("10", { updatedAt: 5 }), item("9", { updatedAt: 5 })])).rows)).toEqual(["9", "10"]);
     expect(ids(view(graph([item("10"), item("9")])).rows)).toEqual(["9", "10"]);
     const needs = graph([item("10", { priority: 2, updatedAt: 5 }, blocked), item("9", { priority: 2, updatedAt: 5 }, blocked)]);
-    expect(ids(view(needs).rows)).toEqual(["9", "10"]);
+    expect(ids(on(view(needs).rows, "t"))).toEqual(["9", "10"]);
   });
 
   it("orders a Waiting branch's children newest first at every depth, priority ignored", () => {
@@ -708,24 +741,26 @@ describe("boardView: the order within a lane", () => {
 
   it("orders a Needs you branch's children by priority, then oldest first, at every depth", () => {
     const g = graph([
-      item("1", {}, blocked), item("2", { priority: 1, updatedAt: 10 }), item("3", { priority: 0, updatedAt: 50 }),
-      item("4", { priority: 1, updatedAt: 5 }), item("5", { updatedAt: 1 }),
-      item("6", { updatedAt: 9 }), item("7", { priority: 3, updatedAt: 99 }),
+      item("1", {}, blocked), item("2", { priority: 1, updatedAt: 10 }, blocked), item("3", { priority: 0, updatedAt: 50 }, blocked),
+      item("4", { priority: 1, updatedAt: 5 }, blocked), item("5", { updatedAt: 1 }, blocked),
+      item("6", { updatedAt: 9 }, blocked), item("7", { priority: 3, updatedAt: 99 }, blocked),
     ], [edge("2", "1"), edge("3", "1"), edge("4", "1"), edge("5", "1"), edge("6", "3"), edge("7", "3")]);
-    expect(shape(view(g).rows)).toEqual([["1", [["3", ["7", "6"]], "4", "2", "5"]]]);
+    expect(shape(on(view(g).rows, "t"))).toEqual([["1", [["3", ["7", "6"]], "4", "2", "5"]]]);
   });
 
-  it("places a root a child lifted into Needs you by the root's own priority and update time, not the child's", () => {
+  it("places a root whose child needs you by that child's priority and update time, not the root's own", () => {
     const g = graph([
       item("10", { priority: 2, updatedAt: 1 }), item("2", { priority: 0, updatedAt: 0 }, blocked),
       item("3", { priority: 1, updatedAt: 100 }, blocked), item("4", { priority: 2, updatedAt: 50 }, blocked),
     ], [edge("2", "10")]);
-    expect(view(g).rows.map((r) => [r.id, r.lane])).toEqual([["3", "needs-you"], ["10", "needs-you"], ["4", "needs-you"]]);
+    expect(on(view(g).rows, "t").map((r) => [r.id, r.lane])).toEqual([
+      ["10", "needs-you"], ["3", "needs-you"], ["4", "needs-you"], ["10", "waiting"],
+    ]);
   });
 
   it("draws the lanes most urgent first, whatever their rows' update times", () => {
     const g = graph([item("1", { closed: "done", updatedAt: 99 }), item("2", { updatedAt: 50 }), item("3", { updatedAt: 1 }, blocked)]);
-    expect(view(g).rows.map((r) => [r.id, r.lane])).toEqual([["3", "needs-you"], ["2", "waiting"], ["1", "discharged"]]);
+    expect(on(view(g).rows, "t").map((r) => [r.id, r.lane])).toEqual([["3", "needs-you"], ["2", "waiting"], ["1", "discharged"]]);
   });
 });
 
@@ -796,7 +831,7 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "clear", "closed", "createdAt", "effort", "facts", "goto", "id", "kind", "lane", "link", "model", "note", "pages", "panel",
+      "badge", "chat", "children", "clear", "closed", "context", "createdAt", "effort", "facts", "goto", "id", "kind", "lane", "link", "model", "note", "page", "panel",
       "priority", "related", "retry", "round", "screened", "since", "stage", "stale", "system", "tag", "title", "updatedAt", "workflow",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
@@ -819,7 +854,7 @@ describe("boardView: rows", () => {
   });
 
   it("badges an item from its labels otherwise", () => {
-    const rows = view(graph([item("1", {}, ["go", "lr:blocked"]), item("2", {}, [])])).rows;
+    const rows = on(view(graph([item("1", {}, ["go", "lr:blocked"]), item("2", {}, [])])).rows, "t");
     expect(rows.map((r) => [r.id, r.badge])).toEqual([["1", "needs-you"], ["2", "not-admitted"]]);
   });
 
@@ -911,7 +946,7 @@ describe("createBoard", () => {
     const board = shell(() => 0);
     const blocked = ["go", "lr:stage:blocked", "lr:blocked"];
     const listed = graph([item("1", {}, blocked), item("2", {}, blocked)]);
-    const stale = async () => (await board.view()).rows.map((r) => [r.id, r.badge, r.stale]);
+    const stale = async () => on((await board.view()).rows, "t").map((r) => [r.id, r.badge, r.stale]);
     board.list(listingOf(listed));
     expect(await stale()).toEqual([["1", "needs-you", false], ["2", "needs-you", false]]);
     board.observe({ name: "step.started", item: "1", stage: "spec", round: 1 });
@@ -1062,7 +1097,7 @@ describe("the board over several workflows", () => {
     const rows = several(graph([item("11", {}, both), item("12", {}, both), item("13", {}, both), item("14", {}, ["lr:auto"])]),
       graph([item("14", {}, ["lr:auto"])]), {
         running: new Map([["11", run], ["14", run]]), paired: new Map([["12", pairing]]), elsewhere: new Map([["13", other]]),
-      }).rows;
+      }).rows.filter((r) => r.page === null);
     expect(rows.map((r) => [r.id, r.badge, r.note])).toEqual([
       ["11", "needs-you", "claimed by fast and main"], ["12", "needs-you", "claimed by fast and main"],
       ["13", "needs-you", "claimed by fast and main"], ["14", "needs-you", "reported by the sources of fast, gl and main"],
@@ -1173,30 +1208,104 @@ describe("the board over several workflows", () => {
   });
 });
 
+/*
+ * An item is filed in the lane of its own badge, never its subtree's most
+ * urgent: one tree drawn as a block put every waiting and done child of an
+ * epic under Needs you, with Waiting and Done left empty. A root is drawn in
+ * each lane it holds a match in, with only those matches and their path.
+ */
+describe("boardView: a tree split across lanes", () => {
+  const done = { closed: "done" as const };
+  // An epic no workflow claims; under it a parent `a` owns, waiting; under
+  // that two children needing the person, two waiting, one done, and one `b` owns.
+  const TREE = graph([
+    item("E", {}, ["epic"]), item("P", {}, ["a"]), pr("pr-P"),
+    item("N1", {}, ["a", "lr:stage:spec-human-review"]), pr("pr-N1"),
+    item("N2", {}, ["a", "lr:blocked"]),
+    item("W1", {}, ["a"]), pr("pr-W1"), item("W2", {}, ["a"]),
+    item("D", done, ["a", "lr:stage:done"]),
+    item("X", {}, ["b", "lr:stage:spec-human-review"]),
+  ], [
+    edge("P", "E"), edge("pr-P", "P", "implements"),
+    edge("N1", "P"), edge("pr-N1", "N1", "implements"), edge("N2", "P"),
+    edge("W1", "P"), edge("pr-W1", "W1", "implements"), edge("W2", "P"), edge("D", "P"), edge("X", "P"),
+  ]);
+  const copies = (rows: Rows) => rows.map((r) => [r.page, r.lane, r.id]);
+
+  it("draws the root in each lane it holds a match in, each copy with only its matches and their path", () => {
+    const a = on(two(TREE).rows, "a");
+    expect(copies(a)).toEqual([["a", "needs-you", "E"], ["a", "waiting", "E"], ["a", "not-admitted", "E"], ["a", "discharged", "E"]]);
+    expect(a.map((r) => marked([r]))).toEqual([
+      [["~E", [["~P", [["N1", ["pr-N1"]], "N2"]]]]],
+      [["~E", [["P", ["pr-P", ["W1", ["pr-W1"]], "W2"]]]]],
+      ["E"],
+      [["~E", [["~P", ["D"]]]]],
+    ]);
+  });
+
+  it("leaves another workflow's matches off a workflow's page", () => {
+    const b = on(two(TREE).rows, "b");
+    expect(copies(b)).toEqual([["b", "needs-you", "E"], ["b", "not-admitted", "E"]]);
+    expect(marked([b[0]!])).toEqual([["~E", [["~P", ["X"]]]]]);
+  });
+
+  it("draws only needs-you matches on Needs you, every workflow's, under their parents", () => {
+    const home = on(two(TREE).rows, null);
+    expect(copies(home)).toEqual([[null, "needs-you", "E"]]);
+    expect(marked(home)).toEqual([["~E", [["~P", [["N1", ["pr-N1"]], "N2", "X"]]]]]);
+  });
+
+  it("counts needs-you matches, never roots or context rows, overall and per workflow", () => {
+    const v = two(TREE);
+    expect(v.needsYou).toBe(3);
+    expect(v.workflows.map((w) => [w.id, w.needsYou])).toEqual([["a", 2], ["b", 1]]);
+  });
+
+  it("brings a match's artifacts with it, and leaves a context row's behind", () => {
+    const a = on(two(TREE).rows, "a");
+    const ids = (r: Rows[number] | undefined) => flatten(r ? [r] : []).map((x) => x.id);
+    expect(ids(a[0])).toContain("pr-N1");
+    expect(ids(a[0])).not.toContain("pr-P");
+    expect(ids(a[1])).toContain("pr-P");
+    expect(ids(a[3])).not.toContain("pr-P");
+  });
+
+  it("keeps a branch with no item in it where it was: waiting while open, done once closed, on every page that lists it", () => {
+    const v = two(graph([pr("pr-1"), pr("pr-2", done)]));
+    expect(copies(v.rows)).toEqual([["a", "waiting", "pr-1"], ["b", "waiting", "pr-1"], ["a", "discharged", "pr-2"], ["b", "discharged", "pr-2"]]);
+    expect(v.rows.every((r) => !r.context)).toBe(true);
+  });
+
+  it("orders a lane's copies by their best match, never by the root's own fields", () => {
+    const blocked = ["go", "lr:blocked"];
+    // Root 1 is the more urgent and the newer itself, but only context in the lane read.
+    const g = graph([
+      item("1", { priority: 0 }), item("2"),
+      item("11", { priority: 3 }, blocked), item("12", { priority: 1 }, blocked),
+    ], [edge("11", "1"), edge("12", "2")]);
+    expect(on(view(g).rows, "t").filter((r) => r.lane === "needs-you").map((r) => [r.id, r.children.map((k) => k.id)]))
+      .toEqual([["2", ["12"]], ["1", ["11"]]]);
+    const g2 = graph([
+      item("1", { priority: 0, updatedAt: 999 }, blocked), item("2", {}, blocked),
+      item("13", { updatedAt: 1 }), item("14", { updatedAt: 50 }),
+    ], [edge("13", "1"), edge("14", "2")]);
+    expect(on(view(g2).rows, "t").filter((r) => r.lane === "waiting").map((r) => r.id)).toEqual(["2", "1"]);
+  });
+});
+
 describe("the pages a branch is drawn on", () => {
-  const only = (label: string, name: string): Workflow => ({
-    ...workflow, name, eligible: [{ when: { "node.state.labels": { $in: [label] } }, else: `no ${label} label` }],
-  });
-  const A = only("a", "Alpha");
-  const B = only("b", "beta");
-  const TWO = [{ id: "a", workflow: A }, { id: "b", workflow: B }];
-  /** Both workflows on one source. */
-  const shared = (g: Graph) => ({
-    graphs: [g], sourceOf: new Map([["a", 0], ["b", 0]]),
-    claims: claimItems([{ id: "a", workflow: A, source: 0 }, { id: "b", workflow: B, source: 0 }], [g]),
-  });
-  const two = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
-    view(g, { workflows: TWO, listing: shared(g), ...over });
 
   it("draws an owned item on its owner's page alone", () => {
     const v = two(graph([item("1", {}, ["a"])]));
-    expect(v.rows.map((r) => [r.id, r.pages])).toEqual([["1", ["a"]]]);
+    expect(v.rows.map((r) => [r.id, r.page])).toEqual([["1", "a"]]);
   });
 
   it("draws a claim conflict on both claimants' pages, and counts it once in Needs You", () => {
     const v = two(graph([item("1", {}, ["a", "b"])]));
-    expect(v.rows[0]?.pages).toEqual(["a", "b"]);
-    expect(v.rows[0]?.lane).toBe("needs-you");
+    expect(matchedOn(v.rows, "1")).toEqual(["a", "b"]);
+    // One copy per page, Needs you's first: a test reading the board over the
+    // daemon counts these by id, not by row.
+    expect(v.rows.map((r) => [r.page, r.lane])).toEqual([[null, "needs-you"], ["a", "needs-you"], ["b", "needs-you"]]);
     expect(v.needsYou).toBe(1);
     expect(v.workflows).toEqual([{ id: "a", name: "Alpha", needsYou: 1 }, { id: "b", name: "beta", needsYou: 1 }]);
   });
@@ -1207,16 +1316,17 @@ describe("the pages a branch is drawn on", () => {
     expect(conflict?.panel?.reply).toBeNull();
     const g1 = graph([item("1", {}, ["a"])]);
     const g2 = graph([item("1", {}, ["b"])]);
-    const clash = view(g1, {
+    const v2 = view(g1, {
       workflows: TWO,
       listing: {
         graphs: [g1, g2], sourceOf: new Map([["a", 0], ["b", 1]]),
         claims: claimItems([{ id: "a", workflow: A, source: 0 }, { id: "b", workflow: B, source: 1 }], [g1, g2]),
       },
-    }).rows[0];
+    });
+    const clash = v2.rows[0];
     expect(clash?.lane).toBe("needs-you");
     expect(clash?.panel).toBeNull();
-    expect(clash?.pages).toEqual(["a", "b"]);
+    expect(matchedOn(v2.rows, "1")).toEqual(["a", "b"]);
   });
 
   it("withholds the panel of every id two sources list and no workflow owns, closed or not", () => {
@@ -1233,7 +1343,7 @@ describe("the pages a branch is drawn on", () => {
     expect(closedBoth.rows[0]?.panel).toBeNull();
     // Open and unclaimed in one, closed in the other.
     const half = view(graph([]), sources(graph([item("41", {}, ["neither"])]), graph([item("41", { closed: "done" }, ["b"])])));
-    expect(half.rows.map((r) => [r.id, r.panel])).toEqual([["41", null]]);
+    expect(on(half.rows, "a").map((r) => [r.id, r.panel])).toEqual([["41", null]]);
     // An owned item, listed once, keeps everything.
     const owned = two(graph([item("42", {}, ["a"])])).rows[0];
     expect(owned?.panel?.activity).toBe("/items/42/activity");
@@ -1249,8 +1359,9 @@ describe("the pages a branch is drawn on", () => {
     const v = two(g);
     expect(v.rows[0]?.id).toBe("1");
     expect(v.rows[0]?.lane).toBe("needs-you");
-    // Drawing is the branch's union; counting is each row's own.
-    expect(v.rows[0]?.pages).toEqual(["a", "b"]);
+    // The epic is drawn on Beta's page as the path to its sub-issue, and counted nowhere.
+    expect(on(v.rows, "b").map((r) => marked([r]))).toEqual([[["~1", ["2"]]], ["1"]]);
+    expect(matchedOn(v.rows, "1")).toEqual(["a", "b"]);
     expect(v.workflows).toEqual([{ id: "a", name: "Alpha", needsYou: 0 }, { id: "b", name: "beta", needsYou: 1 }]);
     expect(v.needsYou).toBe(1);
   });
@@ -1262,27 +1373,29 @@ describe("the pages a branch is drawn on", () => {
     );
     const v = two(g);
     expect(v.rows[0]?.lane).toBe("needs-you");
-    expect(v.rows[0]?.pages).toEqual(["a", "b"]);
+    expect(matchedOn(v.rows, "1")).toEqual(["a"]);
+    expect(matchedOn(v.rows, "2")).toEqual(["b"]);
     expect(v.workflows).toEqual([{ id: "a", name: "Alpha", needsYou: 0 }, { id: "b", name: "beta", needsYou: 1 }]);
   });
 
   it("draws an unclaimed item on every page whose source lists it", () => {
     const v = two(graph([item("1", {}, ["neither"])]));
     expect(v.rows[0]?.lane).toBe("not-admitted");
-    expect(v.rows[0]?.pages).toEqual(["a", "b"]);
+    expect(matchedOn(v.rows, "1")).toEqual(["a", "b"]);
   });
 
   it("draws a closed item on the page whose eligibility admits it, else on every page that lists it", () => {
     const v = two(graph([item("1", { closed: "done" }, ["b"]), item("2", { closed: "done" }, ["neither"])]));
-    const pages = new Map(v.rows.map((r) => [r.id, r.pages]));
-    expect(pages.get("1")).toEqual(["b"]);
-    expect(pages.get("2")).toEqual(["a", "b"]);
+    expect(matchedOn(v.rows, "1")).toEqual(["b"]);
+    expect(matchedOn(v.rows, "2")).toEqual(["a", "b"]);
   });
 
-  it("draws a branch on every page any row in it belongs to, and nested rows carry none", () => {
+  it("draws a parent on its own page, and on a child's page only as the path to that child", () => {
     const v = two(graph([item("1", {}, ["a"]), item("2", {}, ["b"])], [edge("2", "1")]));
-    expect(v.rows.map((r) => [r.id, r.pages])).toEqual([["1", ["a", "b"]]]);
-    expect(v.rows[0]?.children[0]?.pages).toEqual([]);
+    expect(v.rows.map((r) => [r.id, r.page])).toEqual([["1", "a"], ["1", "b"]]);
+    expect(marked(on(v.rows, "a"))).toEqual(["1"]);
+    expect(marked(on(v.rows, "b"))).toEqual([["~1", ["2"]]]);
+    expect(on(v.rows, "b")[0]?.children[0]?.page).toBeNull();
   });
 
   it("counts a workflow with nothing needing the person as zero", () => {
@@ -1323,17 +1436,16 @@ describe("the pages a branch is drawn on", () => {
   it("counts a needs-you item on its owner's page alone", () => {
     const v = two(graph([item("1", {}, ["a", "lr:stage:spec-human-review"])]));
     expect(v.rows[0]?.lane).toBe("needs-you");
-    expect(v.rows[0]?.pages).toEqual(["a"]);
+    expect(matchedOn(v.rows, "1")).toEqual(["a"]);
     expect(v.workflows.map((w) => [w.id, w.needsYou])).toEqual([["a", 1], ["b", 0]]);
     expect(v.needsYou).toBe(1);
   });
 
-  it("draws an artifact with no item on every page whose source lists it, and sorts a branch's pages", () => {
-    // Union built in reverse: the root is b's, its child a's.
+  it("draws an artifact with no item on every page whose source lists it, and one with an item on its item's", () => {
     const v = two(graph([item("1", {}, ["b"]), item("2", {}, ["a"]), pr("pr-1")], [edge("2", "1"), edge("pr-1", "1", "implements")]));
-    expect(v.rows[0]?.pages).toEqual(["a", "b"]);
-    const only = view(graph([pr("pr-1")]), { workflows: TWO, listing: shared(graph([pr("pr-1")])) });
-    expect(only.rows[0]?.pages).toEqual(["a", "b"]);
+    expect(matchedOn(v.rows, "pr-1")).toEqual(["b"]);
+    const alone = view(graph([pr("pr-1")]), { workflows: TWO, listing: shared(graph([pr("pr-1")])) });
+    expect(matchedOn(alone.rows, "pr-1")).toEqual(["a", "b"]);
   });
 
   // An item's pull request and spec page belong to no workflow of their own;
@@ -1345,9 +1457,8 @@ describe("the pages a branch is drawn on", () => {
       [item("1", done, ["a"]), pr("pr-1", done), item("2", {}, ["b"]), pr("pr-2")],
       [edge("pr-1", "1", "implements"), edge("pr-2", "2", "implements")],
     ));
-    const pages = new Map(v.rows.map((r) => [r.id, r.pages]));
-    expect(pages.get("1")).toEqual(["a"]);
-    expect(pages.get("2")).toEqual(["b"]);
+    expect(matchedOn(v.rows, "pr-1")).toEqual(["a"]);
+    expect(matchedOn(v.rows, "pr-2")).toEqual(["b"]);
   });
 
   it("leaves the tag off in a workspace of one workflow", () => {
@@ -1374,7 +1485,7 @@ describe("a finished item, on the shipped workflows' pages", () => {
       graphs: [g], sourceOf: new Map(shipped.map((w) => [w.id, 0])),
       claims: claimItems(shipped.map((w) => ({ ...w, source: 0 })), [g]),
     };
-    return view(g, { workflows: shipped, listing }).rows.map((r) => [r.id, r.pages]);
+    return [["1", matchedOn(view(g, { workflows: shipped, listing }).rows, "1")]];
   };
 
   it.each(["done", "dropped"] as const)("files a closed lr:auto and lr:fast item (%s) on fastlane's page alone", (closed) => {
