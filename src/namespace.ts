@@ -2410,13 +2410,22 @@ export interface SlotAsk {
 }
 
 /**
+ * The tick a run belongs to: it waits for the runs `track` hands it, and
+ * prints the rows they write.
+ */
+export interface TickWait {
+  track: (run: Promise<void>) => void;
+  rows: Map<string, TickRow>;
+}
+
+/**
  * An item a check turned away for want of a slot. `start` checks it again,
- * holding the slot just freed for it; `track` hands that run to the tick
- * whose run freed the slot, which waits for it.
+ * holding the slot just freed for it, as a run of `by`: the tick whose run
+ * freed the slot, which waits for it and prints its row.
  */
 export interface TurnedAway {
   node: Node;
-  start: (track: (run: Promise<void>) => void) => void;
+  start: (by: TickWait) => void;
 }
 
 /**

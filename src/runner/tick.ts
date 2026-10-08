@@ -16,6 +16,7 @@ import type {
   Snapshot,
   Source,
   TickRow,
+  TickWait,
   TurnedAway,
   WorkflowRuntime,
   WorkspaceListing,
@@ -364,22 +365,22 @@ function askSlot(runtime: WorkspaceRuntime, node: Node): Promise<boolean> {
  * checked again holding it. Nothing once the loop is stopping: no new run
  * starts after Ctrl-C.
  */
-function drain(runtime: WorkspaceRuntime, track: (run: Promise<void>) => void): void {
+function drain(runtime: WorkspaceRuntime, by: TickWait): void {
   while (runtime.agents < runtime.concurrency && !runtime.stop.signal.aborted) {
     const next = runtime.turnedAway.shift();
     if (next === undefined) return;
     runtime.agents += 1;
-    next.start(track);
+    next.start(by);
   }
 }
 
 /** Keep `turnedAway` most urgent first, one entry an item, and hand it a slot if one came free meanwhile. */
-function turnAway(runtime: WorkspaceRuntime, entry: TurnedAway, track: (run: Promise<void>) => void): void {
+function turnAway(runtime: WorkspaceRuntime, entry: TurnedAway, by: TickWait): void {
   const queue = runtime.turnedAway.filter((t) => t.node.id !== entry.node.id);
   const at = queue.findIndex((t) => compareWork(entry.node, t.node) < 0);
   queue.splice(at === -1 ? queue.length : at, 0, entry);
   runtime.turnedAway = queue;
-  drain(runtime, track);
+  drain(runtime, by);
 }
 
 /**
@@ -438,9 +439,12 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
   const started = Date.now();
   const rows = new Map<string, TickRow>();
   const runs = new Set<Promise<void>>();
-  const track = (run: Promise<void>): void => {
-    runs.add(run);
-    void run.finally(() => runs.delete(run));
+  const tick: TickWait = {
+    track: (run) => {
+      runs.add(run);
+      void run.finally(() => runs.delete(run));
+    },
+    rows,
   };
   let arrived = new Map<string, SeenAt>();
 
@@ -448,9 +452,11 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
    * Converge one item under its lock; resolves once its check is over — the
    * converge ended, or it took a slot and carries on. `holding` is a slot
    * already taken for it: an item turned away, started again by the run that
-   * freed one. `track` is the tick that waits for the run.
+   * freed one. `by` is the tick that waits for the run and prints its row,
+   * which is not this one when a slot an earlier tick's run freed started it:
+   * this tick may have printed long ago.
    */
-  const work = (node: Node, w: WorkflowRuntime, holding: boolean, track: (run: Promise<void>) => void): Promise<void> =>
+  const work = (node: Node, w: WorkflowRuntime, holding: boolean, by: TickWait): Promise<void> =>
     new Promise<void>((checked) => {
       const item = node.id;
       const handedOn = holding;
@@ -470,7 +476,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
           if (!holding) return;
           holding = false;
           runtime.agents -= 1;
-          drain(runtime, track);
+          drain(runtime, by);
         },
       };
       const tell = (result: ConvergeResult | "locked"): void => {
@@ -513,16 +519,16 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
           if (refused !== null) {
             // Owed, not waiting on anyone: no person is told of it.
             log("item.skipped", { item, workflow: w.id, reason: refused });
-            rows.set(item, { item, workflow: w.id, outcome: refused });
-            turnAway(runtime, { node, start: (by) => void work(node, w, true, by) }, track);
+            by.rows.set(item, { item, workflow: w.id, outcome: refused });
+            turnAway(runtime, { node, start: (next) => void work(node, w, true, next) }, by);
             return;
           }
-          rows.set(item, { item, workflow: w.id, outcome: outcomeOf(result) });
+          by.rows.set(item, { item, workflow: w.id, outcome: outcomeOf(result) });
           tell(result);
         } catch (e) {
           if (isLocked(e)) {
             log("lock.denied", { item, kind: "tick" });
-            rows.set(item, { item, workflow: w.id, outcome: oneLine(messageOf(e)) });
+            by.rows.set(item, { item, workflow: w.id, outcome: oneLine(messageOf(e)) });
             tell("locked");
             return;
           }
@@ -531,14 +537,14 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
           // one rejecting with a shape that throws on a property read, which would
           // take the whole tick down from inside the handler meant to report it.
           log("item.skipped", { item, reason: messageOf(e) });
-          rows.set(item, { item, workflow: w.id, outcome: `error: ${oneLine(messageOf(e))}` });
+          by.rows.set(item, { item, workflow: w.id, outcome: `error: ${oneLine(messageOf(e))}` });
         } finally {
           slot.give();
           // After withLock has released: whoever waits on this may take the lock.
           settle();
         }
       })();
-      track(run);
+      by.track(run);
       void run.finally(checked);
     });
 
@@ -631,7 +637,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
       // beside the old. Bounded by the old run honouring the abort it was just
       // sent, as Ctrl-C's own wait for every run is.
       await moved.get(node.id);
-      await work(node, w, false, track);
+      await work(node, w, false, tick);
     });
   } finally {
     runtime.checking = false;

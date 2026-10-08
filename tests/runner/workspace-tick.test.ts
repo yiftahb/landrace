@@ -487,7 +487,12 @@ describe("tick.concurrency across overlapping ticks", () => {
     await until(() => a.runs.length === 2, "item 1's freed slot to start the most urgent item");
     expect([...w.runtime.running.keys()]).toEqual(["3"]);
     h.all();
-    expect((await first).find((r) => r.item === "2")).toEqual({ item: "2", workflow: "main", outcome: waiting });
+    // The tick that waits for a run prints its outcome: the first tick, whose
+    // run freed the slot, and not the one that turned the item away and has
+    // long since printed.
+    const rows = await first;
+    expect(rows.find((r) => r.item === "2")?.outcome).toMatch(/^terminal/);
+    expect(rows.find((r) => r.item === "3")?.outcome).toMatch(/^terminal/);
     expect(a.runs).toHaveLength(3);
     expect(w.runtime.agents).toBe(0);
   });
