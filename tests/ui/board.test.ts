@@ -604,41 +604,45 @@ describe("boardView: the tree", () => {
 describe("boardView: lanes", () => {
   const blocked = ["go", "lr:blocked"];
 
-  it("puts a branch whose child needs you in needs-you, and the child keeps its own badge", () => {
-    const rows = view(graph([item("1"), item("2", {}, blocked)], [edge("2", "1")])).rows;
-    expect(rows[0]).toMatchObject({ id: "1", lane: "needs-you", badge: "waiting" });
-    expect(rows[0]?.children[0]).toMatchObject({ id: "2", badge: "needs-you" });
+  /** Each copy `t`'s page draws: its lane, and its tree with context rows behind a `~`. */
+  const split = (g: Graph, over: Partial<Parameters<typeof boardView>[0]> = {}) =>
+    on(view(g, over).rows, "t").map((r) => [r.lane, marked([r])]);
+  const run: Running = { stage: "build", round: 1, model: null, effort: null, since: 5 };
+
+  it("files a child that needs you in needs-you under its parent as context, and the parent in its own lane", () => {
+    const g = graph([item("1"), item("2", {}, blocked)], [edge("2", "1")]);
+    expect(split(g)).toEqual([["needs-you", [["~1", ["2"]]]], ["waiting", ["1"]]]);
+    expect(on(view(g).rows, "t")[0]?.children[0]).toMatchObject({ id: "2", badge: "needs-you", context: false });
   });
 
-  it("raises a branch for a grandchild that needs you", () => {
+  it("files a grandchild in its own lane, the whole path to it context", () => {
     const g = graph([item("1"), item("2"), item("3", {}, blocked)], [edge("2", "1"), edge("3", "2")]);
-    expect(view(g).rows[0]?.lane).toBe("needs-you");
+    expect(split(g)).toEqual([["needs-you", [["~1", [["~2", ["3"]]]]]], ["waiting", [["1", ["2"]]]]]);
   });
 
-  it("puts a branch with a running child in running", () => {
-    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, effort: null, since: 5 }]]);
-    expect(view(graph([item("1"), item("2")], [edge("2", "1")]), { running }).rows[0]?.lane).toBe("running");
+  it("files a running child in running, and leaves it out of its parent's copy", () => {
+    const g = graph([item("1"), item("2")], [edge("2", "1")]);
+    expect(split(g, { running: new Map([["2", run]]) })).toEqual([["running", [["~1", ["2"]]]], ["waiting", ["1"]]]);
   });
 
-  it("ranks needs-you over running over elsewhere over waiting, whichever sub-branch they sit in", () => {
-    const running = new Map<string, Running>([["2", { stage: "build", round: 1, model: null, effort: null, since: 5 }]]);
+  it("gives each sub-branch's items their own lanes, never one lane for the branch", () => {
     const g = graph([item("1"), item("2"), item("3"), item("4", {}, blocked)], [edge("2", "1"), edge("3", "1"), edge("4", "3")]);
-    expect(view(g, { running }).rows[0]?.lane).toBe("needs-you");
-    expect(view(graph([item("1"), item("2"), item("3")], [edge("2", "1"), edge("3", "1")]), { running }).rows[0]?.lane)
-      .toBe("running");
+    expect(split(g, { running: new Map([["2", run]]) })).toEqual([
+      ["needs-you", [["~1", [["~3", ["4"]]]]]], ["running", [["~1", ["2"]]]], ["waiting", [["1", ["3"]]]],
+    ]);
   });
 
-  it("never lets a closed item raise its branch, whatever its stale labels say", () => {
+  it("files a closed child in done, whatever its stale labels say", () => {
     const g = graph([item("1"), item("2", { closed: "done" }, blocked), item("3", { closed: "dropped" }, blocked)], [
       edge("2", "1"), edge("3", "1"),
     ]);
-    const rows = view(g).rows;
-    expect(rows[0]).toMatchObject({ lane: "waiting" });
+    expect(split(g)).toEqual([["waiting", ["1"]], ["discharged", [["~1", ["2", "3"]]]]]);
   });
 
-  it("still raises a closed parent's branch for an open child that needs you", () => {
+  it("draws a closed parent as context over an open child that needs you, and itself in done", () => {
     const g = graph([item("1", { closed: "done" }), item("2", {}, blocked)], [edge("2", "1")]);
-    expect(view(g).rows[0]).toMatchObject({ badge: "discharged", lane: "needs-you" });
+    expect(split(g)).toEqual([["needs-you", [["~1", ["2"]]]], ["discharged", ["1"]]]);
+    expect(on(view(g).rows, "t")[0]).toMatchObject({ badge: "discharged", context: true });
   });
 
   it("puts an item with no sub-items in the lane of its own badge", () => {
@@ -654,15 +658,17 @@ describe("boardView: lanes", () => {
     ]);
   });
 
-  it("files a branch under Held elsewhere for a grandchild held elsewhere, whatever its root's own badge", () => {
+  it("files a grandchild held elsewhere in Held elsewhere, its root and parent context there", () => {
     const other: Held = { item: "3", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
     const g = graph([item("1", {}, []), item("2", {}, []), item("3")], [edge("2", "1"), edge("3", "2")]);
-    expect(view(g, { elsewhere: new Map([["3", other]]) }).rows[0]).toMatchObject({ badge: "not-admitted", lane: "elsewhere" });
+    expect(split(g, { elsewhere: new Map([["3", other]]) })).toEqual([
+      ["elsewhere", [["~1", [["~2", ["3"]]]]]], ["not-admitted", [["1", ["2"]]]],
+    ]);
   });
 
-  it("never lets an artifact raise a branch", () => {
+  it("files an artifact with its item, never in a lane of its own", () => {
     const g = graph([item("1", {}, []), pr("pr-9")], [edge("pr-9", "1", "implements")]);
-    expect(view(g).rows[0]).toMatchObject({ lane: "not-admitted" });
+    expect(split(g)).toEqual([["not-admitted", [["1", ["pr-9"]]]]]);
   });
 
   it("puts a branch with no item in it in waiting while open, and in discharged once closed", () => {
