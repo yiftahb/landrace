@@ -44,7 +44,7 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 |---|---|
 | `entry` | No entry stage, unless every open stage is placed by the item's own state; with several entry stages, one with no trigger anchored on `"run.stage": null`, or one with a trigger anchored on neither `null` nor a stage, which could fire mid-workflow |
 | `stage-id` | A stage id that is a reserved object key (`__proto__`, `constructor`, …) |
-| `reachability`, `unknown-stage` | A stage nothing leads to; a trigger naming a stage that does not exist |
+| `reachability`, `unknown-stage` | A stage nothing leads to; a trigger naming a stage that does not exist. A `waits: pairing` stage that another stage's `goto` lists is reached by pairing on it, so it needs no trigger of its own; any other stage a `goto` lists still does |
 | `dead-end`, `self-loop` | A non-terminal stage with no way out, except a `closed: run` stage, where a closed item rests; a stage triggering on itself |
 | `closed-run` | A `closed: run` stage that names a `branch`, or that plans a `branch.push` or `pull.*` effect in its `on_enter` or its step's routes; a stage marked `entry: true`; a trigger into it that can hold while `node.closed` is null, such as `{ $ne: dropped }`; a stage `goto` entry or a route `goto` that targets it |
 | `cycle-bound` | A loop with no counter bound — an agent that could run forever. An edge whose trigger waits for a person's own message (`run.lastEvent.actor: human`, exactly) bounds it too: every lap needs someone to write |
