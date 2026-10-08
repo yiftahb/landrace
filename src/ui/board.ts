@@ -8,7 +8,7 @@ import { turnedAway } from "#runner/tick.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
-  Board, BoardRelated, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Ownership, Pairing,
+  Board, BoardPlace, BoardRelated, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Ownership, Pairing,
   PanelPaths, ReadRoute, Relationship, Running, Stage, StatusRow, Workflow, WorkspaceListing,
 } from "#namespace.js";
 
@@ -127,15 +127,13 @@ export function conversationOf(entries: readonly Entry[]): ConversationLine[] {
     });
 }
 
-/** Most urgent first — the order a branch's lane cascades in. */
+/** The lanes, most urgent first — the order the page draws them in. */
 const URGENCY: readonly Lane[] = ["needs-you", "running", "elsewhere", "waiting", "not-admitted", "discharged"];
 
-/** Whether `a` is more urgent than `b`; anything outranks no badge at all. */
-const outranks = (a: Lane, b: Lane | null): boolean => b === null || URGENCY.indexOf(a) < URGENCY.indexOf(b);
+/** Needs you's page draws this lane alone. */
+const NEEDS_YOU: readonly Lane[] = ["needs-you"];
 
-const moreUrgent = (a: Lane | null, b: Lane | null): Lane | null => (a !== null && outranks(a, b) ? a : b);
-
-/** Where a root row's lane is drawn: most urgent first. */
+/** Where a root copy's lane is drawn: most urgent first. */
 const rank = (row: BoardRow): number => (row.lane === null ? URGENCY.length : URGENCY.indexOf(row.lane));
 
 /** Nulls last, whichever way the numbers run. */
@@ -157,6 +155,21 @@ const laneOrder = (lane: Lane | null) => (a: BoardRow, b: BoardRow): number =>
 /** A branch in its lane's order, at every depth. */
 const inOrder = (row: BoardRow, order: (a: BoardRow, b: BoardRow) => number): BoardRow =>
   ({ ...row, children: row.children.map((k) => inOrder(k, order)).sort(order) });
+
+/**
+ * The rows a copy counts: its matches that are items — an artifact comes
+ * with its item and is not one more thing to look at — and the root of a
+ * branch with no item in it, which is drawn as one. Never a context row.
+ */
+const countedIn = (copy: BoardRow): BoardRow[] => {
+  const out: BoardRow[] = copy.context || copy.kind === ITEM_KIND ? [] : [copy];
+  const walk = (r: BoardRow): void => {
+    if (!r.context && r.kind === ITEM_KIND) out.push(r);
+    r.children.forEach(walk);
+  };
+  walk(copy);
+  return out;
+};
 
 /**
  * Which node each node nests under, if exactly one. Only edges of a type the
@@ -278,7 +291,7 @@ export function boardView(input: {
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, createdAt: node.createdAt ?? null, updatedAt: node.updatedAt ?? null,
       round: null, model: null, effort: null,
-      pages: [], chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null,
+      page: null, context: false, chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null,
       related: relatedOf(node.id), facts: factsOf(node), children: [],
     };
     if (node.kind !== ITEM_KIND) return base;
@@ -381,69 +394,83 @@ export function boardView(input: {
     else children.set(up, [...(children.get(up) ?? []), node]);
   }
 
-  // `seen` is the cycle guard: a node is drawn once, under the first path that
-  // reaches it, and a cycle stops instead of recursing forever.
+  // `seen` is the cycle guard: a node is placed once, under the first path
+  // that reaches it, and a cycle stops instead of recursing forever.
   const seen = new Set<string>();
-  // The most urgent item badge in each drawn subtree, null where the subtree
-  // holds no item. Only badges count: a closed item's is already
-  // `discharged` whatever its labels say, and an artifact has none, so neither
-  // can raise a branch.
-  const below = new Map<string, Lane | null>();
   const pagesOf = new Map<string, string[]>();
   const build = (node: Node): BoardRow | null => {
     if (seen.has(node.id)) return null;
     seen.add(node.id);
     const kids = [...(children.get(node.id) ?? [])].sort(compareWork)
       .map(build).filter((r): r is BoardRow => r !== null);
-    const row = rowOf(node);
     pagesOf.set(node.id, pagesOfNode(node));
-    below.set(node.id, kids.map((k) => below.get(k.id) ?? null).reduce(moreUrgent, row.badge));
-    return { ...row, children: kids };
+    return { ...rowOf(node), children: kids };
   };
 
-  const needs = new Set<string>();
+  // Where each row is a match: an item in the lane of its own badge, on its
+  // own pages; an artifact wherever its nearest item above it is, since it
+  // comes with that item. Never the subtree's most urgent badge: that filed a
+  // whole tree as one block, its waiting and done children under Needs you.
+  const own = new Map<string, BoardPlace | null>();
+  const assign = (r: BoardRow, up: BoardPlace | null): void => {
+    const mine = r.kind === ITEM_KIND && r.badge !== null ? { lane: r.badge, pages: pagesOf.get(r.id) ?? [] } : up;
+    own.set(r.id, mine);
+    for (const k of r.children) assign(k, mine);
+  };
+  const holdsItem = (r: BoardRow): boolean => r.kind === ITEM_KIND || r.children.some(holdsItem);
+
+  /**
+   * One lane's copy of a branch on one page: its matches there and the path
+   * down to them, the path marked context; null where it holds none. A
+   * match's child filed elsewhere is left to its own lane, unless it leads to
+   * a match here.
+   */
+  const copyOf = (r: BoardRow, match: (o: BoardPlace) => boolean): BoardRow | null => {
+    const kids = r.children.map((k) => copyOf(k, match)).filter((k): k is BoardRow => k !== null);
+    const o = own.get(r.id);
+    if (o && match(o)) return { ...r, context: false, children: kids };
+    return kids.length > 0 ? { ...r, context: true, children: kids } : null;
+  };
+
+  const pages: Array<string | null> = [null, ...input.workflows.map((w) => w.id)];
   const rows: BoardRow[] = [];
   // Roots first; then whatever a cycle left unreached — every member of a
   // cycle has a parent, so none of them was a root — at the top level rather
   // than lost. Both walked in work order, so the same graph always nests the
-  // same; what the page reads is the lane's order, applied once each branch
-  // knows its lane.
+  // same; what the page reads is the lane's order, applied to each copy.
   for (const node of [...roots.sort(compareWork), ...[...drawn.values()].sort(compareWork)]) {
     const row = build(node);
-    // A branch with no item — a pull request whose item is not listed —
-    // is still drawn rather than lost, and nothing in it is anyone's to act
-    // on: it waits while open and is done once closed.
     if (!row) continue;
-    const lane = below.get(row.id) ?? (row.closed === null ? "waiting" : "discharged");
-    const pages = new Set<string>();
-    const gather = (r: BoardRow): void => {
-      for (const p of pagesOf.get(r.id) ?? []) {
-        pages.add(p);
-        // `pages` is where the branch is drawn: the union of its rows'. What
-        // the sidebar counts is only a workflow's own rows that need the
-        // person, or a shared epic would light every sibling's dot.
-        if (r.badge === "needs-you") needs.add(`${row.id}\0${p}`);
+    // A branch with no item — a pull request whose item is not listed — is
+    // still drawn rather than lost, on every page whose source lists it, and
+    // nothing in it is anyone's to act on: it waits while open and is done
+    // once closed.
+    assign(row, holdsItem(row) ? null : { lane: row.closed === null ? "waiting" : "discharged", pages: listedBy(row.id) });
+    for (const page of pages) {
+      // Needs you draws its own lane alone, every workflow's matches in it.
+      for (const lane of page === null ? NEEDS_YOU : URGENCY) {
+        const copy = copyOf(row, (o) => o.lane === lane && (page === null || o.pages.includes(page)));
+        if (copy) rows.push(inOrder({ ...copy, lane, page }, laneOrder(lane)));
       }
-      r.children.forEach(gather);
-    };
-    gather(row);
-    // A branch with no item at all — an artifact whose item is not listed —
-    // is drawn on every page whose source lists it, rather than on none.
-    if (pages.size === 0) for (const p of listedBy(row.id)) pages.add(p);
-    rows.push(inOrder({ ...row, lane, pages: [...pages].sort() }, laneOrder(lane)));
+    }
   }
-  rows.sort((a, b) => rank(a) - rank(b) || laneOrder(a.lane)(a, b));
+  // A copy reads in its lane as its best match would on its own: a context
+  // root's own priority or update time says nothing of what is in this lane.
+  const best = new Map(rows.map((r) => [r, countedIn(r).sort(laneOrder(r.lane))[0] ?? r]));
+  rows.sort((a, b) => rank(a) - rank(b) || laneOrder(a.lane)(best.get(a) ?? a, best.get(b) ?? b) || compareIds(a.id, b.id)
+    || (a.page ?? "").localeCompare(b.page ?? ""));
 
-  const needing = rows.filter((r) => r.lane === "needs-you");
+  const needing = (page: string | null): number =>
+    rows.filter((r) => r.page === page && r.lane === "needs-you").reduce((n, r) => n + countedIn(r).length, 0);
   const sidebar = input.workflows
-    .map((w) => ({ id: w.id, name: w.workflow.name, needsYou: needing.filter((r) => needs.has(`${r.id}\0${w.id}`)).length }))
+    .map((w) => ({ id: w.id, name: w.workflow.name, needsYou: needing(w.id) }))
     .sort((a, b) => {
       const x = a.name.toLowerCase(), y = b.name.toLowerCase();
       return x < y ? -1 : x > y ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     });
   return {
     generatedAt: input.now, rows, nextTickAt: input.nextTickAt,
-    folder: input.folder, workspace: input.workspace, workflows: sidebar, needsYou: needing.length, listed: input.listed,
+    folder: input.folder, workspace: input.workspace, workflows: sidebar, needsYou: needing(null), listed: input.listed,
   };
 }
 
