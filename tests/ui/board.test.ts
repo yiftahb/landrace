@@ -431,6 +431,25 @@ describe("boardView: where a row may send its item back to", () => {
     ]);
   });
 
+  it("marks a target that waits for a pairing, since sending there runs no agent", () => {
+    const pairing: Workflow = {
+      ...workflow,
+      stages: [
+        ...workflow.stages.filter((st) => st.id !== "blocked"),
+        { id: "blocked", goto: ["spec", "design"], triggers: [{ when: { "run.lastOutputValid": false } }] },
+        { id: "design", step: "design", waits: "pairing", triggers: [{ when: { "run.stage": "spec", "x": 1 } }] },
+      ],
+    };
+    const g = graph([item("7", {}, ["go", "lr:stage:blocked", "lr:blocked"])]);
+    const row = view(g, {
+      workflows: [{ id: "t", workflow: pairing }],
+      listing: { graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow: pairing, source: 0 }], [g]) },
+    }).rows[0];
+    expect(row?.goto).toEqual([
+      { stage: "spec", path: "/items/7/goto/spec" }, { stage: "design", path: "/items/7/goto/design", pairing: true },
+    ]);
+  });
+
   it("offers none on a row held elsewhere", () => {
     const other: Held = { item: "7", holder: "conversation:77", kind: "conversation", pid: 77, at: 90, deadlineMs: 1, token: "t" };
     expect(rowFor(["lr:stage:blocked"], {}, { elsewhere: new Map([["7", other]]) })?.goto).toEqual([]);

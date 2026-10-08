@@ -592,7 +592,8 @@ function writesOf(row) {
     for (const g of targets) {
       items.push(writeItem({
         id: row.id, key: row.id + ":goto:" + g.stage, label: g.stage, busy: "Sending…", path: g.path, action: "goto",
-        ask: "Send #" + row.id + " back to " + g.stage + "? This re-runs a paid step.",
+        ask: "Send #" + row.id + " back to " + g.stage + "? " +
+          (g.pairing ? "It waits there for you to pair on it: the agent never runs that step alone." : "This re-runs a paid step."),
       }));
     }
   }

@@ -2837,7 +2837,8 @@ export interface BoardRow {
    * actually accepted (a stage's step still owed, a cap not holding, and so
    * on), so an entry here is an offer, not a promise.
    */
-  goto: Array<{ stage: string; path: string }>;
+  /** `pairing` on a target that waits for a pairing: sending there runs no agent, so the page asks for no paid step. */
+  goto: Array<{ stage: string; path: string; pairing?: true }>;
   /**
    * Where the item panel reads and writes, built by the server from a
    * checked id like `retry`. Null on an artifact: only an item opens a panel.

@@ -81,14 +81,17 @@ const clearPath = (id: string): string | null => (isItemId(id) ? `/items/${id}/c
  * A target the stage sends to only as what failed — declared `retry: only`
  * on its entry — is left to the row's Retry, which is exactly that.
  */
-const gotoPaths = (id: string, stage: Stage | undefined): BoardRow["goto"] =>
+const gotoPaths = (id: string, stage: Stage | undefined, workflow: Workflow): BoardRow["goto"] =>
   stage !== undefined && isItemId(id)
     ? gotoTargetsOf(stage)
       // One the stage sends to only as what failed is Retry's: listed here it
       // would be offered on every halt, there to be refused. Read off the
       // declaration — a `when` spelled `{ $eq: merge }` was offered.
       .filter((g) => !g.retryOnly)
-      .map((g) => ({ stage: g.stage, path: `/items/${id}/goto/${encodeURIComponent(g.stage)}` }))
+      .map((g) => ({
+        stage: g.stage, path: `/items/${id}/goto/${encodeURIComponent(g.stage)}`,
+        ...(workflow.stages.find((s) => s.id === g.stage)?.waits === "pairing" ? { pairing: true as const } : {}),
+      }))
     : [];
 
 /**
@@ -358,7 +361,7 @@ export function boardView(input: {
     // a Retry, Clear or Go to would make, so the page must not offer one.
     if (writesNothing(workflow)) return { ...placed, badge: laneOf(s, workflow), retry: null, clear: null, goto: [] };
     const retry = stopped(s) ? retryPath(node.id) : null;
-    const goto = gotoPaths(node.id, workflow.stages.find((x) => x.id === s.stage));
+    const goto = gotoPaths(node.id, workflow.stages.find((x) => x.id === s.stage), workflow);
     // The status row's own verdict, not the labels read a second time; the
     // note is the page's wording of the same fact.
     if (engineNoteOf(s) === SCREENED_NOTE) {

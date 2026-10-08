@@ -1,4 +1,5 @@
 import { runInNewContext, Script } from "node:vm";
+import type { BoardRow } from "#namespace.js";
 import { APP_CSS, APP_JS, FAVICON_SVG, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
 /**
@@ -841,7 +842,7 @@ describe("a stopped item's Retry", () => {
     override addEventListener(type?: string, f?: () => void): void { if (type && f) this.listeners.set(type, f); }
   }
   const doc = { createElement: (tag: string) => new Listening(tag), createElementNS: (_: string, tag: string) => new Listening(tag) };
-  const row = (retry: string | null, goto: Array<{ stage: string; path: string }> = [], clear: string | null = null) => ({
+  const row = (retry: string | null, goto: BoardRow["goto"] = [], clear: string | null = null) => ({
     id: "19", chat: { prompt: "p", links: { claude: "a:", claudeCli: "b:", cursor: "c:", codex: "d:" } }, retry, goto, clear,
   });
 
@@ -971,6 +972,15 @@ describe("a stopped item's Retry", () => {
     await settle();
     expect(seen.confirms[0]).toMatch(/#19[\s\S]*build[\s\S]*paid step/);
     expect(seen.posts).toEqual([["/items/19/goto/build", { method: "POST", headers: { "x-landrace-action": "goto" } }]]);
+  });
+
+  // No agent runs a stage that waits for a pairing, so sending there runs nothing paid.
+  it("says a stage that waits for a pairing waits there for one, rather than re-running a paid step", async () => {
+    const { menu, seen } = menuFor(row(null, [{ stage: "design", path: "/items/19/goto/design", pairing: true }]));
+    gotoOf(menu, "design")?.listeners.get("click")?.();
+    await settle();
+    expect(seen.confirms[0]).toMatch(/#19[\s\S]*design[\s\S]*waits there for you to pair on it/);
+    expect(seen.confirms[0]).not.toMatch(/paid/);
   });
 
   it("shows a refusal on the menu entry that asked, and only there", async () => {
