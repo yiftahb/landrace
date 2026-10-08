@@ -359,9 +359,9 @@ describe("telling you an item placed by its own state waits on you", () => {
   });
 
   /*
-   * Ticks overlap. One that lists while another is still working the item
-   * finds it not yet told of, and its converge waits on the other's lock:
-   * whichever tells first is the one tell.
+   * Ticks overlap. One that starts while an earlier tick is still checking is
+   * skipped: it lists nothing and converges nothing, so the first tick's own
+   * check is the one tell, and the tick after it finds the item told of.
    */
   it("tells you once of an item a tick finds arriving while a later tick is skipped for it", async () => {
     const state = requested();
