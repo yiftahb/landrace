@@ -1303,7 +1303,9 @@ describe("the pages a branch is drawn on", () => {
   it("draws a claim conflict on both claimants' pages, and counts it once in Needs You", () => {
     const v = two(graph([item("1", {}, ["a", "b"])]));
     expect(matchedOn(v.rows, "1")).toEqual(["a", "b"]);
-    expect(v.rows[0]?.lane).toBe("needs-you");
+    // One copy per page, Needs you's first: a test reading the board over the
+    // daemon counts these by id, not by row.
+    expect(v.rows.map((r) => [r.page, r.lane])).toEqual([[null, "needs-you"], ["a", "needs-you"], ["b", "needs-you"]]);
     expect(v.needsYou).toBe(1);
     expect(v.workflows).toEqual([{ id: "a", name: "Alpha", needsYou: 1 }, { id: "b", name: "beta", needsYou: 1 }]);
   });

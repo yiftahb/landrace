@@ -1362,9 +1362,15 @@ describeLoopback("runStart's page over two workflows", () => {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
       const rows = async (): Promise<BoardView["rows"]> => ((await (await fetch(`${url}board.json`)).json()) as BoardView).rows;
-      await until(async () => (await applied(record)).length === 2 && (await rows()).length === 4, "the first tick to work both items");
+      // A root is drawn once per page and lane it holds a match in, so the
+      // four items are counted by id, not by row.
+      const ids = async (): Promise<Set<string>> => new Set((await rows()).map((r) => r.id));
+      await until(async () => (await applied(record)).length === 2 && (await ids()).size === 4, "the first tick to work both items");
 
       const row = async (id: string) => (await rows()).find((r) => r.id === id);
+      // Needs you lists it, and so does each claimant's page.
+      expect((await rows()).filter((r) => r.id === "4444").map((r) => [r.page, r.lane]))
+        .toEqual([[null, "needs-you"], ["fast", "needs-you"], ["main", "needs-you"]]);
       // Tagged by name: two workflows, so which one is worth saying.
       expect(await row(ITEM)).toMatchObject({ workflow: "main", tag: "e2e" });
       expect(await row("4343")).toMatchObject({ workflow: "fast", tag: "fast" });
