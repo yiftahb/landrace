@@ -16,7 +16,8 @@ import { isAbsolute, join, sep } from "node:path";
 import {
   BRANCH_PUSH_EFFECT, EffectRefused, effectBranch, hasPullFrom, ITEM_BRANCH, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT,
   PULL_MERGE_EFFECT,
-  PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, pullsFrom, RELATIONS, renderMarker, sameLogin, stripMarker,
+  PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, pullsFrom, RELATIONS, renderMarker, sameLogin, signBody, splitSignature,
+  stripMarker,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
 import { createdAtOf, nodesCloseSatisfied, stillOpen, updatedAtOf, wroteIt } from "#kit/tracker.js";
@@ -149,10 +150,10 @@ export function placeFindings(findings: unknown[], changed: ChangedFile[], stage
           neutraliseMarkers(`the pull request lists no changed file to put the finding on \`${cut(f.file, BRIEF_BODY_CHARS)}:${f.line}\` (${cut(f.body.trim(), BRIEF_BODY_CHARS)}), so the review is not posted without it`),
         );
       }
-      onFiles.push({ path: anchor, body: neutraliseMarkers(cut(`\`${f.file}:${f.line}\` — ${f.body.trim()}`, commentChars - 1_000)) + tail });
+      onFiles.push({ path: anchor, body: fitSigned(`\`${f.file}:${f.line}\` — ${f.body.trim()}`, commentChars - 1_000) + tail });
       return;
     }
-    const text = neutraliseMarkers(cut(f.body.trim(), commentChars - 1_000));
+    const text = fitSigned(f.body, commentChars - 1_000);
     if (shown.has(f.line)) onLines.push({ path: f.file, line: f.line, body: text + tail });
     else onFiles.push({ path: f.file, body: `line ${f.line}: ${text}${tail}` });
   });
@@ -293,6 +294,16 @@ export const BRIEF_HISTORY_HALF_CHARS = 14_000;
 export const BRIEF_DIFF_CHARS = 24_000;
 
 export const cut = (text: string, max: number): string => (text.length > max ? `${text.slice(0, max)}…` : text);
+
+/**
+ * What an agent wrote, escaped and cut to `max`, with `more` after it — and
+ * the line that signs it kept last, never cut off or left above what was
+ * added. The line is the engine's own words, so it sits outside the cut.
+ */
+export const fitSigned = (body: string, max: number, more = ""): string => {
+  const { text, signature } = splitSignature(body.trim());
+  return signBody(cut(neutraliseMarkers(text.trim()) + more, max), signature);
+};
 
 /**
  * `text` in a code fence one backtick longer than its longest run of them,
@@ -1261,7 +1272,7 @@ export abstract class BaseForge {
       if (typeof last?.author === "string" && sameLogin(last.author, bot) && parseMarker(last.body)?.marker === said) continue;
       await this.reply(
         thread.id,
-        neutraliseMarkers(cut(reply.body.trim(), this.commentChars - 1_000)) + renderMarker({ stage, kind, round, marker: said }),
+        fitSigned(reply.body, this.commentChars - 1_000) + renderMarker({ stage, kind, round, marker: said }),
         ctx,
       );
     }
@@ -1280,8 +1291,7 @@ export abstract class BaseForge {
       }
       const { onLines, onFiles, unplaced } = placed;
       const listed = unplaced.length === 0 ? "" : `\n\nFindings that cannot be placed on this pull request's diff:\n\n${unplaced.join("\n")}`;
-      const body = cut(neutraliseMarkers(String(effect.body ?? "").trim()) + listed, this.commentChars - 1_000) +
-        renderMarker({ stage, kind, round, marker });
+      const body = fitSigned(String(effect.body ?? ""), this.commentChars - 1_000, listed) + renderMarker({ stage, kind, round, marker });
       const head = typeof pr.state.headSha === "string" ? pr.state.headSha : "";
       await this.postReview(number, { body, lines: onLines, files: onFiles, head }, ctx);
     }

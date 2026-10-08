@@ -473,9 +473,14 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
   }
 
   protected readEvent(event: object, cwd: string): EventReading {
-    const e = event as { type?: unknown; message?: { content?: unknown } | null; is_error?: unknown; result?: unknown; session_id?: unknown };
+    const e = event as {
+      type?: unknown; subtype?: unknown; model?: unknown; message?: { content?: unknown } | null; is_error?: unknown; result?: unknown; session_id?: unknown;
+    };
     // A tool's result: the files the agent read and the output of what it ran.
     if (e.type === "user") return { quiet: true };
+    // The exact model the run uses — "claude-haiku-4-5-20251001", not the
+    // alias it was given — which signs what the agent writes.
+    if (e.type === "system" && e.subtype === "init" && e.model !== undefined) return { model: e.model };
     if (e.type === "result") {
       return {
         done: true,

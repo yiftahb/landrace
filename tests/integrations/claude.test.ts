@@ -186,6 +186,12 @@ describe("claude executor", () => {
       expect(seen.every((e) => typeof e.at === "number")).toBe(true);
     });
 
+    // Seen live on Claude Code 2.1.289: the init event names the exact model.
+    it("answers with the model the init event names, for the line that signs the run's text", async () => {
+      const dir = withCfg({ out: "done", events: [{ type: "system", subtype: "init", session_id: "sid-1", model: "claude-haiku-4-5-20251001" }] });
+      expect(await run("x", {}, { cwd: dir })).toEqual({ text: "done", sessionId: "sid-1", model: "claude-haiku-4-5-20251001" });
+    });
+
     it("answers as before with nobody listening, and skips a line that is not an event", async () => {
       const dir = withCfg({ out: "done", events: ["not an event", assistant({ type: "text", text: "hi" })] });
       expect(await run("x", {}, { cwd: dir })).toEqual({ text: "done", sessionId: "sid-1" });
