@@ -63,7 +63,7 @@ stages:
 | `step` | The step file an agent runs at this stage |
 | `entry` | `true` for a stage a new item may start at |
 | `terminal` | `true` for a stage where the item's work is done |
-| `waits` | `person` for a stage where it is a person's turn: the item shows under Needs you |
+| `waits` | `person` for a stage where it is a person's turn: the item shows under Needs you. `pairing` for a stage whose step runs only in a pairing, never by the agent alone — see [Worked only with a person](#worked-only-with-a-person) |
 | `triggers` | The ways into this stage: each a `when` condition and an optional `name`, the reason shown when it fires |
 | `identity` | A condition on the item that *places* it at this stage — see [The located stage](#the-located-stage) |
 | `requires` | A condition that must hold while the item is at this stage. An item at a stage whose `requires` fails halts, saying the precondition is not satisfied, and no goto is taken from it |
@@ -75,9 +75,20 @@ stages:
 
 **Entry stages.** A workflow may have one `entry: true` stage or several. With one, a new item enters it unconditionally. With several, a new item enters the one whose `"run.stage": null` trigger matches it; none, or more than one, halts. A workflow may have none when every open stage is placed by state — see [Read-only workflows](#read-only-workflows).
 
-**Waiting on a person.** `waits: person` is what puts an item in Needs you: the board, the notifications, `landrace status`, and the MCP's `landrace_waiting` and `landrace_status` all read the `waits` of the stage the item is at. `validate` refuses it on a stage that runs a step — a person's turn runs no agent — and on a terminal stage.
+**Waiting on a person.** `waits: person` or `waits: pairing` is what puts an item in Needs you: the board, the notifications, `landrace status`, and the MCP's `landrace_waiting` and `landrace_status` all read the `waits` of the stage the item is at. `validate` refuses `waits: person` on a stage that runs a step — a person's turn runs no agent — and on a terminal stage.
 
 **Notes.** A stage may say what an item resting there waits for. `note: "waiting on {rel.blocked-by.out.open}"` reads `waiting on #10, #11` on the board, in `landrace status` and in `landrace_status`, in place of `queued`. A note may use `{node.id}` and `{rel.<type>.<in|out>.<field>}`, where the field is `open` — rendered as `#10, #11` in id order, and as nothing when none is open — or a count (`total`, `dropped`, `not.closed`, …), which reads `0` over nothing related. `validate` refuses any other field, and a relationship type no hook declares. A note is display only. Any other note — working, waiting on you, a halt, an agent running — is shown over it, and the board's lane is decided from the note the engine would have shown, never from the text a workflow wrote.
+
+### Worked only with a person
+
+`waits: pairing` is for a step that is only ever worked together with a person, such as a design session where the agent asks one question at a time. The engine never runs the step alone:
+
+- An item that reaches the stage waits there in Needs you, whether a trigger, a Retry, a Clear & retry or a Go to step brought it. The board's panel offers **Pair on `<stage>`**.
+- **Finish** hands the pairing's answer in, recorded as `run.lastOutputBy: pair`, and the item moves on by the triggers that read it, like any other output.
+- **Release** ends the pairing and removes its checkout. The item waits at the stage for the next pairing; the agent does not take it.
+- While a pairing is open, the board shows the item under Held elsewhere, as it does every pairing. `landrace status` and `landrace_waiting` still list it as waiting on you.
+
+`validate` refuses `waits: pairing` on a stage with no `step` and on a terminal stage. `validate` and `start` both refuse it with `agent.isolation` other than `worktree`, since a pairing is worked in a checkout of its own, and under an executor that cannot start a fresh pairing, such as Codex, which can only carry on a session the agent started.
 
 ## Conditions
 

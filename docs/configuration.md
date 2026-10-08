@@ -97,7 +97,7 @@ notify:
 The message reads `#29 needs you in <workflow> — <title> · <why>`, where `<workflow>` is the name of the workflow that owns the item and `<why>` is the board's note for it (`waiting on you`, `blocked by a security check`, …). Needs you is the board's own rule, so the two never disagree.
 
 - An item that stays in Needs you is not announced again; one that leaves and comes back is.
-- An item that arrives at a `waits: person` stage placed by its own state is announced by the tick, after its pass, when it settled there on its first pass or its lock was held elsewhere. A stage placed by a label is announced on the transition into it.
+- An item that arrives at a `waits: person` or `waits: pairing` stage placed by its own state is announced by the tick, after its pass, when it settled there on its first pass or its lock was held elsewhere. A stage placed by a label is announced on the transition into it.
 - A tick whose pass halts, fails or moves the item on announces nothing, and the next tick that finds it waiting announces it.
 - Nothing is kept about what was sent. After a restart — and on every `start --once`, which is a process of its own — each item already waiting at a stage placed by state is announced once more.
 - An item passing through `triage` on its way back is never announced: `triage` runs its step at once.
