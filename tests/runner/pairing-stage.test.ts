@@ -85,9 +85,19 @@ describe("a stage that waits for a pairing", () => {
     expect(await rowOf(state)).toEqual({ stage: "design", note: "waiting on you", lane: "needs-you" });
   });
 
+  it("a goto out of it while its round is owed says to pair, never to wait for an answer", async () => {
+    const { deps } = await atDesign();
+    const answer = await sendTo(deps, "1", "review");
+    expect(answer).toEqual({ refused: expect.stringMatching(/"design" is worked only with a person: pair on it/) });
+    expect(answer).not.toEqual({ refused: expect.stringMatching(/wait for its answer/) });
+  });
+
   it("leaves the item waiting there once a pairing is released", async () => {
     const { state, run, deps } = await atDesign();
     await startPair(deps, "1", "design");
+    const paired = state.comments("1").find((c) => parseMarker(c)?.kind === "pair");
+    expect(paired).toMatch(/a release leaves the item waiting at design for the next pairing/);
+    expect(paired).not.toMatch(/runs alone again/);
     expect(await releasePair(deps, "1")).toEqual({ stage: "design", round: 1, next: "pairing" });
     const released = state.comments("1").find((c) => parseMarker(c)?.kind === "release");
     expect(released).toMatch(/waits at design for the next pairing/);
