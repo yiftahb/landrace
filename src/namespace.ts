@@ -340,9 +340,11 @@ export interface Stage {
    * you — on the board, in a notification, in `landrace status` and in
    * `landrace_waiting`. Read off the stage the item is located at, never off a
    * label, so a workflow that writes nothing to its tracker can still say an
-   * item waits on someone. `| undefined`: fed from Zod.
+   * item waits on someone. `pairing` is a person's turn too, at a stage whose
+   * step runs only in a pairing: the agent never runs it alone, so the item
+   * waits for a person to pair on it. `| undefined`: fed from Zod.
    */
-  waits?: "person" | undefined;
+  waits?: "person" | "pairing" | undefined;
   identity?: Condition;
   requires?: Condition;
   triggers?: Trigger[];

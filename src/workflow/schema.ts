@@ -20,7 +20,7 @@ export const stageSchema = z.object({
   branch: z.string().min(1).optional(),
   entry: z.boolean().optional(),
   terminal: z.boolean().optional(),
-  waits: z.literal("person").optional(),
+  waits: z.enum(["person", "pairing"]).optional(),
   identity: condition.optional(),
   requires: condition.optional(),
   triggers: z.array(trigger).optional(),

@@ -1,5 +1,6 @@
 import { decide } from "#core/decide.js";
-import type { Snapshot, Stage, Workflow } from "#namespace.js";
+import { deriveRun } from "#core/derive.js";
+import type { Entry, Snapshot, Stage, Workflow } from "#namespace.js";
 
 const run = (o: object = {}) => ({ counters: {}, outputs: {}, lastOutputValid: null, failedStages: [], rounds: {}, ...o });
 const snap = (o: object): Snapshot => o as Snapshot;
@@ -350,5 +351,40 @@ describe("a stage a person is pairing on", () => {
   it("does not stop the stage's triggers once its round is settled", () => {
     const s = snap({ run: run({ stage: "spec", pairing, failedStages: ["spec"], lastOutputValid: false }) });
     expect(decide(wf, s)).toMatchObject({ action: "transition", to: stages[2] });
+  });
+});
+
+describe("a stage that waits for a pairing", () => {
+  const design: Stage = {
+    id: "design", step: "steps/design.md", waits: "pairing",
+    triggers: [{ name: "fresh", when: { "run.stage": null } }],
+  };
+  const done: Stage = { id: "done", terminal: true, triggers: [{ name: "designed", when: { "run.outputs.design": { $exists: true } } }] };
+  const w: Workflow = { version: 1, name: "t", description: "test", stages: [design, done] };
+  const pairing = { stage: "design", round: 1, n: 1, at: "2026-01-01T00:00:00.000Z" };
+  const entry = (kind: string, second: number): Entry =>
+    ({ stage: "design", kind, round: 1, at: `2026-01-01T00:00:0${second}.000Z`, byAgent: true });
+
+  it("waits for a person with no pairing open, and never invokes its step", () => {
+    const s = snap({ run: run({ stage: "design", rounds: { design: { entered: 1, output: 0 } } }) });
+    expect(decide(w, s)).toMatchObject({ action: "wait", why: expect.stringMatching(/only with a person.*pair on it/) });
+  });
+
+  it("waits as any pairing does while one is open", () => {
+    const s = snap({ run: run({ stage: "design", pairing }) });
+    expect(decide(w, s)).toMatchObject({ action: "wait", paired: pairing });
+  });
+
+  it("waits again once the pairing is released, rather than handing the step to the agent", () => {
+    const released = deriveRun([entry("enter", 0), entry("pair", 1), entry("release", 2)], "design");
+    expect(released.pairing).toBeNull();
+    expect(decide(w, snap({ run: released }))).toMatchObject({ action: "wait", why: expect.stringMatching(/pair on it/) });
+  });
+
+  it("routes a settled round on its trigger", () => {
+    const s = snap({
+      run: run({ stage: "design", outputs: { design: {} }, counters: { design: 1 }, rounds: { design: { entered: 1, output: 1 } } }),
+    });
+    expect(decide(w, s)).toMatchObject({ action: "transition", to: done });
   });
 });
