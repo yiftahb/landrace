@@ -367,19 +367,51 @@ function withMoves(view, moves) {
     return m ? { ...r, badge: "waiting", note: "Sent — moves on the next tick", since: m.at, retry: null, clear: null, goto: [], children: kids }
       : { ...r, children: kids };
   };
+  const movedCopies = new Set();
+  const rows = view.rows.map((r) => {
+    let filed = 0;
+    const stays = someRow([r], (row) => {
+      if (row.context || row.kind !== "item") return false;
+      filed++;
+      const m = moves.get(row.id);
+      return !m || m.lane !== r.lane;
+    });
+    if (filed === 0 || stays) return sent(r);
+    const copy = { ...sent(r), lane: "waiting" };
+    movedCopies.add(copy);
+    return copy;
+  });
+  // A copy moved into Waiting where its root already has one on that page
+  // joins it: two copies of one root in one lane share the lane's cycle guard
+  // key, and the first drawn hid the other's items while they still counted.
+  const joined = new Map();
+  for (const r of rows) {
+    if (!movedCopies.has(r) && r.lane === "waiting") joined.set(r.page + "\\n" + r.kind + ":" + r.id, r);
+  }
+  const into = new Map();
+  for (const r of movedCopies) {
+    const home = joined.get(r.page + "\\n" + r.kind + ":" + r.id);
+    if (home) into.set(home, { ...joinRows(into.get(home) || home, r), lane: home.lane, page: home.page });
+  }
   return {
     ...view,
-    rows: view.rows.map((r) => {
-      let filed = 0;
-      const stays = someRow([r], (row) => {
-        if (row.context || row.kind !== "item") return false;
-        filed++;
-        const m = moves.get(row.id);
-        return !m || m.lane !== r.lane;
-      });
-      return { ...sent(r), lane: filed > 0 && !stays ? "waiting" : r.lane };
+    rows: rows.flatMap((r) => {
+      if (movedCopies.has(r)) return joined.has(r.page + "\\n" + r.kind + ":" + r.id) ? [] : [r];
+      return [into.get(r) || r];
     }),
   };
+}
+
+// One row from two copies of it: filed if either files it, its children the
+// first's then the second's that the first lacks, a child in both joined too.
+function joinRows(a, b) {
+  const base = a.context && !b.context ? b : a;
+  const key = (r) => r.kind + ":" + r.id;
+  const theirs = new Map(b.children.map((c) => [key(c), c]));
+  const ours = new Set(a.children.map(key));
+  const children = a.children.map((c) => (theirs.has(key(c)) ? joinRows(c, theirs.get(key(c))) : c))
+    .concat(b.children.filter((c) => !ours.has(key(c))));
+  return { ...base, context: a.context && b.context, children };
 }
 
 function menuKeyOf(id) { return id + ":menu"; }

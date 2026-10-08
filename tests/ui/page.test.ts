@@ -2404,7 +2404,7 @@ describe("an item a write just went through for", () => {
   });
   type Drawn = ReturnType<typeof view>;
   const drawn = <V extends { nextTickAt: number | null; rows: unknown[] }>(v: V, moves: Map<string, Move>): V =>
-    runInNewContext(`${["findRow", "someRow", "withMoves"].map(fnSource).join("")} withMoves(VIEW, MOVES)`, { VIEW: v, MOVES: moves }) as V;
+    runInNewContext(`${["findRow", "someRow", "withMoves", "joinRows"].map(fnSource).join("")} withMoves(VIEW, MOVES)`, { VIEW: v, MOVES: moves }) as V;
 
   it("shows it in Waiting, with nothing left to click, while the server still has it where it was", () => {
     const moves = new Map([["19", move("needs-you")]]);
@@ -2430,6 +2430,46 @@ describe("an item a write just went through for", () => {
     const moves = new Map([["2", move("needs-you")]]);
     drawn(tree("needs-you", [kid("2", "running")]), moves);
     expect(moves.size).toBe(0);
+  });
+
+  // The spec's epic: one child needing you, the rest waiting. Moved whole, the
+  // sent copy took the guard key `waiting/1` ahead of the server's Waiting
+  // copy, which was then skipped, its items gone while still counted.
+  it("merges a copy moved into Waiting into that root's Waiting copy on the same page", () => {
+    const kid = (id: string, badge: string, kids: unknown[] = []) => ({ id, kind: "item", context: false, badge, note: "", since: 1, retry: null, clear: null, goto: [], children: kids });
+    const ctx = (id: string, kids: unknown[]) => ({ ...kid(id, "waiting", kids), context: true });
+    const copy = (lane: string, page: string | null, kids: unknown[]) => ({ ...ctx("1", kids), lane, page });
+    const v = {
+      nextTickAt: 1000,
+      rows: [
+        copy("needs-you", "a", [ctx("10", [kid("2", "needs-you")])]),
+        copy("waiting", "a", [ctx("10", [kid("3", "waiting"), kid("4", "waiting")])]),
+        copy("needs-you", null, [ctx("10", [kid("2", "needs-you")])]),
+        copy("waiting", "b", [kid("5", "waiting")]),
+      ],
+    };
+    const rows = drawn(v, new Map([["2", move("needs-you")]])).rows as Array<ReturnType<typeof copy>>;
+    const onA = rows.filter((r) => r.page === "a");
+    expect(onA).toHaveLength(1);
+    expect(onA[0]).toMatchObject({ lane: "waiting", children: [{ id: "10", context: true, children: [{ id: "3" }, { id: "4" }, { id: "2", badge: "waiting" }] }] });
+    // Another page's copy is its own; with none there to join, a copy moves whole.
+    expect(rows.find((r) => r.page === "b")?.children).toMatchObject([{ id: "5" }]);
+    expect(rows.find((r) => r.page === null)).toMatchObject({ lane: "waiting", children: [{ id: "10", children: [{ id: "2", badge: "waiting" }] }] });
+  });
+
+  // A row that is context in one copy and filed in the other is filed once joined.
+  it("keeps a row filed when it joins a copy where it was only context", () => {
+    const row = (id: string, context: boolean, badge: string, kids: unknown[] = []) => ({ id, kind: "item", context, badge, note: "", since: 1, retry: null, clear: null, goto: [], children: kids });
+    const v = {
+      nextTickAt: 1000,
+      rows: [
+        { ...row("1", true, "waiting", [row("2", false, "needs-you")]), lane: "needs-you", page: "a" },
+        { ...row("1", false, "waiting"), lane: "waiting", page: "a" },
+      ],
+    };
+    const rows = drawn(v, new Map([["2", move("needs-you")]])).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: "1", context: false, lane: "waiting", children: [{ id: "2", badge: "waiting" }] });
   });
 
   it("lets go once the server moves it, and draws the server's own row", () => {
