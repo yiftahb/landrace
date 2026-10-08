@@ -400,8 +400,8 @@ function narrowMcp(entries: readonly McpEntry[], known: Readonly<AllowedTools>):
   return { allowed, problems };
 }
 
-/** The keys of `agent:` the kit reads for every integration, the engine's own three among them. */
-const KIT_KEYS = ["adapter", "isolation", "worktree", "model", "effort", "mcp", "sandbox"];
+/** The keys of `agent:` the kit reads for every integration, the engine's own four among them. */
+const KIT_KEYS = ["adapter", "isolation", "worktree", "signature", "model", "effort", "mcp", "sandbox"];
 /** The keys of `agent.sandbox`. */
 const SANDBOX_KEYS = new Set(["hosts", "deny"]);
 
@@ -655,7 +655,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
 
   /**
    * The executor, from settings already read: a prompt and the run's options
-   * in, `{ text, sessionId }` out. Unbranded: the integration itself is the
+   * in, `{ text, sessionId, model, effort }` out. Unbranded: the integration itself is the
    * hook the loader classifies, and this is what a test can call directly.
    */
   build(settings: KitSettings & E): Executor {
@@ -803,6 +803,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
         let pending = "";
         let head = "";
         let session: unknown = undefined;
+        let reported: unknown = undefined;
         let text = "";
         let done = false;
         let failure: string | undefined;
@@ -829,6 +830,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
           // telemetry even without --debug.
           if (!reading.quiet) log?.("agent.event", { round, event });
           if ("session" in reading) session = reading.session;
+          if ("model" in reading) reported = reading.model;
           if (reading.text !== undefined) text = reading.text;
           if (reading.done) done = true;
           if (reading.error !== undefined) failure = reading.error;
@@ -934,6 +936,11 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
             if (session !== undefined && typeof session !== "string") {
               return reject(new Error(`agent returned a malformed session_id: expected a string, got ${typeof session}`));
             }
+            // The same rule for the model it reported: it is printed under
+            // what the agent wrote, and a number there is not a model.
+            if (reported !== undefined && typeof reported !== "string") {
+              return reject(new Error(`agent returned a malformed model: expected a string, got ${typeof reported}`));
+            }
             // With the model that was actually on the command line. The
             // engine records what the step *asked* for and has no way of
             // checking it — nothing observable survives a subprocess to say
@@ -947,7 +954,15 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
             // Untrusted from here on: this text was produced by the agent,
             // not by us, and the caller will parse it for control markers —
             // it inherits no trust from having passed through this executor.
-            resolve({ text: text.trim(), sessionId: (session as string | undefined) ?? null });
+            // The model it reported, else the one on its command line: what
+            // signs the text the agent wrote, and why its effort travels too.
+            const used = (reported as string | undefined) ?? chosenModel;
+            resolve({
+              text: text.trim(),
+              sessionId: (session as string | undefined) ?? null,
+              ...(used === undefined ? {} : { model: used }),
+              ...(chosenEffort === undefined ? {} : { effort: chosenEffort }),
+            });
           }),
         );
 

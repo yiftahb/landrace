@@ -1,5 +1,7 @@
 import { compile, expandEffectFields, fillTemplate } from "#core/index.js";
-import type { AgentActivity, Effect, Graph, Logger, Route, RunServer, ServerCommand, Snapshot, Step, StepResult, WorktreeState } from "#namespace.js";
+import type {
+  AgentActivity, Effect, ExecutorAnswer, Graph, Logger, Route, RunServer, ServerCommand, Snapshot, Step, StepResult, WorktreeState,
+} from "#namespace.js";
 import {
   AGENT_BY,
   CAPABILITIES,
@@ -7,12 +9,16 @@ import {
   isReservedId,
   mayCreateItems,
   mayWriteRepo,
+  ARTIFACT_PUBLISH_EFFECT,
   OUTPUT_KIND,
   outputValueProblem,
   PART_KIND,
+  PULL_REVIEW_EFFECT,
   RECORD_EFFECT,
   recordBodyProblem,
   retiredCapabilityPointers,
+  signatureLine,
+  signBody,
   unknownCapabilities,
   workDurationMs,
 } from "#conventions.js";
@@ -215,6 +221,8 @@ export async function runStep(opts: {
    * merge guarded by `reviewedBy` reads it. The runner's, never the agent's.
    */
   head?: string;
+  /** `agent.signature`: whether what the agent writes is signed. On unless it is `false`. */
+  signature?: boolean;
 }): Promise<StepResult> {
   const { step, stageId, round, snapshot, executor, signal, log } = opts;
   const prompt = renderPrompt(step.prompt, snapshot, opts.briefing);
@@ -342,10 +350,9 @@ export async function runStep(opts: {
   const limit = AbortSignal.timeout(timeoutMs);
   const runSignal = AbortSignal.any([signal, limit]);
 
-  let text: string;
-  let sessionId: string | null;
+  let answer: ExecutorAnswer;
   try {
-    ({ text, sessionId } = await executor.run(prompt, {
+    answer = await executor.run(prompt, {
       round,
       signal: runSignal,
       // Always present, never undefined: a step that declares no capabilities
@@ -365,7 +372,7 @@ export async function runStep(opts: {
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
       ...childOpt,
       ...(opts.onActivity ? { onActivity: opts.onActivity } : {}),
-    }));
+    });
   } catch (e) {
     // The executor itself failed — a limit, quota, an abort signal from a
     // Ctrl-C. Nothing was produced, so this is the "never ran" case, not a
@@ -414,8 +421,47 @@ export async function runStep(opts: {
     }
   }
 
-  return settleOutput({ step, item: opts.item, stageId, round, text, sessionId, by: AGENT_BY, ...(opts.head === undefined ? {} : { head: opts.head }) });
+  const { model, signature } = signatureOf(answer, step, opts.signature);
+  return settleOutput({
+    step, item: opts.item, stageId, round, text: answer.text, sessionId: answer.sessionId, by: AGENT_BY,
+    model, signature, ...(opts.head === undefined ? {} : { head: opts.head }),
+  });
 }
+
+/**
+ * Which model wrote a run's text, and the line that says so: the model the
+ * agent reported, else the one the run was given — the executor's answer, and
+ * the step's own when an executor says neither — and the effort the same way.
+ * Shared, because a conversation turn and a pairing's hand-in are runs too.
+ */
+export function signatureOf(
+  answer: ExecutorAnswer, step: Step, on: boolean | undefined,
+): { model: string | null; signature: string | null } {
+  const model = answer.model ?? step.model ?? null;
+  return { model, signature: on === false ? null : signatureLine(model, answer.effort ?? step.effort ?? null) };
+}
+
+/**
+ * The output value as a review hands it to its forge: each finding's body
+ * and each reply's signed — they are threads the agent wrote — and the rest
+ * as given. A copy: the value recorded, which a workflow routes on, is the
+ * agent's own.
+ */
+function signedReview(value: Record<string, unknown>, signature: string | null): Record<string, unknown> {
+  if (signature === null) return value;
+  const sign = (list: unknown): unknown => (Array.isArray(list)
+    ? list.map((x: unknown) => (x !== null && typeof x === "object" && !Array.isArray(x) && typeof (x as { body?: unknown }).body === "string"
+      ? { ...x, body: signBody((x as { body: string }).body, signature) }
+      : x))
+    : list);
+  const copy = Object.assign(Object.create(null) as Record<string, unknown>, value);
+  if (Object.hasOwn(value, "findings")) copy.findings = sign(value.findings);
+  if (Object.hasOwn(value, "replies")) copy.replies = sign(value.replies);
+  return copy;
+}
+
+/** The effects whose body is text the agent wrote, and so carries its signature. */
+const SIGNED = new Set([RECORD_EFFECT, PULL_REVIEW_EFFECT, ARTIFACT_PUBLISH_EFFECT]);
 
 /** A label a workflow writes from an answer is the project's, never one of Landrace's own. */
 const LANDRACE_LABEL = /^\s*lr:/i;
@@ -530,15 +576,25 @@ export function settleOutput(opts: {
   by: string;
   /** See `runStep`'s: absent where no worktree was cut, and then no record carries one. */
   head?: string;
+  /** The model that wrote the answer, carried on the result. */
+  model?: string | null;
+  /**
+   * The line that signs the text the agent wrote (`signatureLine`) — the
+   * prose, a field an effect is fed, a review's threads — or none, for
+   * nothing signed. The engine's own words never carry it.
+   */
+  signature?: string | null;
 }): StepResult {
   const { step, stageId, round, text, sessionId } = opts;
+  const model = opts.model ?? null;
+  const signature = opts.signature ?? null;
   const by = opts.by === AGENT_BY ? {} : { by: opts.by };
   // The engine's alone: whatever a route's effect names `head` is dropped below, so it cannot stand in for this.
   const started = opts.head === undefined ? {} : { head: opts.head };
 
   // A step with no declared output contributes no effects; the workflow routes
   // it by trigger instead.
-  if (!step.output) return { ok: true, effects: [], sessionId };
+  if (!step.output) return { ok: true, effects: [], sessionId, model };
 
   // The trailing-marker rule (conventions.ts), applied to a fenced json
   // block instead of an HTML comment: the answer is the *last* strict
@@ -721,10 +777,14 @@ export function settleOutput(opts: {
         }
         fed = field;
       }
+      // Signed where the agent wrote it — the prose, or the field it is fed —
+      // and never a body the workflow wrote, or an issue a step files.
+      const agents = fed !== null || expanded.body === undefined;
+      const signs = agents && SIGNED.has(declared.type) ? signature : null;
       const part: Effect = {
-        body,
+        body: signBody(body, signs),
         ...expanded,
-        ...(fed === null ? {} : { body: fed }),
+        ...(fed === null ? {} : { body: signBody(fed, signs) }),
         type: declared.type,
         // The engine's, whatever the route wrote: what reconcile reads to
         // skip a part that landed before a crash, and a kind core counts as
@@ -734,7 +794,7 @@ export function settleOutput(opts: {
         kind: PART_KIND,
         marker: `${PART_KIND}:${stageId}:${round}:${index}`,
         // A comment's content is its body; anything else may be fed the value.
-        ...(declared.type === RECORD_EFFECT ? {} : { output: value }),
+        ...(declared.type === RECORD_EFFECT ? {} : { output: declared.type === PULL_REVIEW_EFFECT ? signedReview(value, signs) : value }),
       };
       const oversize = part.type === RECORD_EFFECT ? recordBodyProblem(String(part.body ?? "")) : null;
       if (oversize) {
@@ -744,7 +804,7 @@ export function settleOutput(opts: {
     }
     // The record last: every part has landed by the time the round settles,
     // and a crash before it leaves the round owed, its landed parts skipped.
-    return { ok: true, effects: [...parts, record], sessionId };
+    return { ok: true, effects: [...parts, record], sessionId, model };
   }
 
   // One route, one destination: the step's prose goes where the route says.
@@ -758,7 +818,11 @@ export function settleOutput(opts: {
   // `output` last, as on the record below: the value the step produced, already
   // cut to its shape, which a hook posting structured content (a review's
   // findings) needs and a route must not be able to write over.
-  const destination: Effect = { body, stage: stageId, round, ...expanded, output: value };
+  const signs = expanded.body === undefined && SIGNED.has(String(expanded.type)) ? signature : null;
+  const destination: Effect = {
+    body: signBody(body, signs), stage: stageId, round, ...expanded,
+    output: expanded.type === PULL_REVIEW_EFFECT ? signedReview(value, signs) : value,
+  };
 
   /*
    * The output value's rule, applied to the other half of what a step
@@ -770,7 +834,7 @@ export function settleOutput(opts: {
    * is bounded by being ours. Bounding a published spec here would impose a
    * limit it does not have.
    */
-  const oversize = destination.type === RECORD_EFFECT ? recordBodyProblem(body) : null;
+  const oversize = destination.type === RECORD_EFFECT ? recordBodyProblem(String(destination.body)) : null;
   if (oversize) {
     return {
       ok: false,
@@ -798,6 +862,7 @@ export function settleOutput(opts: {
       ok: true,
       effects: [{ ...destination, kind: OUTPUT_KIND, ...expanded, output: value, ...session, ...sent, ...by, ...started }],
       sessionId,
+      model,
     };
   }
 
@@ -807,5 +872,5 @@ export function settleOutput(opts: {
   // so the document is lost for good. This way round, a crash costs one more
   // invocation: the stage is still pending, the republish of identical content
   // is a no-op, and the record follows.
-  return { ok: true, effects: [destination, record], sessionId };
+  return { ok: true, effects: [destination, record], sessionId, model };
 }

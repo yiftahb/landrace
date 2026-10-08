@@ -859,7 +859,7 @@ export interface Executor {
       fork?: boolean;
       signal: AbortSignal;
     },
-  ): Promise<{ text: string; sessionId: string | null }>;
+  ): Promise<ExecutorAnswer>;
   /**
    * The command a person runs in their own terminal to work a step with the
    * agent: a session under `session`, in `cwd`, seeded with the prompt the
@@ -1037,6 +1037,18 @@ export interface RunPlan<E = unknown> {
   log?: HookLog;
 }
 
+/**
+ * What a run answers with. `model` and `effort` are what signs the text the
+ * agent wrote: the model the agent reported, else the one the run was given,
+ * and the effort it ran at — each absent when nobody can say.
+ */
+export interface ExecutorAnswer {
+  text: string;
+  sessionId: string | null;
+  model?: string;
+  effort?: string;
+}
+
 /** A pairing's command, decided and checked by the kit, for an integration to write out. */
 export interface HandoffPlan {
   /** `take` when there is no agent session to continue, else `continue`. */
@@ -1058,6 +1070,11 @@ export interface EventReading {
   activity?: Array<Pick<AgentActivity, "kind" | "text">>;
   /** The run's session, as the agent names it. Checked by the kit: a string, or the run is refused. */
   session?: unknown;
+  /**
+   * The exact model the run used, as the agent names it — for the line that
+   * signs what it wrote. Checked by the kit as `session` is.
+   */
+  model?: unknown;
   /** The run's answer: the last one read is the run's text. */
   text?: string;
   /** The agent said the run is over, and answered. */
@@ -1780,7 +1797,7 @@ export interface LockOptions {
  *   which is what `run.lastRefused` reads back.
  */
 export type StepResult =
-  | { ok: true; effects: Effect[]; sessionId: string | null }
+  | { ok: true; effects: Effect[]; sessionId: string | null; model: string | null }
   | { ok: false; kind: "contract" | "unavailable" | "refused"; reason: string };
 
 export interface ConvergeDeps {

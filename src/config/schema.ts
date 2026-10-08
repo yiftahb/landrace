@@ -5,17 +5,19 @@ import { durationMs, ITEM_BRANCH } from "#conventions.js";
 export const runtimeConfigSchema = z.object({
   version: z.literal(1),
   /**
-   * Two keys the engine reads, and everything else passed on unread to the
+   * The keys the engine reads, and everything else passed on unread to the
    * executor `adapter` names, as `tracker:` is to the tracker hooks. `adapter`
    * picks the executor; `isolation` is how the engine prepares the directory
-   * it runs in. A coding agent's own settings — its model, its plugins, its
-   * servers — are that executor's vocabulary, and it refuses a key it does
-   * not read.
+   * it runs in; `signature` is whether what an agent writes is signed. A
+   * coding agent's own settings — its model, its plugins, its servers — are
+   * that executor's vocabulary, and it refuses a key it does not read.
    */
   agent: z
     .object({
       adapter: z.string().min(1),
       isolation: z.enum(["none", "worktree", "container"]).default("worktree"),
+      /** Whether what an agent writes ends in a line naming its model and effort (`signatureLine`). */
+      signature: z.boolean().default(true),
       /** What a write step's worktree is given before its agent runs: see `WorktreeSetup`. */
       worktree: z
         .object({

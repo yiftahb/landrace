@@ -19,7 +19,7 @@ import {
 } from "#conventions.js";
 import { assess, gotoDeclined, gotoNotListed, gotoTargetsOf, nextRound, planEffects, reconcile, stageBranch } from "#core/index.js";
 import type {
-  Effect, Entry, PairDeps, PairFinished, PairingView, PairOffer, PairStarted, Pairing, Snapshot, Stage, Step,
+  Effect, Entry, ExecutorAnswer, PairDeps, PairFinished, PairingView, PairOffer, PairStarted, Pairing, Snapshot, Stage, Step,
 } from "#namespace.js";
 import { buildBriefing } from "#runner/artifacts.js";
 import { stepTimeoutMs } from "#runner/budget.js";
@@ -30,7 +30,7 @@ import { scrubberOf } from "#runner/events.js";
 import { gotoOrigin } from "#runner/goto.js";
 import { withLock } from "#runner/lock.js";
 import { buildSnapshot } from "#runner/snapshot.js";
-import { renderPrompt, sandboxBefore, sandboxTrespass, settleOutput } from "#runner/step.js";
+import { renderPrompt, sandboxBefore, sandboxTrespass, settleOutput, signatureOf } from "#runner/step.js";
 import { repoDigest } from "#sandbox.js";
 
 /** Long enough to lose a race to a tick reading an item that waits, short enough that a click is answered. */
@@ -330,10 +330,9 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
 
     const timeoutMs = (step.timeout === undefined ? null : durationMs(step.timeout)) ?? stepTimeoutMs(deps.workflow);
     const limit = AbortSignal.timeout(timeoutMs);
-    let text: string;
-    let sessionId: string | null;
+    let answer: ExecutorAnswer;
     try {
-      ({ text, sessionId } = await executor.run(prompt, {
+      answer = await executor.run(prompt, {
         round,
         resume: sessionOf(root, item, open),
         fork: true,
@@ -349,7 +348,7 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
           ? { child: { parent: item, stage: stage.id, round, server: childServerFor(deps.childServer, { parent: item, stage: stage.id, round }) } }
           : {}),
         signal: AbortSignal.any([deps.ctx.signal, limit]),
-      }));
+      });
     } catch (e) {
       // Nothing was produced, so nothing is rejected: the pairing stays open
       // exactly as it was, and Finish may simply be asked again.
@@ -359,7 +358,11 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
     const trespass = await sandboxTrespass(sandbox, start.before);
     if (trespass) return reject("refused", trespass);
 
-    const settled = settleOutput({ step, item, stageId: stage.id, round, text, sessionId, by: PAIR_BY });
+    // The closing turn's text is the agent's, so it is signed as a step's is.
+    const settled = settleOutput({
+      step, item, stageId: stage.id, round, text: answer.text, sessionId: answer.sessionId, by: PAIR_BY,
+      ...signatureOf(answer, step, deps.ctx.config?.agent?.signature),
+    });
     if (!settled.ok) return reject(settled.kind === "refused" ? "refused" : "contract", settled.reason);
     // The destination first, then the record, as a step's are applied.
     await apply(deps, item, snapshot, settled.effects);
