@@ -1422,9 +1422,11 @@ function render(view) {
   // Every row drawn, by rowKey, in every lane: each lane guards its own.
   const seen = new Set();
   let matched = 0;
-  const done = allSet(page, rootsOn(view.rows, page), search, view.listed);
+  // By lane, not page: a sent copy is moved to Waiting but stays on Needs You's page.
+  const home = laneRoots(view.rows, page, "needs-you", () => true);
+  const done = allSet(page, home, search, view.listed);
   const listing = listingShown(page, view.listed);
-  document.getElementById("all-set").hidden = allSetHidden(page, rootsOn(view.rows, page), search, view.listed);
+  document.getElementById("all-set").hidden = allSetHidden(page, home, search, view.listed);
   document.getElementById("listing").hidden = !listing;
   for (const lane of document.querySelectorAll("[data-lane]")) {
     // The server's copies, each holding the items filed in this lane under

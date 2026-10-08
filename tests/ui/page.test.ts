@@ -3476,6 +3476,21 @@ describe("the empty Needs You", () => {
     expect(allSet(null, [], { self: new Set(), below: new Set() }, true)).toBe(false);
   });
 
+  // A Reply on the last item that needs you moves Needs You's own copy into
+  // Waiting until the next tick: home is all set then, not an empty lane.
+  it("is all set once the last needs-you copy was sent, though the copy is still on the page", () => {
+    const row = { id: "19", kind: "item", context: false, lane: "needs-you", page: null, badge: "needs-you", note: "", since: 1, retry: null, clear: null, goto: [], children: [] };
+    const moves = new Map([["19", { lane: "needs-you", next: 1000, ticks: 0, at: 5 }]]);
+    const c: Record<string, unknown> = { VIEW: { nextTickAt: 1000, rows: [row] }, MOVES: moves };
+    runInNewContext(["findRow", "someRow", "withMoves", "joinRows", "rootsOn", "laneRoots", "allSet"].map(fnSource).join(""), c);
+    const done = runInNewContext(`
+      const view = withMoves(VIEW, MOVES);
+      const page = null, search = null;
+      const home = laneRoots(view.rows, page, "needs-you", () => true);
+      [view.rows.map((r) => r.lane), allSet(page, home, search, true)]`, c) as [string[], boolean];
+    expect(done).toEqual([["waiting"], true]);
+  });
+
   it("is not all set before anything has been listed: no data is not an all-clear", () => {
     expect(allSet(null, [], null, false)).toBe(false);
   });
@@ -3524,8 +3539,9 @@ describe("the empty Needs You", () => {
     expect(run("laneHidden(...args)", [[], null, true])).toBe(true);
     expect(run("laneHidden(...args)", [[], null, false])).toBe(false);
     const render = fnSource("render");
-    expect(render).toContain("allSet(page, rootsOn(view.rows, page), search, view.listed)");
-    expect(render).toContain("hidden = allSetHidden(page, rootsOn(view.rows, page), search, view.listed)");
+    expect(render).toContain("const home = laneRoots(view.rows, page, \"needs-you\", () => true)");
+    expect(render).toContain("allSet(page, home, search, view.listed)");
+    expect(render).toContain("hidden = allSetHidden(page, home, search, view.listed)");
     expect(render).toContain("hidden = !listing");
     // The unlisted home replaces the empty lane too, as the beach does.
     expect(render).toContain("const listing = listingShown(page, view.listed)");
