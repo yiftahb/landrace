@@ -137,6 +137,30 @@ describe("signing what an agent wrote", () => {
       expect(bodyOf(record)).toBe('Recorded the output of "review", round 1.');
     });
 
+    it("signs each finding and reply even when the workflow wrote the review's own body", () => {
+      const value = {
+        kind: "reviewed",
+        findings: [{ file: "src/a.ts", line: 3, body: "Off by one." }],
+        replies: [{ thread: "t1", body: "Fixed in abc." }],
+      };
+      const signed = {
+        ...value,
+        findings: [{ file: "src/a.ts", line: 3, body: `Off by one.\n\n${LINE}` }],
+        replies: [{ thread: "t1", body: `Fixed in abc.\n\n${LINE}` }],
+      };
+      const fixed = { type: "pull.review", branch: "landrace/{item}", body: "Review, round {round}" };
+      const shapes = { reviewed: { findings: "array", replies: "array" } };
+      for (const route of [{ when: { kind: "reviewed" }, effect: fixed }, { when: { kind: "reviewed" }, effects: [fixed] }]) {
+        const step: Step = { prompt: "review", output: { discriminator: "kind", shapes, routes: [route] } };
+        const r = settleOutput({
+          step, item: "7", stageId: "review", round: 4, text: json(value), sessionId: null, by: "agent", signature: LINE,
+        }) as Ok;
+        const destination = r.effects[0];
+        expect(bodyOf(destination)).toBe("Review, round 4");
+        expect(destination?.output).toEqual(signed);
+      }
+    });
+
     it("signs nothing a step writes when it is handed no line", () => {
       const r = settleOutput({ step: spec, item: "7", stageId: "spec", round: 1, text: json({ kind: "spec" }), sessionId: null, by: "agent" }) as Ok;
       expect(bodyOf(r.effects[0])).toBe("What the agent wrote.");

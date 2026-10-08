@@ -794,7 +794,8 @@ export function settleOutput(opts: {
         kind: PART_KIND,
         marker: `${PART_KIND}:${stageId}:${round}:${index}`,
         // A comment's content is its body; anything else may be fed the value.
-        ...(declared.type === RECORD_EFFECT ? {} : { output: declared.type === PULL_REVIEW_EFFECT ? signedReview(value, signs) : value }),
+        // A review's findings and replies are the agent's whoever wrote its body.
+        ...(declared.type === RECORD_EFFECT ? {} : { output: declared.type === PULL_REVIEW_EFFECT ? signedReview(value, signature) : value }),
       };
       const oversize = part.type === RECORD_EFFECT ? recordBodyProblem(String(part.body ?? "")) : null;
       if (oversize) {
@@ -821,7 +822,7 @@ export function settleOutput(opts: {
   const signs = expanded.body === undefined && SIGNED.has(String(expanded.type)) ? signature : null;
   const destination: Effect = {
     body: signBody(body, signs), stage: stageId, round, ...expanded,
-    output: expanded.type === PULL_REVIEW_EFFECT ? signedReview(value, signs) : value,
+    output: expanded.type === PULL_REVIEW_EFFECT ? signedReview(value, signature) : value,
   };
 
   /*
