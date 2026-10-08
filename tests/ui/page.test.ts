@@ -801,8 +801,19 @@ describe("a tree split across lanes", () => {
   });
 
   it("counts a branch with no item in it as one", () => {
-    const c = runInNewContext(`${fnSource("someRow")}${fnSource("matchCount")} matchCount`) as (r: Copy) => number;
-    expect(c({ ...at("pr-1", false, [at("doc-1", false, [], "document")], "pull-request") })).toBe(1);
+    const c = runInNewContext(`${fnSource("shows")}${fnSource("matchCount")} matchCount`) as (r: Copy, search: null) => number;
+    expect(c({ ...at("pr-1", false, [at("doc-1", false, [], "document")], "pull-request") }, null)).toBe(1);
+  });
+
+  // Summing whole copies, a search for one of Waiting's three matches drew one
+  // and still read 3.
+  it("counts under a search only the matches it leaves on screen", () => {
+    const run = load();
+    const waiting = run.draw("waiting", "t3");
+    expect(waiting?.items).toEqual(["0:1+", "1:3"]);
+    expect(waiting?.count).toBe(1);
+    expect(run.draw("waiting", "t1")?.count).toBe(3);
+    expect(run.draw("needs-you", "t1")?.count).toBe(1);
   });
 
   it("searches each lane's copies on their own", () => {

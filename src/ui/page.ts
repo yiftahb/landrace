@@ -1291,10 +1291,22 @@ function laneRoots(rows, page, lane, keep) {
 
 // What a copy adds to its lane's count: its items filed there — never a
 // context row, nor an artifact, which comes with its item — or, for a
-// branch with no item at all, its root, drawn as one.
-function matchCount(copy) {
+// branch with no item at all, its root, drawn as one. Under a search, only
+// the items it leaves on screen, matched or inside a matched row: summing
+// whole copies, a search that drew one of Waiting's three matches read 3.
+// Open or closed does not matter; a collapsed match is still in the lane.
+function matchCount(copy, search) {
   let n = !copy.context && copy.kind !== "item" ? 1 : 0;
-  someRow([copy], (row) => { if (!row.context && row.kind === "item") n++; });
+  const seen = new Set();
+  const walk = (row, inMatch) => {
+    if (seen.has(row.id)) return;
+    seen.add(row.id);
+    if (!inMatch && !shows(row, search)) return;
+    const kept = inMatch || !search || search.self.has(row.id);
+    if (kept && !row.context && row.kind === "item") n++;
+    for (const child of row.children) walk(child, inMatch || (search !== null && search.self.has(row.id)));
+  };
+  walk(copy, false);
   return n;
 }
 
@@ -1308,7 +1320,7 @@ function laneDraw(rows, page, lane, query, now) {
   const roots = all.filter((r) => shows(r, search));
   const drawn = new Set();
   const items = treeRows(roots, 0, drawn, now, [], search, false, lane);
-  return { roots, items, drawn, search, count: roots.reduce((n, r) => n + matchCount(r), 0) };
+  return { roots, items, drawn, search, count: roots.reduce((n, r) => n + matchCount(r, search), 0) };
 }
 
 // A lane this page does not draw is hidden; so is one a search left empty,
