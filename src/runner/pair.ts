@@ -217,7 +217,9 @@ export function startPair(deps: PairDeps, item: string, stageId: string): Promis
         type: RECORD_EFFECT, kind: PAIR_KIND, stage: stage.id, round: pairing.round,
         marker: `${PAIR_KIND}:${stage.id}:${pairing.round}:${pairing.n}`,
         body: `Pairing on ${stage.id}, round ${pairing.round}: a person is working this round with the agent in ` +
-          "their own session. It runs alone again only once they release it.",
+          "their own session. " + (stage.waits === "pairing"
+          ? `It never runs alone: a release leaves the item waiting at ${stage.id} for the next pairing.`
+          : "It runs alone again only once they release it."),
       }]);
     }
     // Entered unless the stage already has been at the pairing's round —
