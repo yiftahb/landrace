@@ -137,7 +137,47 @@ describe("BaseExecutor", () => {
     expect(new Tiny("tiny", []).build(settings).handoff).toBeUndefined();
   });
 
+  describe("the model and effort a run answers with, for the line that signs its text", () => {
+    /** A binary printing these lines, then the answer. */
+    const printing = (...lines: object[]): string => {
+      const bin = join(tempDir("tiny-model-"), "tiny");
+      const said = [...lines, { answer: "ok" }].map((l) => `echo '${JSON.stringify(l)}'`).join("\n");
+      writeFileSync(bin, `#!/bin/sh\ncat >/dev/null\n${said}\n`, { mode: 0o755 });
+      return bin;
+    };
+    class Reporting extends Tiny {
+      protected override readEvent(event: object): EventReading {
+        const e = event as { model?: unknown };
+        return "model" in e ? { model: e.model } : super.readEvent(event);
+      }
+    }
+    const go = (bin: string, over: Partial<typeof settings & { model: string; effort: string }> = {}, run: Record<string, unknown> = {}) =>
+      new Reporting(bin).build({ ...settings, ...over }).run("p", { round: 1, capabilities: [], signal: new AbortController().signal, ...run });
+
+    it("answers with the model the agent reported, over the one configured", async () => {
+      expect(await go(printing({ model: "claude-haiku-4-5-20251001" }), { model: "opus", effort: "low" }))
+        .toEqual({ text: "ok", sessionId: "s-1", model: "claude-haiku-4-5-20251001", effort: "low" });
+    });
+
+    it("falls back to the step's model, then agent.model, and to none; the step's effort over agent.effort", async () => {
+      expect(await go(printing(), { model: "opus", effort: "low" }, { model: "haiku", effort: "high" }))
+        .toMatchObject({ model: "haiku", effort: "high" });
+      expect(await go(printing(), { model: "opus" })).toMatchObject({ model: "opus" });
+      const bare = await go(printing());
+      expect(bare).not.toHaveProperty("model");
+      expect(bare).not.toHaveProperty("effort");
+    });
+
+    it("refuses a run whose agent reported a model that is not a string, as it refuses such a session", async () => {
+      await expect(go(printing({ model: 42 }))).rejects.toThrow(/malformed model: expected a string, got number/);
+    });
+  });
+
   describe("create(), at startup", () => {
+    it("reads agent.signature, the engine's own key, without refusing it", async () => {
+      await expect(new Tiny("tiny").create(ctxFor({ adapter: "tiny", signature: false }))).resolves.toBeDefined();
+    });
+
     it("refuses an agent key neither the kit nor the integration reads, naming the integration", async () => {
       await expect(new Tiny("tiny").create(ctxFor({ adapter: "tiny", plugins: [] })))
         .rejects.toThrow(/agent\.plugins is not a setting the tiny executor reads/);

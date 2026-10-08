@@ -213,6 +213,13 @@ describe("the Codex integration", () => {
       expect(await run(codex(), { cwd })).toEqual({ text: "the answer", sessionId: "0199a213-0000-7000-8000-000000000001" });
     });
 
+    // Its events name no model, so what signs its text is the one it was given.
+    it("answers with the model and effort it was given, for the line that signs its text", async () => {
+      const cwd = withCfg({ out: "the answer" });
+      expect(await run(codex({ model: "gpt-5.1-codex" }), { cwd, capabilities: [], effort: "high" }))
+        .toMatchObject({ model: "gpt-5.1-codex", effort: "high" });
+    });
+
     it("reports each message, command, file change and tool call as it goes, and logs no command's output", async () => {
       const cwd = withCfg({
         out: "done",

@@ -35,7 +35,8 @@ const step: Step = {
 const run = (text: string, over: Partial<Parameters<typeof runStep>[0]> = {}) =>
   runStep({
     item: "1", step, stageId: "spec", round: 2, snapshot,
-    executor: agent(text), signal: new AbortController().signal, ...over,
+    // What a step writes is signed by default; these tests are about the rest of it.
+    executor: agent(text), signal: new AbortController().signal, signature: false, ...over,
   });
 
 describe("renderPrompt", () => {

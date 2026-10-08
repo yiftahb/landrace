@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { briefPage, contentOf, hashOf, mine, NO_SPEC, PUBLISH, publishSatisfied, SPEC, specNode } from "#kit/docs.js";
-import type { Effect, Snapshot } from "#namespace.js";
+import { signatureLine } from "#conventions.js";
+import type { Effect, HookContext, Snapshot } from "#namespace.js";
+import { MemoryDocs } from "#testing/index.js";
 
 const publish = (body: unknown, artifact: unknown = SPEC): Effect => ({ type: PUBLISH, artifact, body });
 const snapshotWith = (fields: Record<string, unknown>): Snapshot => fields as unknown as Snapshot;
@@ -56,5 +58,37 @@ describe("specNode", () => {
       id: "spec-7", kind: "document", title: "Spec", link: "https://pages.example/specs/7/",
       closed: null, priority: null, origin: null, state: {},
     });
+  });
+});
+
+/*
+ * A signed spec is published with its line, and the page read back holds it:
+ * the hash is taken over what is published, line included, so the same
+ * answer again is a no-op and a person's edit is still a page that differs.
+ */
+describe("a spec the agent signed", () => {
+  const signed = `# Spec\n\nThe design.\n\n${signatureLine("claude-opus-5-5", "medium")}`;
+  const ctx = { item: "7", snapshot: {}, config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as HookContext;
+  const at = async (docs: MemoryDocs): Promise<Snapshot> => snapshotWith({ artifacts: { [SPEC]: await docs.observe(ctx) } });
+
+  it("is satisfied once published, and republishing the same answer writes nothing", async () => {
+    const docs = new MemoryDocs();
+    const handler = docs.effects()[PUBLISH];
+    if (!handler) throw new Error("no publish handler");
+    expect(handler.satisfied(await at(docs), publish(signed))).toBe(false);
+    await handler.apply(publish(signed), ctx);
+    expect(docs.pages.get("7")).toBe(signed);
+    expect(handler.satisfied(await at(docs), publish(signed))).toBe(true);
+    const publishing = jest.spyOn(docs, "publish");
+    await handler.apply(publish(signed), ctx);
+    expect(publishing).not.toHaveBeenCalled();
+  });
+
+  it("still sees a person's edit, whether or not it kept the line", async () => {
+    const docs = new MemoryDocs();
+    docs.pages.set("7", signed.replace("The design.", "A person's design."));
+    expect(publishSatisfied(await at(docs), publish(signed))).toBe(false);
+    docs.pages.set("7", "# Spec\n\nThe design.");
+    expect(publishSatisfied(await at(docs), publish(signed))).toBe(false);
   });
 });

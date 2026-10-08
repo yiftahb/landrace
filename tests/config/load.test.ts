@@ -31,6 +31,23 @@ describe("the workflows order", () => {
   });
 });
 
+describe("agent.signature", () => {
+  const withAgent = async (agent: string): Promise<string> => {
+    const dir = await fixture("");
+    await writeFile(join(dir, "landrace.yaml"), CONFIG.replace("agent: { adapter: claude, model: opus }", agent));
+    return dir;
+  };
+
+  it("is on unless it is written false", async () => {
+    expect((await loadConfig(await fixture(""))).config.agent.signature).toBe(true);
+    expect((await loadConfig(await withAgent("agent: { adapter: claude, signature: false }"))).config.agent.signature).toBe(false);
+  });
+
+  it("refuses anything but true or false", async () => {
+    await expect(loadConfig(await withAgent("agent: { adapter: claude, signature: off-ish }"))).rejects.toThrow(/signature/);
+  });
+});
+
 describe("the notify block", () => {
   it("reads which events notify, and through which notifiers", async () => {
     const { config } = await loadConfig(await fixture("", "notify: { on: [needs-you], via: [slack] }\n"));

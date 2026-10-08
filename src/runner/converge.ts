@@ -429,6 +429,8 @@ async function converging(
           ...(deps.childServer ? { childServer: deps.childServer } : {}),
           ...(deps.activity ? { onActivity: (e: AgentActivity) => deps.activity?.record(item, stage.id, round, e) } : {}),
           ...started,
+          // On unless landrace.yaml says `false`: a context built by hand carries no config.
+          signature: deps.ctx.config?.agent?.signature !== false,
           log: deps.log,
         });
         finishedOk = result.ok;
