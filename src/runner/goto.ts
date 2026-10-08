@@ -122,11 +122,13 @@ async function sendAt(deps: GotoDeps, item: string, target: string | null, clear
   const { from } = origin;
 
   if (from.step && assess(snapshot, from) === "pending") {
-    // Its step never runs alone, so no answer is coming: waiting would be for good.
+    // Its step never runs alone, so no answer is coming: waiting would be for
+    // good. Only Finish settles the round: a release leaves it owed, and
+    // decide waits before it reads any trigger, so no route out moves it.
     if (from.waits === "pairing") {
       return {
         refused: `#${item} is at "${from.id}", and "${from.id}" is worked only with a person: pair on it and ` +
-          "finish or release the pairing first, or give the stage a route out",
+          "finish the pairing first",
       };
     }
     return { refused: `#${item} is at "${from.id}", whose step is still to run; wait for its answer` };

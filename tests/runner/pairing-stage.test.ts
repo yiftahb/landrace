@@ -88,8 +88,11 @@ describe("a stage that waits for a pairing", () => {
   it("a goto out of it while its round is owed says to pair, never to wait for an answer", async () => {
     const { deps } = await atDesign();
     const answer = await sendTo(deps, "1", "review");
-    expect(answer).toEqual({ refused: expect.stringMatching(/"design" is worked only with a person: pair on it/) });
-    expect(answer).not.toEqual({ refused: expect.stringMatching(/wait for its answer/) });
+    expect(answer).toEqual({
+      refused: expect.stringMatching(/"design" is worked only with a person: pair on it and finish the pairing first/),
+    });
+    // Neither moves it: a release leaves the round owed, and decide waits before it reads a route out.
+    expect(answer).not.toEqual({ refused: expect.stringMatching(/wait for its answer|release|route out/) });
   });
 
   it("leaves the item waiting there once a pairing is released", async () => {
