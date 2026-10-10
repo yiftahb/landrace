@@ -188,7 +188,8 @@ describe("admitting an item no workflow claims", () => {
 
   it("refuses a workflow that admits nothing, in createItem's words, writing nothing", async () => {
     const state = createExternalState({ items: [{ id: "4" }] });
-    const { admit: _none, ...bare } = full();
+    const bare = full();
+    delete bare.admit;
     const tools = createTools([hooked(registryOf(state), loaded(bare, minimal.steps, "full"))], ctx());
     await expect(tools.admit("4", "full")).rejects.toThrow('workflow "full" admits nothing: add admit: [<labels>] to workflows/full/workflow.yaml');
     expect(state.writes()).toEqual([]);

@@ -1618,7 +1618,8 @@ describe("a Not admitted row's Start work", () => {
   it("offers none on a read-only board, nor for a workflow that admits nothing", () => {
     const o = offers(G, REPO.map((w) => ({ id: w.id, workflow: w.workflow })));
     expect(Object.values(o).flat()).toEqual([]);
-    const { admit: _none, ...bare } = FULL;
+    const bare: Workflow = { ...FULL };
+    delete bare.admit;
     expect(offers(G, [{ id: "full", workflow: bare, operator: true }, REPO[1] as Entry])["1"]).toEqual([
       { workflow: "fast", name: "Fastlane", path: "/items/1/admit/fast", labels: ["lr:auto", "lr:fast"] },
     ]);

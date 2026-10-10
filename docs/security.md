@@ -115,15 +115,15 @@ A step's front matter carries routes, effects and capabilities, and a retro writ
 
 ## The board
 
-The board binds loopback only and answers only its own host name. It has eleven writes:
+The board binds loopback only and answers only its own host name. It has twelve writes:
 
 - in the header, the tick button and Refresh;
-- in a row's menu, Retry, Clear & retry and Go to step;
+- in a row's menu, Start work, Retry, Clear & retry and Go to step;
 - in an item's panel, Reply, Ask the step and Resolve, and the Pairing section's Pair, Finish and Release.
 
-Ask the step and Finish each run a paid agent turn on the spot, and Pair runs the screener. The tick button, Retry, Clear & retry, Go to step, Resolve and Release wake the loop, which can start a paid step at once. Reply posts a comment as you. Refresh, and the panel's conversation and Pairing reads, each spend a tracker read. So each is guarded beyond the host check:
+Ask the step and Finish each run a paid agent turn on the spot, and Pair runs the screener. The tick button, Start work, Retry, Clear & retry, Go to step, Resolve and Release wake the loop, which can start a paid step at once. Start work adds a workflow's admit labels to an item, which starts work on it. Reply posts a comment as you. Refresh, and the panel's conversation and Pairing reads, each spend a tracker read. So each is guarded beyond the host check:
 
-- Each requires its own custom `x-landrace-action` header — `tick`, `refresh`, `retry`, `clear`, `goto`, `reply`, `ask`, `resolve`, `pair`, `finish`, `release`, and for the two reads `conversation` and `pairing` — which a cross-site `<form>` cannot set, and a cross-origin `fetch` that does set one triggers a CORS preflight the server never grants.
+- Each requires its own custom `x-landrace-action` header — `tick`, `refresh`, `admit`, `retry`, `clear`, `goto`, `reply`, `ask`, `resolve`, `pair`, `finish`, `release`, and for the two reads `conversation` and `pairing` — which a cross-site `<form>` cannot set, and a cross-origin `fetch` that does set one triggers a CORS preflight the server never grants.
 - Each refuses any `Origin` other than the page's own, and any request the browser marks `Sec-Fetch-Site` as not same-origin.
 
 None of the guards is optional: together they stop another website you have open from starting paid work just because your browser can reach `127.0.0.1`.
