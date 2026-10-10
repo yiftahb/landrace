@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { basename, join, resolve } from "node:path";
+import { Command, InvalidArgumentError, Option } from "commander";
 import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { defineExecutor } from "#hooks/contracts.js";
@@ -10,6 +12,7 @@ import type {
   AdmitResult,
   ArtifactHook,
   Board,
+  BrowserOpener,
   BuildOptions,
   ConversationDeps,
   ConversationLine,
@@ -99,11 +102,15 @@ export async function startUi(
     board: Board; ui: boolean; once: boolean; port: number; tick?: () => WakeResult; goto?: GotoPath | undefined;
     refresh?: (() => Promise<void>) | undefined; panel?: ItemPanel | undefined;
     admit?: ((item: string, workflow: string) => Promise<AdmitResult>) | undefined;
+    /** Stdout is a terminal, so a person is there to see the browser open. Absent, nothing opens. */
+    interactive?: boolean | undefined;
+    open?: BrowserOpener | undefined;
   },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
+  let ui: UiServer;
   try {
-    return await serveBoard({
+    ui = await serveBoard({
       port: opts.port,
       view: () => opts.board.view(),
       ...(opts.tick === undefined ? {} : { tick: opts.tick }),
@@ -114,10 +121,88 @@ export async function startUi(
     });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
-      throw new Error(`port ${opts.port} is taken; pick another with --ui-port, or turn the page off with --no-ui`);
+      throw new Error(`port ${opts.port} is taken; pick another with --ui-port, or turn the page off with --headless`);
     }
     throw e;
   }
+  openBoard(ui.url, { interactive: opts.interactive ?? false, open: opts.open ?? openBrowser });
+  return ui;
+}
+
+/**
+ * Open the served board in the person's browser, in a terminal only: a start
+ * under a supervisor, in CI or piped to a file has nobody at a screen, and a
+ * browser popping up from a background service is wrong. Never awaited and
+ * never fatal: the board is already up, and the line says where.
+ */
+export function openBoard(url: string, opts: { interactive: boolean; open: BrowserOpener }): void {
+  if (!opts.interactive) return;
+  void (async () => opts.open(url))().catch((e: unknown) => {
+    console.error(`landrace: could not open a browser (${messageOf(e)}); the board is at ${url}`);
+  });
+}
+
+/** The command that opens a URL in the default browser, run with no shell. */
+export function browserCommand(platform: NodeJS.Platform, url: string): { command: string; args: string[] } {
+  if (platform === "darwin") return { command: "open", args: [url] };
+  // `start` reads its first quoted argument as the window title.
+  if (platform === "win32") return { command: "cmd", args: ["/c", "start", "", url] };
+  return { command: "xdg-open", args: [url] };
+}
+
+/**
+ * Detached and unref'd, so the opener never holds `start` open; it fails on a
+ * spawn error (no `xdg-open`, say) or a non-zero exit.
+ */
+export const openBrowser: BrowserOpener = (url) => new Promise((done, fail) => {
+  const { command, args } = browserCommand(process.platform, url);
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.once("error", fail);
+  child.once("exit", (code, signal) => {
+    if (code === 0) done();
+    else fail(new Error(signal === null ? `${command} exited with ${String(code)}` : `${command} was killed by ${signal}`));
+  });
+  child.unref();
+});
+
+/**
+ * `landrace start`'s command line, apart from the program so its options can
+ * be tested: `--headless` and its older name `--no-ui` both reach `run` as
+ * `ui: false`.
+ */
+export function startCommand(run: (dir: string, opts: StartOptions) => Promise<void>): Command {
+  return new Command("start")
+    .description("watch the tracker and advance every eligible item")
+    .option("-w, --workspace <dir>", "workspace directory", ".landrace")
+    .option("--once", "run a single tick and exit")
+    .option("--debug", "print every event, the agent's included, and the snapshot behind each decision")
+    // Refused by commander as a usage error, never thrown out of the action as a stack trace.
+    .addOption(new Option("--ui-port <port>", "port for the triage page").default(DEFAULT_UI_PORT).argParser((text) => {
+      try {
+        return parsePort(text);
+      } catch (e) {
+        throw new InvalidArgumentError(messageOf(e));
+      }
+    }))
+    .option("--headless", "serve no triage page and open no browser")
+    .addOption(new Option("--no-ui", "an older name for --headless").hideHelp())
+    .option("--telemetry", "export every event to an OpenTelemetry collector (sets LANDRACE_ENABLE_TELEMETRY=1)")
+    .option(
+      "--otel <KEY=VALUE>",
+      "a telemetry setting (OTEL_*), over .landrace/.env and the shell; repeatable",
+      (pair: string, pairs: string[]) => [...pairs, pair],
+      [] as string[],
+    )
+    .action((opts: {
+      workspace: string; once?: boolean; debug?: boolean; ui: boolean; headless?: boolean; uiPort: number;
+      telemetry?: boolean; otel: string[];
+    }) => run(opts.workspace, {
+      ...(opts.once === undefined ? {} : { once: opts.once }),
+      ...(opts.debug === undefined ? {} : { debug: opts.debug }),
+      ui: opts.ui && opts.headless !== true,
+      uiPort: opts.uiPort,
+      otel: [...opts.otel, ...(opts.telemetry ? ["LANDRACE_ENABLE_TELEMETRY=1"] : [])],
+    }));
 }
 
 /**
@@ -1000,6 +1085,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const sources = sourceReaders(rt.workflows, rt.ctx);
   const ui = await startUi({
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
+    interactive: process.stdout.isTTY === true,
     tick: schedule.wake,
     goto: gotoByClaim(writeOwner, new Map(rt.workflows.map((w) => [w.id, gotoFor({
       source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx, workflow: w.deps.workflow,

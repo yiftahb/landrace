@@ -2539,10 +2539,13 @@ export interface Schedule {
 /** What a wake did: ran a tick now, queued one behind the tick in flight, or nothing, the schedule having stopped. */
 export type WakeResult = "started" | "queued" | "stopped";
 
+/** Opens a URL in the person's browser; rejects, or throws, when it could not. */
+export type BrowserOpener = (url: string) => Promise<void>;
+
 export interface StartOptions {
   once?: boolean;
   debug?: boolean;
-  /** Serve the triage page. Default true; `--no-ui` turns it off. */
+  /** Serve the triage page. Default true; `--headless`, or its older name `--no-ui`, turns it off. */
   ui?: boolean;
   uiPort?: number;
   /** See BuildOptions.otel. */

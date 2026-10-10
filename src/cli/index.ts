@@ -7,7 +7,7 @@ import { runInit } from "#cli/init.js";
 import { runValidate } from "#cli/validate.js";
 import { runNext } from "#cli/next.js";
 import { runChildMcp, runMcp } from "#cli/mcp.js";
-import { DEFAULT_UI_PORT, parsePort, runStart } from "#cli/start.js";
+import { runStart, startCommand } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
 import { latestVersion, ownVersion, runCommand, runUpdate, runVersion, updateCommand, updateNotice } from "#cli/version.js";
 
@@ -108,37 +108,12 @@ program
     });
   });
 
-program
-  .command("start")
-  .description("watch the tracker and advance every eligible item")
-  .option("-w, --workspace <dir>", "workspace directory", ".landrace")
-  .option("--once", "run a single tick and exit")
-  .option("--debug", "print every event, the agent's included, and the snapshot behind each decision")
-  .option("--ui-port <port>", "port for the triage page", String(DEFAULT_UI_PORT))
-  .option("--no-ui", "do not serve the triage page")
-  .option("--telemetry", "export every event to an OpenTelemetry collector (sets LANDRACE_ENABLE_TELEMETRY=1)")
-  .option(
-    "--otel <KEY=VALUE>",
-    "a telemetry setting (OTEL_*), over .landrace/.env and the shell; repeatable",
-    (pair: string, pairs: string[]) => [...pairs, pair],
-    [] as string[],
-  )
-  .action(async (opts: {
-    workspace: string; once?: boolean; debug?: boolean; ui: boolean; uiPort: string; telemetry?: boolean; otel: string[];
-  }) => {
-    // Beside the start, never ahead of it: a slow or absent npm costs nothing
-    // but the line. Not in `mcp`, whose stdout is the protocol.
-    void updateNotice(process.env, ownVersion()).then((line) => { if (line) console.error(line); }, () => {});
-    await loadingHooks("start", () =>
-      runStart(opts.workspace, {
-        ...(opts.once === undefined ? {} : { once: opts.once }),
-        ...(opts.debug === undefined ? {} : { debug: opts.debug }),
-        ui: opts.ui,
-        uiPort: parsePort(opts.uiPort),
-        otel: [...opts.otel, ...(opts.telemetry ? ["LANDRACE_ENABLE_TELEMETRY=1"] : [])],
-      }),
-    );
-  });
+program.addCommand(startCommand(async (dir, opts) => {
+  // Beside the start, never ahead of it: a slow or absent npm costs nothing
+  // but the line. Not in `mcp`, whose stdout is the protocol.
+  void updateNotice(process.env, ownVersion()).then((line) => { if (line) console.error(line); }, () => {});
+  await loadingHooks("start", () => runStart(dir, opts));
+}));
 
 program
   .command("status")
