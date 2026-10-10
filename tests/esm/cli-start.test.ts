@@ -1439,6 +1439,53 @@ describeLoopback("runStart's browser, with interactive unset", () => {
       [console.log, console.error] = [log, error];
     }
   }, 30_000);
+
+  it("opens nothing with --headless or --once, even in a terminal", async () => {
+    const { dir, record } = await fixture();
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (): void => {};
+    const opened: string[] = [];
+    const open = async (u: string): Promise<void> => { opened.push(u); };
+    let headless: Promise<void> | undefined;
+    try {
+      await runStart(dir, { once: true, interactive: true, open });
+      const ran = (await applied(record)).length;
+      headless = runStart(dir, { ui: false, interactive: true, open });
+      await until(async () => (await applied(record)).length > ran, "the headless start to tick");
+      expect(opened).toEqual([]);
+    } finally {
+      process.emit("SIGINT");
+      await headless;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  it.each([
+    ["throws", (): Promise<void> => { throw new Error("spawn xdg-open ENOENT"); }],
+    ["reports an error", (): Promise<void> => Promise.reject(new Error("spawn xdg-open ENOENT"))],
+  ])("keeps the start running when the opener %s, and says where the board is", async (_, open) => {
+    const { dir, record } = await fixture();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => {
+      said.push(String(line));
+    };
+    const running = runStart(dir, { uiPort: 0, interactive: true, open });
+    try {
+      await until(() => said.some((l) => l.includes("could not open a browser")), "the opener's failure");
+      const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
+      expect(said.filter((l) => l.includes("could not open a browser")))
+        .toEqual([`landrace: could not open a browser (spawn xdg-open ENOENT); the board is at ${url}`]);
+      // Still running: its first tick works the item after the opener failed.
+      await until(async () => (await applied(record)).length === 1, "the first tick");
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
 });
 
 /*
@@ -1639,7 +1686,9 @@ export const preflight = brand("preflight", {
     });
     await writeFile(hold, "");
     const { said, restore } = quiet();
-    const first = runStart(dir, { uiPort: 0, interactive: false });
+    // A terminal, so a start that passed would open its board: refused, it opens none.
+    const opened: string[] = [];
+    const first = runStart(dir, { uiPort: 0, interactive: true, open: async (u) => { opened.push(u); } });
     const refused = first.then(() => null, (e: unknown) => e as Error);
     let second: Promise<void> | undefined;
     try {
@@ -1653,6 +1702,7 @@ export const preflight = brand("preflight", {
       );
       // It served nothing: the only page is the second start's, still named by the record.
       expect(said.filter((l) => l.includes("triage page at "))).toHaveLength(1);
+      expect(opened).toEqual([]);
       expect(await portOf(dir)).toEqual({ out: [url], err: [], code: 0 });
     } finally {
       await writeFile(release, "");

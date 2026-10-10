@@ -88,7 +88,7 @@ To stop a step while it runs, close its item or take its admit label (`lr:auto` 
 
 ### The board
 
-`start` serves a **board**, the triage page, at `http://127.0.0.1:4545/`, and opens it in your default browser once, when its output is a terminal. A start under a supervisor, in CI or with its output piped serves the board and opens nothing. A browser that fails to open prints `landrace: could not open a browser (<reason>); the board is at <url>`, and the start carries on. The board shows every candidate item, with its sub-items and pull requests nested beneath it, in lanes:
+`start` serves a **board**, the triage page, at `http://127.0.0.1:4545/`, and opens it in your default browser once, when its output is a terminal, after it has written the board's record. A start refused because another already serves the workspace's board opens nothing. A start under a supervisor, in CI or with its output piped serves the board and opens nothing. A browser that fails to open prints `landrace: could not open a browser (<reason>); the board is at <url>`, and the start carries on. The board shows every candidate item, with its sub-items and pull requests nested beneath it, in lanes:
 
 - **Needs you** — an item at a `waits: person` or `waits: pairing` stage, and every halt;
 - **Agent running** — an agent this process started is running on it;

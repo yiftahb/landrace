@@ -103,9 +103,6 @@ export async function startUi(
     board: Board; ui: boolean; once: boolean; port: number; tick?: () => WakeResult; goto?: GotoPath | undefined;
     refresh?: (() => Promise<void>) | undefined; panel?: ItemPanel | undefined;
     admit?: ((item: string, workflow: string) => Promise<AdmitResult>) | undefined;
-    /** Stdout is a terminal, so a person is there to see the browser open. Absent, nothing opens. */
-    interactive?: boolean | undefined;
-    open?: BrowserOpener | undefined;
   },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
@@ -126,7 +123,6 @@ export async function startUi(
     }
     throw e;
   }
-  openBoard(ui.url, { interactive: opts.interactive ?? false, open: opts.open ?? openBrowser });
   return ui;
 }
 
@@ -1106,7 +1102,6 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const sources = sourceReaders(rt.workflows, rt.ctx);
   const ui = await startUi({
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
-    interactive: opts.interactive ?? process.stdout.isTTY === true, open: opts.open,
     tick: schedule.wake,
     goto: gotoByClaim(writeOwner, new Map(rt.workflows.map((w) => [w.id, gotoFor({
       source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx, workflow: w.deps.workflow,
@@ -1168,6 +1163,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     }
     console.error(`landrace: triage page at ${ui.url}`);
     pageRef.url = ui.url;
+    // Only now: a start refused above, or one that could not write its
+    // record, has already closed its board, and a tab on it would be dead.
+    openBoard(ui.url, { interactive: opts.interactive ?? process.stdout.isTTY === true, open: opts.open ?? openBrowser });
   }
 
   // What `landrace mcp` touches after a person's write, in its own process:
