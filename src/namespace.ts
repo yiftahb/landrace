@@ -3200,6 +3200,32 @@ export interface UiServer {
   close(): Promise<void>;
 }
 
+/**
+ * What a board-serving `landrace start` writes beside its locks, for
+ * `landrace port` to find. `workspace` is what the board publishes as its
+ * own in `/board.json`, so a port that now answers for another is told apart.
+ */
+export interface BoardInstance {
+  pid: number;
+  port: number;
+  workspace: string;
+  /** ISO 8601. */
+  startedAt: string;
+}
+
+/** A workspace's instance record as read: there, not there, or there and unreadable. */
+export type InstanceRead = { instance: BoardInstance } | { missing: true } | { unreadable: string };
+
+/** Whether a workspace's board is up: its URL, or which check said it is not. */
+export type BoardLiveness = { live: string; instance: BoardInstance } | { offline: string };
+
+/** Where `landrace port` says what it found, and how it exits. */
+export interface PortIo {
+  out(line: string): void;
+  err(line: string): void;
+  exit(code: number): void;
+}
+
 /** How `landrace update` updates: the project's own dependency, or the global install. */
 export interface UpdateCommand {
   command: string;

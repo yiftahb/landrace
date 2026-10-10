@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`start` opens the board in your browser.** Once the board is served, `start` opens it in the default browser, once, when its output is a terminal: `open` on macOS, `xdg-open` on Linux, `cmd /c start` on Windows. A start under a supervisor, in CI or with its output piped serves the board and opens nothing. A browser that fails to open prints one line with the board's URL, and the start carries on. See [The board](docs/cli.md#the-board).
 
+- **`landrace port`** prints the URL of the board this workspace's `landrace start` serves, or `offline` with exit code 1 and one line on stderr saying why: no record, a dead process, a port that does not answer, or a port that answers for another workspace. A board-serving `start` records its process id and port under `$TMPDIR/landrace/<repo>/boards/` once the board listens and removes the record on a clean stop. A second board-serving `start` on the same workspace refuses, naming the running URL and process id. See [`landrace port`](docs/cli.md#landrace-port).
+
 - **`start --headless`** serves no board and opens no browser. `--no-ui` still works and means the same. A taken `--ui-port` now names `--headless` as the way to turn the board off. See [`landrace start`](docs/cli.md#landrace-start).
 
 ### Changed

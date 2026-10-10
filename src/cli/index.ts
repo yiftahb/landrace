@@ -9,6 +9,7 @@ import { runNext } from "#cli/next.js";
 import { runChildMcp, runMcp } from "#cli/mcp.js";
 import { runStart, startCommand } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
+import { portCommand } from "#cli/port.js";
 import { latestVersion, ownVersion, runCommand, runUpdate, runVersion, updateCommand, updateNotice } from "#cli/version.js";
 
 const program = new Command();
@@ -124,6 +125,9 @@ program
       for (const line of await runStatus(opts.workspace)) console.log(line);
     });
   });
+
+// No hook is imported: the record and the board's own answer are all it reads.
+program.addCommand(portCommand());
 
 program
   .command("mcp")
