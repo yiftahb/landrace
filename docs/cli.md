@@ -1,6 +1,6 @@
 # Command line
 
-Landrace is one command, `landrace`, with eight subcommands. Each but `init`, `version` and `update` takes the **workspace** — the `.landrace/` folder holding `landrace.yaml`, the workflows and the hooks. Every one of those but `next`, which requires it, defaults to `.landrace` in the current folder.
+Landrace is one command, `landrace`, with nine subcommands. Each but `init`, `version` and `update` takes the **workspace** — the `.landrace/` folder holding `landrace.yaml`, the workflows and the hooks. Every one of those but `next`, which requires it, defaults to `.landrace` in the current folder.
 
 ```text
 landrace init     <name>
@@ -8,6 +8,7 @@ landrace validate [dir]
 landrace status   [-w, --workspace <dir>]
 landrace start    [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--headless]
                   [--telemetry] [--otel KEY=VALUE]...
+landrace port     [-w, --workspace <dir>]
 landrace next     -w, --workspace <dir> [--workflow <id>] -s, --snapshot <file>
 landrace mcp      [-w, --workspace <dir>] [--workflow <id>]
                   [--child <parent> --stage <stage> --round <round>]
@@ -17,7 +18,7 @@ landrace update
 
 `landrace --version` prints the version alone.
 
-Every subcommand but `init` and `next` imports the project's TypeScript hook modules. Node 22.18 and newer read them unflagged; on an older Node 22, `landrace` re-runs itself once with `--experimental-strip-types` and says so. A command that fails prints `landrace <command>: <reason>` and exits 1, never a stack trace.
+`validate`, `status`, `start` and `mcp` import the project's TypeScript hook modules. Node 22.18 and newer read them unflagged; on an older Node 22, `landrace` re-runs itself once with `--experimental-strip-types` and says so. A command that fails prints `landrace <command>: <reason>` and exits 1, never a stack trace.
 
 A hook's `landrace/*` imports resolve to the copy of Landrace that is running ([Hook modules](hooks.md#hook-modules)). Inside this repository that copy is the built `dist/` only when this checkout's own CLI runs, as `node dist/cli.js`: run `pnpm build` after pulling and before any of these commands. A global `landrace` run here loads its own copy instead, whatever `dist/` holds, so `pnpm build` changes nothing for it. A hook newer than the copy fails to import: the error says to rebuild when the copy is a checkout, and to update Landrace when it is an installed one.
 
@@ -73,13 +74,13 @@ As it starts, it asks npm whether a newer Landrace is out and, if one is, prints
 | `--telemetry` | Export every event to an OpenTelemetry collector (sets `LANDRACE_ENABLE_TELEMETRY=1`) |
 | `--otel KEY=VALUE` | Set one telemetry variable, over `.env` and the shell. Repeatable. See [Configuration](configuration.md#telemetry) |
 
-Before the first tick, `start` loads the configuration and every workflow, runs `validate`'s checks with a few differences ([listed there](validate.md#what-start-checks-differently)), runs each hook's preflight — the GitHub integration's checks the token's permissions — and resolves the executors and their MCP servers. Any problem refuses to start, naming it.
+Before the first tick, `start` loads the configuration and every workflow, runs `validate`'s checks with a few differences ([listed there](validate.md#what-start-checks-differently)), runs each hook's preflight — the GitHub integration's checks the token's permissions — and resolves the executors and their MCP servers. Any problem refuses to start, naming it. A start that serves a board also refuses when another start already serves this workspace's board, naming its URL and process id; a record a crashed start left behind does not block it ([landrace port](#landrace-port)).
 
 Ticks overlap: the lock is per item, so an item busy with a ten-minute agent run delays only itself. **A step run spends real money**, and the round caps are the `$lt` counters in your workflow, not something the engine imposes. The first time, escalate: `validate`, then `status`, then `start --once --debug`, then `start`.
 
 Ctrl-C stops: nothing new starts, agent runs in flight are cancelled, and the locks are released as it exits. Press it twice to stop at once; the locks this process holds are left behind, and since they name its process id, the next run reclaims them.
 
-Locks, worktrees and the wake file live under `$TMPDIR/landrace/<repo>/`.
+Locks, worktrees, the wake file and the board's record live under `$TMPDIR/landrace/<repo>/`.
 
 ### Stopping a running step
 
@@ -139,6 +140,32 @@ How every one of these writes is guarded against other websites is in [Security]
 **Notifications.** The 🔔 beside the theme toggle turns on browser notifications, remembered per browser. With it on, each item that has come into Needs you since the last poll raises one notification — "#29 needs you", with the title and why — and clicking it opens that item's panel. Opening the page announces nothing that was already waiting. If the browser has blocked notifications, the bell turns to 🔕 and says so.
 
 The page follows the system's light or dark preference, or whatever you last toggled, with no flash on load.
+
+## landrace port
+
+```text
+landrace port [-w, --workspace <dir>]
+```
+
+Prints the URL of the board that the `landrace start` running for this workspace serves, so a script or an editor pane that knows only the folder finds that project's own board when several projects run `landrace start` on one machine. The workspace defaults to `.landrace` in the current folder.
+
+A start that serves a board writes a record once the board listens: its process id, the port it bound, the repository checkout the board shows, and when it started. The record lives under `$TMPDIR/landrace/<repo>/boards/`, keyed by the workspace folder's real path, never inside the working tree. A clean stop removes it. `--headless` and `--once` serve no board and write none.
+
+`port` never trusts the record alone. It asks the board for `/board.json` on `127.0.0.1`, giving up after two seconds, and the board must answer for the record's checkout. When it does, stdout is the URL alone and the exit code is 0:
+
+```text
+http://127.0.0.1:4545
+```
+
+Otherwise stdout is `offline`, the exit code is 1, and stderr names which check failed:
+
+- `no record for the workspace in <dir>` — no start serves its board;
+- `the recorded pid <pid> is gone` — the start that wrote the record crashed or was killed;
+- `port <port> does not answer` — nothing serves the port, or it gave no answer in time;
+- `port <port> answers, but not with a board` — something serves the port, but its `/board.json` failed;
+- `port <port> answers for another workspace, <path>` — the port now serves another project's board.
+
+A missing workspace folder and an unreadable record are each said the same way. Two workspaces in one checkout show the same checkout on their boards, so the last check cannot tell one of their ports from the other's.
 
 ## landrace next
 
