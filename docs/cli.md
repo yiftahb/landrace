@@ -159,13 +159,15 @@ http://127.0.0.1:4545
 
 Otherwise stdout is `offline`, the exit code is 1, and stderr names which check failed:
 
+- `there is no workspace at <dir>` — the workspace folder does not exist;
 - `no record for the workspace in <dir>` — no start serves its board;
+- `the record at <path> cannot be read: <why>` — the record is there, but it is not valid;
 - `the recorded pid <pid> is gone` — the start that wrote the record crashed or was killed;
 - `port <port> does not answer` — nothing serves the port, or it gave no answer in time;
 - `port <port> answers, but not with a board` — something serves the port, but its `/board.json` failed;
 - `port <port> answers for another workspace, <path>` — the port now serves another project's board.
 
-A missing workspace folder and an unreadable record are each said the same way. Two workspaces in one checkout show the same checkout on their boards, so the last check cannot tell one of their ports from the other's.
+Two workspaces in one checkout show the same checkout on their boards, so the last check cannot tell one of their ports from the other's.
 
 ## landrace next
 
