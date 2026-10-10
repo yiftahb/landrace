@@ -6,7 +6,7 @@ Landrace is one command, `landrace`, with eight subcommands. Each but `init`, `v
 landrace init     <name>
 landrace validate [dir]
 landrace status   [-w, --workspace <dir>]
-landrace start    [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--no-ui]
+landrace start    [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--headless]
                   [--telemetry] [--otel KEY=VALUE]...
 landrace next     -w, --workspace <dir> [--workflow <id>] -s, --snapshot <file>
 landrace mcp      [-w, --workspace <dir>] [--workflow <id>]
@@ -56,7 +56,7 @@ Prints one line per listed item — `#<id>  <stage>  <title>  <note>`, with the 
 ## landrace start
 
 ```text
-landrace start [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--no-ui] [--telemetry] [--otel KEY=VALUE]...
+landrace start [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] [--headless] [--telemetry] [--otel KEY=VALUE]...
 ```
 
 Watches the tracker and advances every item a workflow claims. It runs a **tick** every `tick.interval`: each tick lists every workflow's source, then checks each claimed item once, most urgent first. An agent a tick starts runs on after its checks end, and a tick that starts while an earlier one is still checking is skipped. `tick.concurrency` bounds the agents running at once across the whole workspace, overlapping ticks and every workflow included; checking an item takes no slot. [Configuration](configuration.md#landraceyaml) says what happens to a step when no slot is free.
@@ -69,7 +69,7 @@ As it starts, it asks npm whether a newer Landrace is out and, if one is, prints
 | `--once` | Run a single tick and exit. Serves no board |
 | `--debug` | Print every event, including the agent process's own output and the snapshot behind each decision, so you can watch a decision before it becomes a write |
 | `--ui-port <port>` | The board's port. Default `4545` |
-| `--no-ui` | Serve no board |
+| `--headless` | Serve no board and open no browser. `--no-ui` is an older name for it |
 | `--telemetry` | Export every event to an OpenTelemetry collector (sets `LANDRACE_ENABLE_TELEMETRY=1`) |
 | `--otel KEY=VALUE` | Set one telemetry variable, over `.env` and the shell. Repeatable. See [Configuration](configuration.md#telemetry) |
 
@@ -87,7 +87,7 @@ To stop a step while it runs, close its item or take its admit label (`lr:auto` 
 
 ### The board
 
-`start` serves a **board**, the triage page, at `http://127.0.0.1:4545/`. It shows every candidate item, with its sub-items and pull requests nested beneath it, in lanes:
+`start` serves a **board**, the triage page, at `http://127.0.0.1:4545/`, and opens it in your default browser once, when its output is a terminal. A start under a supervisor, in CI or with its output piped serves the board and opens nothing. A browser that fails to open prints `landrace: could not open a browser (<reason>); the board is at <url>`, and the start carries on. The board shows every candidate item, with its sub-items and pull requests nested beneath it, in lanes:
 
 - **Needs you** — an item at a `waits: person` or `waits: pairing` stage, and every halt;
 - **Agent running** — an agent this process started is running on it;
@@ -95,7 +95,7 @@ To stop a step while it runs, close its item or take its admit label (`lr:auto` 
 - **Waiting**;
 - **Not admitted** and **Done**, collapsed.
 
-It costs no tracker calls: it polls the process every two seconds and shows what the tick already fetched and what the process knows is running. `--ui-port` moves it, `--no-ui` turns it off, and `--once` never serves it. It binds loopback only and answers only its own host name.
+It costs no tracker calls: it polls the process every two seconds and shows what the tick already fetched and what the process knows is running. `--ui-port` moves it, `--headless` turns it off, and `--once` never serves it. It binds loopback only and answers only its own host name.
 
 **Pages.** A sidebar lists *Needs You*, then each workflow by name (case-folded, then id); under 640 px it is a row of chips. The top bar, with the tick controls, stays at the top of the window while the list scrolls. From 640 px up the sidebar stays just below it, and scrolls on its own when it is taller than the space left; under 640 px it scrolls away with the list. `#/` is Needs You, `#/w/<id>` a workflow, and either takes `?item=<id>` to open that item's panel. Old `#item=<id>` links still open the panel on Needs You, and a workflow the board no longer has shows Needs You. Moving between pages clears the panel's item.
 

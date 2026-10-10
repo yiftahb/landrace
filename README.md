@@ -118,7 +118,7 @@ Using Codex instead? Its hook and settings are in [Integrations](docs/integratio
 landrace start
 ```
 
-`start` checks the token's permissions, then serves the **board** at `http://127.0.0.1:4545/`. Every 60 seconds it runs a **tick**: one pass over the tracker's issues.
+`start` checks the token's permissions, then opens the **board** at `http://127.0.0.1:4545/` in your browser. Every 60 seconds it runs a **tick**: one pass over the tracker's issues.
 
 To give it work, label an issue `lr:main`. On the next tick the issue enters the `todo` stage, and the board lists it under Waiting. The workflow `init` wrote runs no agent yet, so the issue stays there. To run one, give `todo` a step, as [Workflows](docs/workflows.md#step-files) shows. A step that changes files reaches only the hosts listed under `agent.sandbox.hosts`, so list your forge and package registry there: see [A write step's sandbox](docs/security.md#a-write-steps-sandbox). Each step is a paid agent run, and a cap in the workflow bounds how many times each step runs.
 
