@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`start --headless`** serves no board and opens no browser. `--no-ui` still works and means the same. A taken `--ui-port` now names `--headless` as the way to turn the board off. See [`landrace start`](docs/cli.md#landrace-start).
 
+### Changed
+
+- **The board waits for the first tick.** Until the first tick has listed the tracker, a spinner covers every page with "Waiting for the first tick…", and the page behind it takes no clicks or keyboard focus. Before, workflow pages showed every lane as "None" and only Needs You said "Listing…"; that line is gone. See [The board](docs/cli.md#the-board).
+- **A gap above the stuck sidebar.** From 640 px up, the sidebar now sticks 1.5rem below the top bar, the gap it has before you scroll, instead of touching the bar's border.
+
 ## [1.5.0] - 2026-10-08
 
 ### Added
