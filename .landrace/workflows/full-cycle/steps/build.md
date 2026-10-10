@@ -72,7 +72,10 @@ already does what you are adding — the same git command, a call to the same
 remote or host — found by searching for it: call it, or give yours every guard
 and flag it sets, each with its test. Likewise the code that shares what you
 change, and leaned on its old value — another element at the z-index you take,
-a scroll into view that assumed nothing covers the window's top.
+a scroll into view that assumed nothing covers the window's top, every
+existing caller and test of a function you give a side effect — a spawned
+process, a network call — reaching it through the outermost entry point, each
+of which must be able to inject a stub.
 
 **Step 2 — Bring the branch up to date with the default branch.** Merge
 origin's default branch: `git merge "$(git rev-parse --abbrev-ref origin/HEAD)"`.

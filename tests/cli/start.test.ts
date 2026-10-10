@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { renderMarker } from "#conventions.js";
-import type { Board, Executor, ExecutorContext, LandraceEvent, Registry, Schedule, Source, WakeResult, Workflow } from "#namespace.js";
+import type { Board, Executor, ExecutorContext, LandraceEvent, Registry, Schedule, Source, StartOptions, WakeResult, Workflow } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
 import { createActivityLog } from "#runner/activity.js";
 import { createDispatcher } from "#runner/effects.js";
@@ -17,6 +17,7 @@ import { describeLoopback } from "#tests/support/loopback.js";
 import { workflowIn, workspaceOf } from "#tests/support/workspace.js";
 import {
   boardSink,
+  browserCommand,
   buildWorkspaceRuntime,
   childServerCommand,
   createInterrupt,
@@ -24,12 +25,14 @@ import {
   screenerFor,
   gotoFor,
   loop,
+  openBoard,
   panelFor,
   parseInterval,
   parsePort,
   repoWorkspace,
   sandboxFor,
   sourceReaders,
+  startCommand,
   startUi,
 } from "#cli/start.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
@@ -481,6 +484,90 @@ describe("parsePort", () => {
   });
 });
 
+describe("browserCommand", () => {
+  const url = "http://127.0.0.1:4545/";
+  it("is open on macOS", () => expect(browserCommand("darwin", url)).toEqual({ command: "open", args: [url] }));
+  it.each(["linux", "freebsd", "openbsd"] as const)("is xdg-open on %s", (platform) => {
+    expect(browserCommand(platform, url)).toEqual({ command: "xdg-open", args: [url] });
+  });
+  // `start`'s first quoted argument is the window title, so an empty one keeps the URL from being taken for it.
+  it("is cmd /c start on Windows, with an empty title", () => {
+    expect(browserCommand("win32", url)).toEqual({ command: "cmd", args: ["/c", "start", "", url] });
+  });
+});
+
+describe("openBoard", () => {
+  const url = "http://127.0.0.1:4545/";
+  let said: string[];
+  let spy: jest.SpyInstance;
+  beforeEach(() => {
+    said = [];
+    spy = jest.spyOn(console, "error").mockImplementation((line: unknown) => { said.push(String(line)); });
+  });
+  afterEach(() => spy.mockRestore());
+  const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+  it("opens the URL once in a terminal", async () => {
+    const open = jest.fn(async () => {});
+    openBoard(url, { interactive: true, open });
+    await settle();
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith(url);
+    expect(said).toEqual([]);
+  });
+
+  it("opens nothing when stdout is not a terminal", async () => {
+    const open = jest.fn(async () => {});
+    openBoard(url, { interactive: false, open });
+    await settle();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["throws", (): Promise<void> => { throw new Error("spawn xdg-open ENOENT"); }],
+    ["reports an error", (): Promise<void> => Promise.reject(new Error("xdg-open exited with 3"))],
+  ])("returns, and says where the board is, when the opener %s", async (_, open) => {
+    expect(() => openBoard(url, { interactive: true, open })).not.toThrow();
+    await settle();
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatch(/^landrace: could not open a browser \((spawn xdg-open ENOENT|xdg-open exited with 3)\); the board is at http:\/\/127\.0\.0\.1:4545\/$/);
+  });
+});
+
+describe("the start command line", () => {
+  const parsed = async (...argv: string[]): Promise<{ dir: string; opts: StartOptions }> => {
+    const run = jest.fn<Promise<void>, [string, StartOptions]>(async () => {});
+    await startCommand(run).parseAsync(argv, { from: "user" });
+    expect(run).toHaveBeenCalledTimes(1);
+    const [dir, opts] = run.mock.calls[0] ?? [];
+    if (dir === undefined || opts === undefined) throw new Error("runStart was not reached");
+    return { dir, opts };
+  };
+
+  it("serves the board by default", async () => {
+    expect((await parsed()).opts).toMatchObject({ ui: true, uiPort: 4545 });
+  });
+  it.each([["--headless"], ["--no-ui"], ["--headless", "--no-ui"]])("serves none with %s", async (...flags) => {
+    expect((await parsed(...flags)).opts.ui).toBe(false);
+  });
+  it("passes the rest through", async () => {
+    const { dir, opts } = await parsed("-w", "ws", "--once", "--debug", "--ui-port", "5000", "--telemetry", "--otel", "A=1");
+    expect(dir).toBe("ws");
+    expect(opts).toEqual({ once: true, debug: true, ui: true, uiPort: 5000, otel: ["A=1", "LANDRACE_ENABLE_TELEMETRY=1"] });
+  });
+  it("refuses a bad --ui-port as a usage error, naming the flag, and runs nothing", async () => {
+    const run = jest.fn(async () => {});
+    let said = "";
+    const command = startCommand(run).exitOverride().configureOutput({ writeErr: (text) => { said += text; } });
+    await expect(command.parseAsync(["--ui-port", "0"], { from: "user" })).rejects.toThrow(/--ui-port must be a whole number/);
+    expect(said).toMatch(/--ui-port must be a whole number from 1 to 65535, got "0"/);
+    expect(run).not.toHaveBeenCalled();
+  });
+  it("lists --headless in its help", () => {
+    expect(startCommand(async () => {}).helpInformation()).toMatch(/--headless/);
+  });
+});
+
 describe("repoWorkspace", () => {
   it("reports the repository's own top-level directory and its name, from a subdirectory", async () => {
     // Reuses this checkout rather than a fixture repo: repositoryRoot's own
@@ -505,7 +592,7 @@ describeLoopback("startUi", () => {
   const board = () =>
     createBoard({ workflows: [{ id: "main", workflow: { version: 1, name: "t", description: "test", stages: [] } }], held: async () => null, folder: "f", workspace: "/w", nest: [] });
 
-  it("serves nothing with --no-ui", async () => {
+  it("serves nothing with --headless", async () => {
     expect(await startUi({ board: board(), ui: false, once: false, port: 0 })).toBeNull();
   });
 
@@ -524,10 +611,64 @@ describeLoopback("startUi", () => {
     await new Promise<void>((r) => squatter.listen(0, "127.0.0.1", r));
     const port = (squatter.address() as { port: number }).port;
     try {
-      await expect(startUi({ board: board(), ui: true, once: false, port })).rejects.toThrow(/--ui-port.*--no-ui|--no-ui.*--ui-port/);
+      await expect(startUi({ board: board(), ui: true, once: false, port })).rejects.toThrow(/--ui-port.*--headless|--headless.*--ui-port/);
     } finally {
       await new Promise<void>((r) => squatter.close(() => r()));
     }
+  });
+
+  describe("opening the board in a browser", () => {
+    let said: string[];
+    let spy: jest.SpyInstance;
+    beforeEach(() => {
+      said = [];
+      spy = jest.spyOn(console, "error").mockImplementation((line: unknown) => { said.push(String(line)); });
+    });
+    afterEach(() => spy.mockRestore());
+    // What the opener's failure prints is said after a turn of the loop, never before startUi returns.
+    const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+    it("opens the served board's URL once, when run in a terminal", async () => {
+      const open = jest.fn(async () => {});
+      const ui = await startUi({ board: board(), ui: true, once: false, port: 0, interactive: true, open });
+      try {
+        await settle();
+        expect(open).toHaveBeenCalledTimes(1);
+        expect(open).toHaveBeenCalledWith(ui?.url);
+        expect(said).toEqual([]);
+      } finally {
+        await ui?.close();
+      }
+    });
+
+    it("opens nothing with --headless, --once, or when stdout is not a terminal", async () => {
+      const open = jest.fn(async () => {});
+      expect(await startUi({ board: board(), ui: false, once: false, port: 0, interactive: true, open })).toBeNull();
+      expect(await startUi({ board: board(), ui: true, once: true, port: 0, interactive: true, open })).toBeNull();
+      const ui = await startUi({ board: board(), ui: true, once: false, port: 0, interactive: false, open });
+      try {
+        // Not a terminal still serves the board: only the browser is skipped.
+        expect(ui?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+        await settle();
+        expect(open).not.toHaveBeenCalled();
+      } finally {
+        await ui?.close();
+      }
+    });
+
+    it.each([
+      ["throws", (): Promise<void> => { throw new Error("spawn xdg-open ENOENT"); }],
+      ["reports an error", (): Promise<void> => Promise.reject(new Error("spawn xdg-open ENOENT"))],
+    ])("keeps the start running when the opener %s, and says where the board is", async (_, open) => {
+      const ui = await startUi({ board: board(), ui: true, once: false, port: 0, interactive: true, open });
+      try {
+        expect(ui?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+        await settle();
+        expect(said).toEqual([`landrace: could not open a browser (spawn xdg-open ENOENT); the board is at ${ui?.url}`]);
+      } finally {
+        await ui?.close();
+      }
+    });
   });
 
   /**

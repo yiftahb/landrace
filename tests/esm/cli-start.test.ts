@@ -1369,10 +1369,13 @@ describeLoopback("runStart's page while a source cannot list", () => {
     console.error = (line: unknown): void => {
       said.push(String(line));
     };
-    const running = runStart(dir, { uiPort: 0 });
+    // A terminal, so the board is opened, by a stub: no test spawns a browser.
+    const opened: string[] = [];
+    const running = runStart(dir, { uiPort: 0, interactive: true, open: async (u) => { opened.push(u); } });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
+      expect(opened).toEqual([url]);
       const listed = async (): Promise<string[]> => ((await (await fetch(`${url}board.json`)).json()) as BoardView).rows.map((r) => r.id);
       const post = (path: string, action: string): Promise<Response> =>
         fetch(`${url}${path}`, { method: "POST", headers: { "x-landrace-action": action } });
@@ -1403,6 +1406,37 @@ describeLoopback("runStart's page while a source cannot list", () => {
 });
 
 /*
+ * Whether the board is opened, when nothing says: the default is the only
+ * guard keeping a start under a supervisor or in CI from opening a browser,
+ * so it is tested through runStart with `interactive` left unset.
+ */
+describeLoopback("runStart's browser, with interactive unset", () => {
+  it.each([[true, 1], [false, 0]] as const)("opens the board when stdout is a terminal (isTTY %s: %i)", async (tty, times) => {
+    const { dir } = await fixture();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => {
+      said.push(String(line));
+    };
+    const was = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", { value: tty, configurable: true, writable: true });
+    const opened: string[] = [];
+    const running = runStart(dir, { uiPort: 0, open: async (u) => { opened.push(u); } });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      expect(opened).toHaveLength(times);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      if (was) Object.defineProperty(process.stdout, "isTTY", was);
+      else delete (process.stdout as { isTTY?: boolean }).isTTY;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+});
+
+/*
  * The page over two workflows, through the daemon's own wiring: each row
  * names the workflow that owns it, an item both claim waits in Needs you
  * naming both, and nothing the page can post reaches either workflow for it.
@@ -1422,7 +1456,7 @@ describeLoopback("runStart's page over two workflows", () => {
     console.error = (line: unknown): void => {
       said.push(String(line));
     };
-    const running = runStart(dir, { uiPort: 0 });
+    const running = runStart(dir, { uiPort: 0, interactive: false, open: async () => { throw new Error("opened a browser"); } });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
