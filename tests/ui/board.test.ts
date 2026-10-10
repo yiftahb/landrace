@@ -1593,11 +1593,11 @@ describe("a Not admitted row's Start work", () => {
   it("offers each workflow that would alone claim it, and the row's ⋯ posts to the server's own path", () => {
     const o = offers(G, REPO);
     expect(o["1"]).toEqual([
-      { workflow: "full", name: "Full cycle", path: "/items/1/admit/full" },
-      { workflow: "fast", name: "Fastlane", path: "/items/1/admit/fast" },
+      { workflow: "full", name: "Full cycle", path: "/items/1/admit/full", labels: ["lr:auto"] },
+      { workflow: "fast", name: "Fastlane", path: "/items/1/admit/fast", labels: ["lr:auto", "lr:fast"] },
     ]);
     // Full cycle with lr:auto added still leaves an lr:fast item to Fastlane.
-    expect(o["2"]).toEqual([{ workflow: "fast", name: "Fastlane", path: "/items/2/admit/fast" }]);
+    expect(o["2"]).toEqual([{ workflow: "fast", name: "Fastlane", path: "/items/2/admit/fast", labels: ["lr:auto"] }]);
     expect(o["5"]).toHaveLength(2);
   });
 
@@ -1620,7 +1620,7 @@ describe("a Not admitted row's Start work", () => {
     expect(Object.values(o).flat()).toEqual([]);
     const { admit: _none, ...bare } = FULL;
     expect(offers(G, [{ id: "full", workflow: bare, operator: true }, REPO[1] as Entry])["1"]).toEqual([
-      { workflow: "fast", name: "Fastlane", path: "/items/1/admit/fast" },
+      { workflow: "fast", name: "Fastlane", path: "/items/1/admit/fast", labels: ["lr:auto", "lr:fast"] },
     ]);
   });
 

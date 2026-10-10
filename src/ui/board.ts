@@ -317,10 +317,11 @@ export function boardView(input: {
    * over a fresh read before it writes.
    */
   const admitsOf = (id: string): BoardRow["admit"] =>
-    isItemId(id)
-      ? input.workflows.filter((w) => w.operator === true && "labels" in admitRoute(input.workflows, input.listing, id, w.id))
-        .map((w) => ({ workflow: w.id, name: w.workflow.name, path: admitPath(id, w.id) }))
-      : [];
+    !isItemId(id) ? [] : input.workflows.flatMap((w) => {
+      if (w.operator !== true) return [];
+      const route = admitRoute(input.workflows, input.listing, id, w.id);
+      return "labels" in route ? [{ workflow: w.id, name: w.workflow.name, path: admitPath(id, w.id), labels: route.labels }] : [];
+    });
 
   const rowOf = (node: Node): BoardRow => {
     const link = safeUrl(node.link);

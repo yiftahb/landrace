@@ -1009,7 +1009,7 @@ describe("a stopped item's Retry", () => {
       ${constSource("SVG_NS")}${blockSource("CHAT_TARGETS")}
       const writeNotes = new Map();
       const writing = new Set();
-      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "writeItem", "send", "writesOf", "buildRowMenu"].map(fnSource).join("")}
+      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "writeItem", "send", "writesOf", "admitsOf", "buildRowMenu"].map(fnSource).join("")}
       buildRowMenu(ROW)`, context) as Listening;
     return { menu, seen, context };
   };
@@ -1161,7 +1161,7 @@ describe("a stopped item's Retry", () => {
       const writing = new Set();
       function menuKeyOf(id) { return id + ":menu"; }
       function triggerKeyOf(id) { return id + ":trigger"; }
-      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "writeItem", "send", "writesOf", "buildRowMenu", "actionFor"].map(fnSource).join("")}
+      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "writeItem", "send", "writesOf", "admitsOf", "buildRowMenu", "actionFor"].map(fnSource).join("")}
       actionFor(ROW)`, context) as Listening;
     const trigger = wrap.children[0] as Listening;
     expect(trigger.textContent).toBe("⋯");
@@ -2050,12 +2050,12 @@ describe("a selected item no longer on the board", () => {
     const c: Record<string, unknown> = {
       panelId: "12", lastView: view, openMenuKey: null, pairing: { shown: false },
       keepingFocus: (f: () => void) => f(),
-      panelMore: {}, pairingItem: {}, composer: {},
+      panelMore: {}, pairingItem: {}, composer: {}, panelAdmit: { dataset: {}, replaceChildren: () => {} }, admitsOf: () => [],
       panelTop: { replaceChildren: () => {} }, panelBottom: { replaceChildren: () => {} },
       panelTitle: { set textContent(v: string) { seen.title = v; } },
       closePanel: () => { seen.cleared++; }, closeMenu: () => {}, el: () => ({}),
     };
-    for (const f of ["someRow", "findRow", "currentRow", "bareRow", "panelTitleOf", "viewListed", "renderPanel"]) runInNewContext(fnSource(f), c);
+    for (const f of ["someRow", "findRow", "currentRow", "bareRow", "panelTitleOf", "viewListed", "syncPanelMenu", "renderPanel"]) runInNewContext(fnSource(f), c);
     runInNewContext("renderPanel()", c);
     return seen;
   };
@@ -2445,6 +2445,13 @@ describe("an item a write just went through for", () => {
     expect(other).toMatchObject({ id: "20", lane: "needs-you", badge: "needs-you" });
   });
 
+  it("offers a Not admitted item just started no second Start work", () => {
+    const v = { nextTickAt: 1000, rows: [{ id: "19", kind: "item", context: false, lane: "not-admitted", badge: "not-admitted", note: "", since: 1,
+      retry: null, clear: null, goto: [], admit: [{ workflow: "a", name: "A", path: "/items/19/admit/a", labels: ["x"] }], children: [] }] };
+    const [sent] = drawn(v, new Map([["19", move("not-admitted")]])).rows;
+    expect(sent).toMatchObject({ badge: "waiting", admit: [] });
+  });
+
   // An item filed by its own badge: a child is sent from inside its parent's
   // copy, and the copy stays where it is for the other items filed in it.
   it("follows the item's own badge, at any depth, and moves a copy only when every item filed in it was sent", () => {
@@ -2802,30 +2809,91 @@ describe("an item row's Pairing… item", () => {
     override addEventListener(type?: string, f?: () => void): void { if (type && f) this.listeners.set(type, f); }
   }
   const doc = { createElement: (tag: string) => new Listening(tag), createElementNS: (_: string, tag: string) => new Listening(tag) };
-  const menuFor = (panel: object | null) => {
+  const menuFor = (panel: object | null, admit: object[] = []) => {
     const seen: unknown[][] = [];
+    const confirms: string[] = [];
+    const posts: unknown[][] = [];
     const menu = runInNewContext(`
       ${constSource("SVG_NS")}${blockSource("CHAT_TARGETS")}
       const writeNotes = new Map();
       const writing = new Set();
-      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "writeItem", "send", "writesOf", "buildRowMenu"].map(fnSource).join("")}
+      ${["el", "luminance", "faintOnDark", "markSvg", "chatIcon", "menuItem", "writeItem", "send", "writesOf", "admitsOf", "buildRowMenu"].map(fnSource).join("")}
       buildRowMenu(ROW)`, {
-      ROW: { id: "19", chat: { prompt: "p", links: { claude: "a:", claudeCli: "b:", cursor: "c:", codex: "d:" } }, retry: null, goto: [], panel },
+      ROW: { id: "19", chat: { prompt: "p", links: { claude: "a:", claudeCli: "b:", cursor: "c:", codex: "d:" } }, retry: null, goto: [], admit, panel },
       document: doc, navigator: {}, lastView: {},
       closeMenu: () => seen.push(["close"]), openPairing: (id: string) => seen.push(["pairing", id]),
+      confirm: (text: string) => { confirms.push(text); return true; },
+      fetch: (url: string, init: unknown) => { posts.push([url, init]); return Promise.resolve({ ok: false, text: () => Promise.resolve("#19 would be claimed by fast, not full") }); },
+      render: () => {}, moved: () => {}, schedulePoll: () => {},
     }) as Listening;
-    return { menu, seen };
+    return { menu, seen, confirms, posts };
   };
+  const items = (menu: Listening): string[] => menu.children.map((c) => (c.tag === "hr" ? "—" : c.textContent));
+  const WRITES = { pairing: "/items/19/pairing", pair: "/items/19/pair" };
+  const READS = { pairing: "/items/19/pairing", pair: null };
+  const FULL = { workflow: "full-cycle", name: "Full cycle", path: "/items/19/admit/full-cycle", labels: ["lr:auto"] };
+  const FAST = { workflow: "fastlane", name: "Fastlane", path: "/items/19/admit/fastlane", labels: ["lr:auto", "lr:fast"] };
 
-  it("comes first on an item with a panel, and opens its Pairing section", () => {
-    const { menu, seen } = menuFor({ pairing: "/items/19/pairing" });
-    expect(menu.children.slice(0, 2).map((c) => (c.tag === "hr" ? "—" : c.textContent))).toEqual(["Pairing…", "—"]);
+  it("comes first on an item one workflow owns and may write, and opens its Pairing section", () => {
+    const { menu, seen } = menuFor(WRITES);
+    expect(items(menu).slice(0, 2)).toEqual(["Pairing…", "—"]);
     (menu.children[0] as Listening).listeners.get("click")?.();
     expect(seen).toEqual([["close"], ["pairing", "19"]]);
   });
 
-  it("is not offered on a row with no panel", () => {
+  // A Not admitted row, a closed item and a read-only workflow's row all have a panel that only reads.
+  it("is not offered on a row whose panel cannot pair, nor on one with no panel", () => {
+    expect(menuFor(READS).menu.children[0]?.textContent).toBe("Chat");
     expect(menuFor(null).menu.children[0]?.textContent).toBe("Chat");
+  });
+
+  it("gives way to Start work on a Not admitted row with one workflow to start in", () => {
+    expect(items(menuFor(READS, [FULL]).menu).slice(0, 3)).toEqual(["Start work", "—", "Chat"]);
+    expect(items(menuFor(READS, [FULL]).menu)).not.toContain("Pairing…");
+  });
+
+  it("names each workflow when there are several to start in", () => {
+    expect(items(menuFor(READS, [FULL, FAST]).menu).slice(0, 3)).toEqual(["Start work in Full cycle", "Start work in Fastlane", "—"]);
+  });
+
+  it("offers no Start work on a row with none", () => {
+    expect(items(menuFor(READS).menu).some((t) => t.startsWith("Start work"))).toBe(false);
+    expect(items(menuFor(WRITES).menu).some((t) => t.startsWith("Start work"))).toBe(false);
+  });
+
+  it("asks first, naming the workflow and the labels, then posts with the admit header", async () => {
+    const { menu, confirms, posts } = menuFor(READS, [FULL, FAST]);
+    (menu.children[1] as Listening).listeners.get("click")?.();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(confirms).toEqual(["Start work on #19 in Fastlane? This adds lr:auto, lr:fast, and the next tick starts working it."]);
+    expect(posts).toEqual([["/items/19/admit/fastlane", { method: "POST", headers: { "x-landrace-action": "admit" } }]]);
+  });
+
+  /** The panel header's ⋯ for `row`, as syncPanelMenu leaves it. */
+  const panelFor = (row: object | null) => {
+    const panelAdmit = Object.assign(new Listening("div"), { dataset: {} as Record<string, string> });
+    Object.assign(panelAdmit, { replaceChildren: (...n: Listening[]) => { panelAdmit.children = n; } });
+    const panelMore = new Listening("button");
+    const pairingItem = new Listening("button");
+    const closed: string[] = [];
+    runInNewContext(`
+      const writeNotes = new Map();
+      const writing = new Set();
+      ${["el", "menuItem", "writeItem", "send", "admitsOf", "syncPanelMenu"].map(fnSource).join("")}
+      syncPanelMenu(ROW)`, {
+      ROW: row, document: doc, panelAdmit, panelMore, pairingItem, pairing: { shown: false }, openMenuKey: "panel",
+      closeMenu: () => closed.push("panel"),
+    });
+    return { more: !panelMore.hidden, entries: [...panelAdmit.children.map((c) => c.textContent), ...(pairingItem.hidden ? [] : [pairingItem.textContent])], closed };
+  };
+
+  it("offers the same in the panel's ⋯: Start work on a Not admitted item, Pairing… only where it can pair", () => {
+    expect(panelFor({ id: "19", panel: READS, admit: [FULL] })).toMatchObject({ more: true, entries: ["Start work"] });
+    expect(panelFor({ id: "19", panel: READS, admit: [FULL, FAST] }).entries).toEqual(["Start work in Full cycle", "Start work in Fastlane"]);
+    expect(panelFor({ id: "19", panel: WRITES, admit: [] })).toMatchObject({ more: true, entries: ["Pairing…"] });
+    // Nothing to offer: no ⋯, and an open one closes.
+    expect(panelFor({ id: "19", panel: READS, admit: [] })).toEqual({ more: false, entries: [], closed: ["panel"] });
+    expect(panelFor(null)).toMatchObject({ more: false, entries: [] });
   });
 });
 

@@ -3024,6 +3024,8 @@ export interface AdmitOffer {
   workflow: string;
   name: string;
   path: string;
+  /** The admit labels the item lacks: what the page's confirmation says will be added. */
+  labels: string[];
 }
 
 /**
