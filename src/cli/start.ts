@@ -7,6 +7,7 @@ import { durationMs, RECORD_EFFECT } from "#conventions.js";
 import { stepTimeoutMs } from "#runner/budget.js";
 import type {
   ActivityLog,
+  AdmitResult,
   ArtifactHook,
   Board,
   BuildOptions,
@@ -43,7 +44,7 @@ import type {
   WorkspaceRuntime,
 } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
-import { postReply } from "#mcp/tools.js";
+import { admitItem, postReply } from "#mcp/tools.js";
 import { createActivityLog } from "#runner/activity.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf, Refusal } from "#runner/errors.js";
@@ -97,6 +98,7 @@ export async function startUi(
   opts: {
     board: Board; ui: boolean; once: boolean; port: number; tick?: () => WakeResult; goto?: GotoPath | undefined;
     refresh?: (() => Promise<void>) | undefined; panel?: ItemPanel | undefined;
+    admit?: ((item: string, workflow: string) => Promise<AdmitResult>) | undefined;
   },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
@@ -108,6 +110,7 @@ export async function startUi(
       ...(opts.goto === undefined ? {} : { goto: opts.goto }),
       ...(opts.refresh === undefined ? {} : { refresh: opts.refresh }),
       ...(opts.panel === undefined ? {} : { panel: opts.panel }),
+      ...(opts.admit === undefined ? {} : { admit: opts.admit }),
     });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
@@ -608,6 +611,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     const screener = opts.readOnly ? undefined : await screenerFor(loaded.config, registry, ectx);
     workflows.push({
       id, name: workflow.name, description: workflow.description, source,
+      ...(registry.operator ? { operator: registry.operator } : {}),
       deps: {
         workflow,
         steps,
@@ -975,8 +979,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
 
   const { folder, workspace } = await repoWorkspace(dir);
   const board = createBoard({
-    // Each item placed by the stages of the workflow that owns it.
-    workflows: rt.workflows.map((w) => ({ id: w.id, workflow: w.deps.workflow })),
+    // Each item placed by the stages of the workflow that owns it, and
+    // offered Start work only in one with an operator to add labels through.
+    workflows: rt.workflows.map((w) => ({ id: w.id, workflow: w.deps.workflow, operator: w.operator !== undefined })),
     held: (t) => held(t), nextTickAt: schedule.nextAt, folder, workspace,
     // The tree nests along exactly what a source says is one-per-node — a
     // parent, the item a pull request implements — and nothing configured.
@@ -1017,6 +1022,22 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       ...(w.deps.artifacts ? { artifacts: w.deps.artifacts } : {}),
       activity,
     })])) }),
+    // Start work: `landrace_admit`'s own judgment, over a listing made for the
+    // click — never the board's, which may be a tick old — and shown on the
+    // board at once. The route wakes the loop once it has written.
+    admit: (item, workflow) => admitItem({
+      workflows: rt.workflows.map((w) => ({ id: w.id, workflow: w.deps.workflow, operator: w.operator ?? null })),
+      listing: async () => {
+        const listing = await listWorkspace(rt);
+        seen(listing);
+        return listing;
+      },
+      ctx: rt.ctx, wake: () => {},
+    }, item, workflow).catch((e: unknown) => {
+      // Said on the page: a refusal can quote a source's failure.
+      const said = rt.log.scrub(messageOf(e));
+      throw e instanceof Refusal ? new Refusal(said) : new Error(said);
+    }),
   });
   if (ui) {
     console.error(`landrace: triage page at ${ui.url}`);

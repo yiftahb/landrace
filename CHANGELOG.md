@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Start work on a Not admitted item.** A new MCP tool, `landrace_admit`, takes `item` and `workflow` and adds that workflow's `admit` labels the item lacks, so the next tick works it. It predicts the claim first, with those labels added, and writes only when that workflow alone would claim the item. Otherwise it refuses, writing nothing, and names what would happen instead: another workflow would claim it, two would, or the workflow's own `eligible` rule would still turn it away. It also refuses an item that is closed, already in a workflow, claimed by two or reported by two trackers, or not listed by the workflow's tracker, and a workflow that admits nothing. It never removes a label. An item that ran in the workflow before keeps its `lr:stage:*` label, so it resumes at the stage it stopped at. On the board, a Not admitted row's "⋯", and the panel's, offer **Start work** for each workflow that would take it, named **Start work in `<name>`** when there are several. It asks first and posts under its own `x-landrace-action: admit` header. **Pairing…** now shows only on an item one workflow owns and may write. `BoardRow` gains `admit`. See [The board](docs/cli.md#the-board) and [The operator tools](docs/cli.md#the-operator-tools).
+
 ## [1.5.0] - 2026-10-08
 
 ### Added

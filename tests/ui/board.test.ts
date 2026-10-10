@@ -2,6 +2,7 @@ import { claimItems } from "#core/index.js";
 import type { Entry, Graph, Held, Node, Relationship, Running, Stage, Workflow } from "#namespace.js";
 import { chatFor } from "#ui/chat.js";
 import { boardView, conversationOf, createBoard } from "#ui/board.js";
+import { admitRoute } from "#runner/route.js";
 import { laneOf } from "#runner/status.js";
 import { loadWorkspace } from "#workflow/workspace.js";
 
@@ -888,7 +889,7 @@ describe("boardView: rows", () => {
   it("carries nothing the allowlist does not name", () => {
     const row = view(graph([pr("p", { state: { secret: "hunter2" }, origin: { parent: "1", stage: "s", round: 1 } })])).rows[0];
     expect(Object.keys(row ?? {}).sort()).toEqual([
-      "badge", "chat", "children", "clear", "closed", "context", "createdAt", "effort", "facts", "goto", "id", "kind", "lane", "link", "model", "note", "page", "panel",
+      "admit", "badge", "chat", "children", "clear", "closed", "context", "createdAt", "effort", "facts", "goto", "id", "kind", "lane", "link", "model", "note", "page", "panel",
       "priority", "related", "retry", "round", "screened", "since", "stage", "stale", "system", "tag", "title", "updatedAt", "workflow",
     ]);
     expect(JSON.stringify(row)).not.toContain("hunter2");
@@ -1551,5 +1552,86 @@ describe("a finished item, on the shipped workflows' pages", () => {
 
   it("files a closed lr:auto item on full-cycle's page alone", () => {
     expect(pagesOf(["lr:auto"], "done")).toEqual([["1", ["full-cycle"]]]);
+  });
+});
+
+/*
+ * Start work: a Not admitted row offers each workflow admitting it would make
+ * its one claimant — `admitRoute`'s prediction, the one `admitItem` makes
+ * before it writes — and no other row offers any.
+ */
+describe("a Not admitted row's Start work", () => {
+  const FULL: Workflow = {
+    ...workflow, name: "Full cycle", admit: ["lr:auto"],
+    eligible: [
+      { when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" },
+      { when: { "node.state.labels": { $nin: ["lr:fast"] } }, else: "a fastlane item (lr:fast)" },
+    ],
+  };
+  const FAST: Workflow = {
+    ...workflow, name: "Fastlane", admit: ["lr:auto", "lr:fast"],
+    eligible: [
+      { when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" },
+      { when: { "node.state.labels": { $in: ["lr:fast"] } }, else: "no lr:fast label" },
+    ],
+  };
+  type Entry = { id: string; workflow: Workflow; operator?: boolean };
+  const REPO: Entry[] = [{ id: "full", workflow: FULL, operator: true }, { id: "fast", workflow: FAST, operator: true }];
+  const listing = (g: Graph, workflows: Entry[]) => ({
+    graphs: [g], sourceOf: new Map(workflows.map((w) => [w.id, 0])),
+    claims: claimItems(workflows.map((w) => ({ id: w.id, workflow: w.workflow, source: 0 })), [g]),
+  });
+  const G = graph([
+    item("1", {}, []), item("2", {}, ["lr:fast"]), item("3", {}, ["lr:auto"]), item("4", { closed: "dropped" }, []),
+    item("5", {}, ["lr:stage:done"]),
+  ]);
+  const offers = (g: Graph, workflows: Entry[]) => {
+    const rows = flatten(view(g, { workflows, listing: listing(g, workflows) }).rows);
+    return Object.fromEntries([...new Map(rows.map((r) => [r.id, r.admit])).entries()]);
+  };
+
+  it("offers each workflow that would alone claim it, and the row's ⋯ posts to the server's own path", () => {
+    const o = offers(G, REPO);
+    expect(o["1"]).toEqual([
+      { workflow: "full", name: "Full cycle", path: "/items/1/admit/full", labels: ["lr:auto"] },
+      { workflow: "fast", name: "Fastlane", path: "/items/1/admit/fast", labels: ["lr:auto", "lr:fast"] },
+    ]);
+    // Full cycle with lr:auto added still leaves an lr:fast item to Fastlane.
+    expect(o["2"]).toEqual([{ workflow: "fast", name: "Fastlane", path: "/items/2/admit/fast", labels: ["lr:auto"] }]);
+    expect(o["5"]).toHaveLength(2);
+  });
+
+  it("offers exactly the workflows admitRoute accepts, for every row", () => {
+    const l = listing(G, REPO);
+    const o = offers(G, REPO);
+    for (const id of ["1", "2", "3", "4", "5"]) {
+      const accepted = REPO.filter((w) => "labels" in admitRoute(REPO, l, id, w.id)).map((w) => w.id);
+      expect([id, (o[id] ?? []).map((a: { workflow: string }) => a.workflow)]).toEqual([id, accepted]);
+    }
+  });
+
+  it("offers none on a claimed row or a closed one", () => {
+    const o = offers(G, REPO);
+    expect([o["3"], o["4"]]).toEqual([[], []]);
+  });
+
+  it("offers none on a read-only board, nor for a workflow that admits nothing", () => {
+    const o = offers(G, REPO.map((w) => ({ id: w.id, workflow: w.workflow })));
+    expect(Object.values(o).flat()).toEqual([]);
+    const bare: Workflow = { ...FULL };
+    delete bare.admit;
+    expect(offers(G, [{ id: "full", workflow: bare, operator: true }, REPO[1] as Entry])["1"]).toEqual([
+      { workflow: "fast", name: "Fastlane", path: "/items/1/admit/fast", labels: ["lr:auto", "lr:fast"] },
+    ]);
+  });
+
+  it("offers none for a workflow whose source does not list the item", () => {
+    const g = graph([item("1", {}, [])]);
+    const rows = flatten(view(g, {
+      workflows: REPO,
+      listing: { graphs: [g, graph([])], sourceOf: new Map([["full", 0], ["fast", 1]]),
+        claims: claimItems([{ id: "full", workflow: FULL, source: 0 }, { id: "fast", workflow: FAST, source: 1 }], [g, graph([])]) },
+    }).rows);
+    expect(rows.find((r) => r.id === "1")?.admit.map((a) => a.workflow)).toEqual(["full"]);
   });
 });

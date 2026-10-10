@@ -30,7 +30,7 @@ Beside `stages`, the file says what the workflow is and what it admits:
 | `version` | Required. Always `1` |
 | `name` | Required. The display title |
 | `description` | Required. What the workflow is for, in a sentence. An agent reads it when it chooses where to start an item |
-| `admit` | The labels an item gets when it is started into this workflow — by `landrace_create_item`, or as a child an `items:create` step files. The engine names none of its own |
+| `admit` | The labels an item gets when it is started into this workflow — by `landrace_create_item`, by `landrace_admit` or the board's Start work on an existing item, or as a child an `items:create` step files. The engine names none of its own |
 | `eligible` | Which items the workflow may work at all: a list of `{ when, else }` rules, each `else` the reason `landrace status` prints for an item the rule turned away. See [Eligibility and admission](#eligibility-and-admission) |
 | `budget.stepTimeout` | How long one agent run may take, unless its step names its own `timeout`. Default `10m` |
 | `hooks` | The integration modules, by path, in the order their pre hooks run |
@@ -528,7 +528,7 @@ A rule the tick cannot answer — one reading a path the listed item does not ca
 
 One `landrace start` runs every workflow: each workflow's source is listed, each open item is **claimed** by one workflow, and that workflow works it.
 
-- **Claims.** A workflow claims an item its `eligible` rules accept. Exactly one claim is the rule: an item two workflows accept is a **conflict**, and an id two different sources report is a **clash**. Either halts, naming both workflows. An item no workflow accepts is unclaimed, and shows as Not admitted with each workflow's reason. A closed item is claimed only by a workflow with a [`closed: run`](#a-stage-that-runs-after-close) stage.
+- **Claims.** A workflow claims an item its `eligible` rules accept. Exactly one claim is the rule: an item two workflows accept is a **conflict**, and an id two different sources report is a **clash**. Either halts, naming both workflows. An item no workflow accepts is unclaimed, and shows as Not admitted with each workflow's reason; `landrace_admit`, or Start work on the board, admits it to a workflow. A closed item is claimed only by a workflow with a [`closed: run`](#a-stage-that-runs-after-close) stage.
 - **Keeping claims apart.** Give each workflow `admit` labels and `eligible` rules the other turns away — here `full-cycle` admits `lr:auto` and refuses `lr:fast`, and fastlane needs both. `validate` reports, and `start` refuses, two workflows over one source where what one admits the other certainly accepts (the `claims` rule).
 - **One pool.** `tick.concurrency` bounds the agents running at once across the whole workspace, overlapping ticks and every workflow included, not each workflow or each tick: items of every workflow share its slots, most urgent first. Only a step's agent takes a slot, so a stage that runs no step, its effects and a merge go on while agents fill every slot. [Configuration](configuration.md#landraceyaml) says what happens to a step when no slot is free.
 - **A failing source.** With several sources, one that cannot list leaves every clash unjudged, so that tick no other source's items are worked, and the board refuses writes while any source is failing. Runs already in flight are not stopped. With one source, its own items are simply absent.

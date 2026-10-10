@@ -3,7 +3,7 @@ import {
 } from "#conventions.js";
 import { claimItems, eligibilityOfNode, gotoTargetsOf, writesNothing } from "#core/index.js";
 import { BLOCKED_NOTE, engineNoteOf, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
-import { haltOf, readRoute, writeRoute } from "#runner/route.js";
+import { admitRoute, haltOf, readRoute, writeRoute } from "#runner/route.js";
 import { turnedAway } from "#runner/tick.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
@@ -109,6 +109,13 @@ const gotoPaths = (id: string, stage: Stage | undefined, workflow: Workflow): Bo
         ...(workflow.stages.find((s) => s.id === g.stage)?.waits === "pairing" ? { pairing: true as const } : {}),
       }))
     : [];
+
+/**
+ * Where the page posts a Start work: one path per workflow, built here from
+ * an id already checked and a workflow id the workspace names, never by the
+ * page.
+ */
+const admitPath = (id: string, workflow: string): string => `/items/${id}/admit/${encodeURIComponent(workflow)}`;
 
 /**
  * Where an item's panel reads and writes — built here, from an id already
@@ -218,7 +225,8 @@ function parentsOf(graph: Graph, nodes: ReadonlyMap<string, Node>, nest: Readonl
 }
 
 export function boardView(input: {
-  workflows: ReadonlyArray<{ id: string; workflow: Workflow }>;
+  /** `operator`: whether it has an operator hook to add labels through. Without one, nothing is admitted to it. */
+  workflows: ReadonlyArray<{ id: string; workflow: Workflow; operator?: boolean }>;
   listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">;
   /** Relation types the source declares singular — the only edges that nest. */
   nest: ReadonlySet<string>;
@@ -302,6 +310,19 @@ export function boardView(input: {
       .filter((fact) => node.state[RELATED_FACTS[fact]] === true)
       .map((fact) => RELATED_FACT_WORDS[fact]);
 
+  /**
+   * The workflows a Not admitted item may be started in: each one with an
+   * operator that admitting it to would make its one claimant — never a
+   * guess, but `admitRoute`'s own prediction, which `admitItem` makes again
+   * over a fresh read before it writes.
+   */
+  const admitsOf = (id: string): BoardRow["admit"] =>
+    !isItemId(id) ? [] : input.workflows.flatMap((w) => {
+      if (w.operator !== true) return [];
+      const route = admitRoute(input.workflows, input.listing, id, w.id);
+      return "labels" in route ? [{ workflow: w.id, name: w.workflow.name, path: admitPath(id, w.id), labels: route.labels }] : [];
+    });
+
   const rowOf = (node: Node): BoardRow => {
     const link = safeUrl(node.link);
     const base: BoardRow = {
@@ -310,7 +331,7 @@ export function boardView(input: {
       badge: null, lane: null, stage: null, priority: node.priority, closed: node.closed,
       note: "", since: null, createdAt: node.createdAt ?? null, updatedAt: node.updatedAt ?? null,
       round: null, model: null, effort: null,
-      page: null, context: false, chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], panel: null,
+      page: null, context: false, chat: null, screened: false, stale: false, retry: null, clear: null, goto: [], admit: [], panel: null,
       related: relatedOf(node.id), facts: factsOf(node), children: [],
     };
     if (node.kind !== ITEM_KIND) return base;
@@ -343,8 +364,9 @@ export function boardView(input: {
 
     // Placed by the stages of the one workflow that owns it. An item no
     // workflow owns is placed by none: its note says why, and its row offers
-    // nothing to act on — the page's writes would refuse it anyway, and an
-    // offer here would be a guess at whose stages its labels mean.
+    // no Retry, Clear or Go to — the page's writes would refuse it anyway, and
+    // an offer here would be a guess at whose stages its labels mean. What it
+    // offers is Start work, in each workflow that would then own it.
     const owner = claims.owner.get(node.id);
     const workflow = owner === undefined ? undefined : workflows.get(owner);
     // The listing's graph, so a stage's own note can name what it waits on.
@@ -385,7 +407,7 @@ export function boardView(input: {
       // than a wrong clock.
       return { ...placed, badge: "elsewhere", note: `held by ${lock.kind} (pid ${lock.pid})` };
     }
-    if (!s || !workflow) return placed;
+    if (!s || !workflow) return placed.badge === "not-admitted" ? { ...placed, admit: admitsOf(node.id) } : placed;
     // A workflow that writes nothing has a tracker that refuses every write
     // a Retry, Clear or Go to would make, so the page must not offer one.
     if (writesNothing(workflow)) return { ...placed, badge: laneOf(s, workflow), retry: null, clear: null, goto: [] };
@@ -507,7 +529,7 @@ const unlisted = (item: string): Ownership => ({ refused: `#${item} has not been
  * a release go to that workflow on the listing's word alone.
  */
 export function createBoard(opts: {
-  workflows: ReadonlyArray<{ id: string; workflow: Workflow }>;
+  workflows: ReadonlyArray<{ id: string; workflow: Workflow; operator?: boolean }>;
   held: (item: string) => Promise<Held | null>;
   now?: () => number;
   pid?: number;

@@ -116,6 +116,20 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
   );
 
   server.tool(
+    "landrace_admit",
+    said(
+      "Start work on a Not admitted item by admitting it to the workflow: it is given the labels that workflow admits " +
+        "with, and the next tick works it. An item that ran there before resumes at the stage it stopped at. Refused, " +
+        "with nothing written, when the item is closed, already in a workflow, one two workflows claim or two trackers " +
+        "report, or one the workflow's source does not list; when the workflow admits nothing; and when, with those labels " +
+        "added, another workflow would claim it, two would, or the workflow's own eligible rule would still turn it away. " +
+        "It never removes a label: what keeps an item out of a workflow is yours to change, with landrace_update_item.",
+    ),
+    { item, workflow: z.string().min(1) },
+    guard(({ item: n, workflow: w }) => tools.admit(n, w)),
+  );
+
+  server.tool(
     "landrace_update_item",
     said(
       "Change an item's title, body, open/closed state, or its labels, as you would on the tracker — through " +

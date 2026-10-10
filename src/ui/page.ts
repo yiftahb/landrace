@@ -61,6 +61,7 @@ const PANEL = `
 <div class="relative shrink-0">
 <button id="panel-more" type="button" aria-label="Item actions" aria-haspopup="menu" aria-expanded="false" title="Item actions" data-key="panel:trigger" class="${ICON_BUTTON}">⋯</button>
 <div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+<div id="panel-admit" role="none"></div>
 <button id="panel-pairing-item" type="button" role="menuitem" class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800">Pairing…</button>
 </div>
 </div>
@@ -364,7 +365,7 @@ function withMoves(view, moves) {
   const sent = (r) => {
     const m = moves.get(r.id);
     const kids = r.children.map(sent);
-    return m ? { ...r, badge: "waiting", note: "Sent — moves on the next tick", since: m.at, retry: null, clear: null, goto: [], children: kids }
+    return m ? { ...r, badge: "waiting", note: "Sent — moves on the next tick", since: m.at, retry: null, clear: null, goto: [], admit: [], children: kids }
       : { ...r, children: kids };
   };
   const movedCopies = new Set();
@@ -651,19 +652,34 @@ function writesOf(row) {
   return items;
 }
 
-// A row's actions: its writes (Retry, Go to step…), if the server offered
-// any, then a divider, then the Chat caption and its targets — the same menu
-// regardless of which row's ⋯ opens it (see actionFor). z-[5] keeps it over
-// later rows yet under the sticky top bar's z-10, so scrolled up it passes
-// beneath the tick controls and stays open for the items below the fold.
+// A Not admitted item's Start work: one entry per workflow the server says
+// would then own it, named only when there is a choice. Keyed under the menu
+// it is drawn in — a row's id, or the panel's — so a refusal stays there.
+function admitsOf(row, menuKey) {
+  const offers = row.admit || [];
+  return offers.map((a) => writeItem({
+    id: row.id, key: menuKey + ":admit:" + a.workflow, path: a.path, action: "admit",
+    label: offers.length === 1 ? "Start work" : "Start work in " + a.name, busy: "Starting…",
+    ask: "Start work on #" + row.id + " in " + a.name + "? This adds " + a.labels.join(", ") +
+      ", and the next tick starts working it.",
+  }));
+}
+
+// A row's actions: its writes (Start work, Pairing…, Retry, Go to step…), if
+// the server offered any, then a divider, then the Chat caption and its
+// targets — the same menu regardless of which row's ⋯ opens it (see
+// actionFor). z-[5] keeps it over later rows yet under the sticky top bar's
+// z-10, so scrolled up it passes beneath the tick controls and stays open for
+// the items below the fold.
 function buildRowMenu(row) {
   const menu = el("div", "absolute left-0 z-[5] mt-1 w-44 sm:left-auto sm:right-0 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   const writes = writesOf(row);
   // Pairing… opens the item's panel on its Pairing section, which asks the
-  // server what may be paired on — the row itself cannot tell.
-  if (row.panel) {
+  // server what may be paired on — the row itself cannot tell. Only on an
+  // item one workflow owns and may write: anywhere else it could do nothing.
+  if (row.panel && row.panel.pair) {
     const pairing = menuItem("button");
     pairing.type = "button";
     pairing.textContent = "Pairing…";
@@ -671,6 +687,7 @@ function buildRowMenu(row) {
     pairing.addEventListener("click", () => { closeMenu(); openPairing(row.id); });
     writes.unshift(pairing);
   }
+  writes.unshift(...admitsOf(row, row.id));
   if (writes.length) menu.append(...writes, el("hr", "my-1 border-neutral-100 dark:border-neutral-800"));
   const chatCaption = el("div", "px-3 pt-2 pb-1 text-[11px] text-neutral-500 dark:text-neutral-400", "Chat");
   chatCaption.setAttribute("role", "presentation");
@@ -1658,6 +1675,7 @@ const panelChat = document.getElementById("panel-chat");
 const wideButton = document.getElementById("panel-wide");
 const panelMore = document.getElementById("panel-more");
 const pairingItem = document.getElementById("panel-pairing-item");
+const panelAdmit = document.getElementById("panel-admit");
 const replyButton = document.getElementById("panel-reply");
 const askButton = document.getElementById("panel-ask");
 const resolveButton = document.getElementById("panel-resolve");
@@ -1946,15 +1964,30 @@ function syncComposer() {
   for (const b of [replyButton, askButton, resolveButton]) b.disabled = panelBusy;
 }
 
+// The panel's ⋯, by the row menu's rules: Start work on a Not admitted item,
+// one entry per workflow the server offered, and Pairing… only on an item one
+// workflow owns and may write. With neither, there is no ⋯ at all. Redrawn
+// only when the offers change, so a poll does not take a focused entry away.
+function syncPanelMenu(row) {
+  const pairs = Boolean(row && row.panel && row.panel.pair);
+  const admits = row ? admitsOf(row, "panel") : [];
+  const drawn = (row && row.admit ? row.admit.map((a) => a.path) : []).concat(admits.map((n) => n.textContent)).join("\\n");
+  if (panelAdmit.dataset.drawn !== drawn) {
+    panelAdmit.dataset.drawn = drawn;
+    panelAdmit.replaceChildren(...admits);
+  }
+  pairingItem.hidden = !pairs;
+  panelMore.hidden = !pairs && admits.length === 0;
+  if (panelMore.hidden && openMenuKey === "panel") closeMenu();
+  pairingItem.textContent = pairing.shown ? "Hide pairing" : "Pairing…";
+}
+
 function renderPanel() {
   if (panelId === null) return;
   keepingFocus(() => {
     const row = currentRow();
     const now = Date.now();
-    // Its only action is pairing, which an item with no panel paths has not.
-    panelMore.hidden = !(row && row.panel);
-    if (panelMore.hidden && openMenuKey === "panel") closeMenu();
-    pairingItem.textContent = pairing.shown ? "Hide pairing" : "Pairing…";
+    syncPanelMenu(row);
     if (!row) {
       const bare = bareRow();
       // An item the board has listed without is let go of, as ✕ would.

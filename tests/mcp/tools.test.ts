@@ -1,7 +1,10 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
 import { compareIds, renderMarker } from "#conventions.js";
 import type { Executor, LoadedWorkflow, Registry, Source, Step, Tools, Workflow } from "#namespace.js";
@@ -1113,5 +1116,37 @@ describe("relationships by hand, asked of the tracker before anything is written
     const { state, tools } = memory();
     await tools.updateItem("4", { relate: [{ type: "blocked-by", item: "10" }] });
     expect(state.writes()).toEqual(["relate #4 blocked-by #10"]);
+  });
+});
+
+describe("landrace_admit", () => {
+  const listed = async () => {
+    const tracker = createFakeTracker([{ number: 4 }]);
+    const server = createMcpServer(createTools([hooked(tracker.registry, loaded(admitting(["lr:auto"])))], tracker.ctx));
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test", version: "0" });
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    return { client, tracker };
+  };
+
+  it("is listed with item and workflow, both required, and says what it refuses", async () => {
+    const { client } = await listed();
+    const tool = (await client.listTools()).tools.find((t) => t.name === "landrace_admit");
+    const schema = tool?.inputSchema as { properties: Record<string, unknown>; required?: string[] } | undefined;
+    expect(Object.keys(schema?.properties ?? {}).sort()).toEqual(["item", "workflow"]);
+    expect([...(schema?.required ?? [])].sort()).toEqual(["item", "workflow"]);
+    expect(tool?.description).toMatch(/^Start work on a Not admitted item by admitting it to the workflow/);
+    for (const refusal of [/closed/, /already/, /two workflows claim/, /does not list/, /admits nothing/, /another workflow would claim it/]) {
+      expect(tool?.description).toMatch(refusal);
+    }
+    await client.close();
+  });
+
+  it("admits through the protocol, answering the labels it added", async () => {
+    const { client, tracker } = await listed();
+    const r = await client.callTool({ name: "landrace_admit", arguments: { item: "4", workflow: "main" } });
+    expect(JSON.parse((r as { content: Array<{ text: string }> }).content[0]?.text ?? "")).toEqual({ item: "4", workflow: "main", labels: ["lr:auto"] });
+    expect(tracker.issues.get(4)?.labels).toEqual(["lr:auto"]);
+    await client.close();
   });
 });

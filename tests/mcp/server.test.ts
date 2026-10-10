@@ -39,6 +39,7 @@ describe("mcp server over a real transport", () => {
     const { client } = await connect();
     const names = (await client.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      "landrace_admit",
       "landrace_ask",
       "landrace_clear",
       "landrace_create_item",
