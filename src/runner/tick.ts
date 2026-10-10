@@ -56,7 +56,7 @@ const workflowsOn = (sourceOf: ReadonlyMap<string, number>, index: number): stri
  * Who owns what, judged over these graphs: one per distinct source, at the
  * index `sourceOf` gives each workflow.
  */
-export function claimsOf(workflows: readonly ListedWorkflow[], sourceOf: ReadonlyMap<string, number>, graphs: Graph[]): Claims {
+export function claimsOf(workflows: ReadonlyArray<Pick<ListedWorkflow, "id" | "deps">>, sourceOf: ReadonlyMap<string, number>, graphs: Graph[]): Claims {
   return claimItems(workflows.map((w) => ({
     id: w.id, workflow: w.deps.workflow, source: sourceOf.get(w.id) ?? -1,
     closedRun: w.deps.workflow.stages.some((s) => s.closed === "run"),

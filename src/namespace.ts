@@ -2289,6 +2289,8 @@ export interface Tools {
     /** Relationships to make from it once it exists; all refused, and nothing written, when any is. */
     relate?: ItemRelation[] | undefined;
   }): Promise<unknown>;
+  /** Start work on an item no workflow claims, by adding the labels `workflow` admits with. */
+  admit(item: string, workflow: string): Promise<AdmitResult>;
   updateItem(
     item: string,
     input: {
@@ -2400,6 +2402,8 @@ export interface WorkflowRuntime {
   description: string;
   /** Where its items come from. Two workflows loading one hook module share this object, and the tick lists it once. */
   source: Source;
+  /** What a person's writes go through — the board's Start work. Absent, nothing is admitted to it from the page. */
+  operator?: Operator;
   /** `scrub` required here: the rows `landrace start` prints go through it too. */
   deps: Omit<ConvergeDeps, "ctx" | "scrub"> & { ctx: RuntimeContext; scrub: (text: string, extra?: readonly string[]) => string };
 }
@@ -2847,6 +2851,14 @@ export interface BoardRow {
   /** `pairing` on a target that waits for a pairing: sending there runs no agent, so the page asks for no paid step. */
   goto: Array<{ stage: string; path: string; pairing?: true }>;
   /**
+   * On a Not admitted row, each workflow admitting it would make it the
+   * one claimant of now — the same prediction `admitItem` makes before it
+   * writes — with the path the page posts to, built by the server. Empty on
+   * every other row. An offer: the server reads the item again before it adds
+   * a label.
+   */
+  admit: AdmitOffer[];
+  /**
    * Where the item panel reads and writes, built by the server from a
    * checked id like `retry`. Null on an artifact: only an item opens a panel.
    */
@@ -2985,6 +2997,35 @@ export interface BoardView {
 /** Which workflow an item belongs to, or the sentence refusing to act on it. */
 export type Ownership = { workflow: string } | { refused: string };
 
+/** Whether an item may be admitted to a workflow: the admit labels it lacks, or the sentence refusing it. */
+export type AdmitRoute = { labels: string[] } | { refused: string };
+
+/** What an admission answers: the item, the workflow it was admitted to, and the labels added. */
+export interface AdmitResult {
+  item: string;
+  workflow: string;
+  labels: string[];
+}
+
+/**
+ * What admitting an item needs: every workflow of the workspace with the
+ * operator it writes through, a listing to judge the item from — read
+ * afresh for each admission — and what to wake once it is written.
+ */
+export interface AdmitDeps {
+  workflows: ReadonlyArray<{ id: string; workflow: Workflow; operator: Operator | null }>;
+  listing: (item: string) => Promise<WorkspaceListing>;
+  ctx: RuntimeContext;
+  wake: () => void;
+}
+
+/** One workflow a Not admitted row may be admitted to, with the path the page posts to. */
+export interface AdmitOffer {
+  workflow: string;
+  name: string;
+  path: string;
+}
+
 /**
  * Where a read of an item goes: the workflow that owns it, or — for an item
  * no one workflow owns: closed, claimed twice, or turned away — the one
@@ -3043,6 +3084,11 @@ export interface UiOptions {
    * Absent, every panel route is 404.
    */
   panel?: ItemPanel;
+  /**
+   * The page's Start work: `admitItem`, judged afresh when the request
+   * arrives. Absent, its route is 404.
+   */
+  admit?: (item: string, workflow: string) => Promise<AdmitResult>;
 }
 
 /**

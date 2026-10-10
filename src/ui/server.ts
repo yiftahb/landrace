@@ -41,6 +41,12 @@ const CLEAR_PATH = /^\/items\/([^/]+)\/clear$/;
 /** Where the page's "Go to step…" posts: one item, and the step it names. */
 const GOTO_PATH = /^\/items\/([^/]+)\/goto\/([^/]+)$/;
 
+/** Where the page's Start work posts: one item, and the workflow it is admitted to. */
+const ADMIT_PATH = /^\/items\/([^/]+)\/admit\/([^/]+)$/;
+
+/** Any Unicode control, format, or line/paragraph separator: nothing a name the page shows back may carry. */
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
 function send(res: ServerResponse, status: number, type: string, body: string): void {
   res.writeHead(status, {
     "content-type": type,
@@ -191,6 +197,47 @@ function servePanel(
 }
 
 /**
+ * Start work on a Not admitted item: the workflow's admit labels added, and
+ * the loop woken for the tick that starts it. A refusal is said in its own
+ * sentence, like a refused goto; a tracker's failure in a fixed one.
+ */
+function serveAdmit(opts: UiOptions, req: IncomingMessage, res: ServerResponse, port: number, id: string, wf: string): void {
+  const text = "text/plain; charset=utf-8";
+  const admit = opts.admit;
+  if (!admit) return send(res, 404, text, "not found");
+  if (req.method !== "POST") return send(res, 405, text, "method not allowed");
+  const foreign = foreignWrite(req, "admit", port);
+  if (foreign) return send(res, 403, text, foreign);
+  let item: string;
+  let workflow: string;
+  try {
+    item = decodeURIComponent(id);
+    workflow = decodeURIComponent(wf);
+  } catch {
+    return send(res, 400, text, "that is not an item and a workflow");
+  }
+  const problem = itemIdProblem(item);
+  if (problem) return send(res, 400, text, problem);
+  // `admitItem`, not this route, decides whether the workspace has it.
+  if (workflow === "" || UNPRINTABLE.test(workflow)) return send(res, 400, text, "that is not a workflow");
+  admit(item, workflow).then(
+    (r) => {
+      opts.tick?.();
+      const added = r.labels.length ? `added ${r.labels.join(", ")}` : "added nothing";
+      send(res, 202, text, `admitted #${item} to ${r.workflow}: ${added}; the next tick starts it`);
+    },
+    (e: unknown) => {
+      // Declined before anything was written: nothing wakes, and the sentence is the answer.
+      if (e instanceof Refusal) return send(res, 409, text, oneLine(e.message));
+      // Logged in full for the operator; the page gets a fixed sentence,
+      // because a tracker's error can quote the item it refused.
+      console.error(`landrace: admitting #${item} to ${workflow} failed: ${oneLine(messageOf(e))}`);
+      send(res, 502, text, "could not start work on it; the landrace log says why");
+    },
+  );
+}
+
+/**
  * The page's request listener, apart from the socket it is served on, so a
  * test can drive it in-process. `port` is the one the server listened on,
  * asked for per request because it is only known once listening has begun.
@@ -310,7 +357,7 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
       // format, or line/paragraph separator, printable otherwise or not.
       // `sendTo`, not this route, is what decides whether the step itself is
       // one this stage actually lists.
-      if (target !== null && (target === "" || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(target))) {
+      if (target !== null && (target === "" || UNPRINTABLE.test(target))) {
         send(res, 400, "text/plain; charset=utf-8", "that is not a step");
         return;
       }
@@ -335,6 +382,15 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
           send(res, 502, "text/plain; charset=utf-8", "could not send it back; the landrace log says why");
         },
       );
+      return;
+    }
+
+    // The page's Start work, guarded like every other write, under its own
+    // header. `admitItem` reads the item again and alone decides; the row's
+    // offer was only its prediction.
+    const admitting = ADMIT_PATH.exec(path);
+    if (admitting) {
+      serveAdmit(opts, req, res, port, admitting[1] ?? "", admitting[2] ?? "");
       return;
     }
 
@@ -373,8 +429,10 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
  * only when it hands us a way to send an item back, and which wake that
  * schedule too once they have; POST /refresh, present only when it hands us
  * a way to re-read the tracker, which starts no agent but still spends a
- * tracker read and so is guarded the same way; and the item panel's
- * Reply, Ask and Resolve, present only when it hands us a panel.
+ * tracker read and so is guarded the same way; the item panel's
+ * Reply, Ask and Resolve, present only when it hands us a panel; and
+ * POST /items/<id>/admit/<workflow>, Start work, present only when it hands
+ * us a way to admit, and which wakes the schedule once it has.
  */
 export function serveBoard(opts: UiOptions): Promise<UiServer> {
   let port = 0;

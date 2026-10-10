@@ -1,5 +1,8 @@
-import { compareIds, isItemNode } from "#conventions.js";
-import type { Claims, EditRoute, Graph, ListedWorkflow, Ownership, PreHook, ReadRoute, WorkspaceListing } from "#namespace.js";
+import { compareIds, isItemNode, isOpenItem, labelsOf } from "#conventions.js";
+import { eligibilityOfNode } from "#core/index.js";
+import type {
+  AdmitRoute, Claims, EditRoute, Graph, ListedWorkflow, Node, Ownership, PreHook, ReadRoute, Workflow, WorkspaceListing,
+} from "#namespace.js";
 import { andList, claimedBy, claimsOf, listingFailures, reportedBy, turnedAway } from "#runner/tick.js";
 
 /*
@@ -107,6 +110,58 @@ export function readRoute(listing: Pick<WorkspaceListing, "graphs" | "claims" | 
   if (more.length > 0) return { refused: `#${item} is ${reportedBy(readingAny(listing.sourceOf, indices))}; read it in its own tracker` };
   if (only !== undefined) return { source: only };
   return listing.graphs.length === 1 ? { source: 0 } : null;
+}
+
+/**
+ * Whether admitting `item` to `target` would make it `target`'s, and the
+ * labels that takes: the workflow's `admit` labels the item lacks. Judged
+ * before anything is written, by claiming the item again over every
+ * workflow as if it carried them — so an offer on the page and an MCP
+ * admission are the same prediction, and neither leaves the item claimed by
+ * another workflow, by two, or by none. Never a label taken off to make it
+ * work: what keeps an item out of a workflow is a person's to change.
+ */
+export function admitRoute(
+  workflows: ReadonlyArray<{ id: string; workflow: Workflow }>,
+  listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">,
+  item: string,
+  target: string,
+): AdmitRoute {
+  const named = workflows.find((w) => w.id === target);
+  if (!named) return { refused: `no workflow "${target}"; the workspace has ${workflows.map((w) => w.id).join(", ")}` };
+  const { claims, graphs, sourceOf } = listing;
+  const nodes = graphs.flatMap((g) => g.nodes.filter((n) => n.id === item && isItemNode(n)));
+  if (nodes.length === 0) return { refused: `#${item} is not an item any source lists` };
+  if (!nodes.some(isOpenItem)) return { refused: `#${item} is closed, so nothing is written to it` };
+  const clash = claims.clashes.get(item);
+  if (clash) return { refused: `#${item} is ${reportedBy(clash)}; act on it after one source alone reports it` };
+  const conflict = claims.conflicts.get(item);
+  if (conflict) return { refused: `#${item} is ${claimedBy(conflict)}; act on it after one workflow alone claims it` };
+  const owner = claims.owner.get(item);
+  if (owner !== undefined) return { refused: `#${item} is already in ${owner}` };
+  const index = sourceOf.get(target) ?? -1;
+  const node = graphs[index]?.nodes.find((n) => n.id === item && isOpenItem(n));
+  if (!node) return { refused: `#${item} is not listed by ${target}'s source` };
+  const admit = named.workflow.admit ?? [];
+  // The folder to edit, by its id: the display name is not a path.
+  if (admit.length === 0) return { refused: `workflow "${target}" admits nothing: add admit: [<labels>] to workflows/${target}/workflow.yaml` };
+
+  const has = labelsOf(node);
+  const labels = admit.filter((l) => !has.includes(l));
+  const admitted: Node = { ...node, state: { ...node.state, labels: [...has, ...labels] } };
+  const after = claimsOf(
+    workflows.map((w) => ({ id: w.id, deps: { workflow: w.workflow } })), sourceOf,
+    graphs.map((g, i) => (i === index ? { ...g, nodes: g.nodes.map((n) => (n === node ? admitted : n)) } : g)),
+  );
+  const would = after.owner.get(item);
+  if (would === target) return { labels };
+  const what = labels.length ? `with ${andList(labels)} added` : "with the labels it has";
+  if (would !== undefined) return { refused: `#${item} would be claimed by ${would}, not ${target}, ${what}` };
+  const both = after.conflicts.get(item);
+  if (both) return { refused: `#${item} would be ${claimedBy(both)}, ${what}` };
+  // Its own `else` alone: another workflow turning it away is no reason this one does.
+  const verdict = eligibilityOfNode(named.workflow, admitted);
+  return { refused: `${target} would still turn #${item} away, ${what}: ${verdict.eligible ? "claimed by no workflow" : verdict.reason}` };
 }
 
 /**

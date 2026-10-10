@@ -12,14 +12,14 @@ import {
   isItemNode,
 } from "#conventions.js";
 import { cannotPlace, checkEligible, locateNode } from "#core/index.js";
-import type { Claims, Graph, ItemSummary, Lane, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, Workflow, WorkspaceListing } from "#namespace.js";
+import type { AdmitDeps, AdmitResult, Claims, Graph, ItemSummary, Lane, ListedWorkflow, Node, PreHook, ReplyDeps, Snapshot, Source, StatusRow, WaitingItem, Workflow, WorkspaceListing } from "#namespace.js";
 import type { ItemRelation, Operator, RelationWrite, RuntimeContext, ToolHands, ToolOptions, Tools, ToolWorkflow } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf, Refusal } from "#runner/errors.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
-import { editRoute, noSharedPre, readRoute, sharedPre, unownedWhy, writeRoute } from "#runner/route.js";
+import { admitRoute, editRoute, noSharedPre, readRoute, sharedPre, unownedWhy, writeRoute } from "#runner/route.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import { laneOf, statusRows, workspaceStatusRows } from "#runner/status.js";
 import { claimsOf, listingFailures, listWorkspace, sourcesOf } from "#runner/tick.js";
@@ -112,6 +112,31 @@ export async function postReply(deps: ReplyDeps, item: string, message: string):
     { type: RECORD_EFFECT, body: neutraliseMarkers(message) },
     { ...deps.ctx, item, snapshot },
   );
+}
+
+/**
+ * Start work on an item no workflow claims: add the labels `workflow` admits
+ * with, through its operator, once `admitRoute` predicts that it alone would
+ * then claim the item. What `landrace_admit` and the board's Start work both
+ * call. A refusal writes nothing: the item is read and judged afresh, while
+ * every source lists, before the one write.
+ *
+ * An item that ran in the workflow before and lost its admit label still
+ * carries its `lr:stage:*` label, so admitting it again resumes it there.
+ */
+export async function admitItem(deps: AdmitDeps, item: string, workflow: string): Promise<AdmitResult> {
+  const named = deps.workflows.find((w) => w.id === workflow);
+  if (!named) throw new Refusal(`no workflow "${workflow}"; the workspace has ${deps.workflows.map((w) => w.id).join(", ")}`);
+  const listing = await deps.listing(item);
+  // A clash with what a missing source lists is unknown, not absent.
+  const failures = listingFailures(listing);
+  if (failures.length) throw new Error(failures.join("; "));
+  const route = admitRoute(deps.workflows, listing, item, workflow);
+  if ("refused" in route) throw new Refusal(route.refused);
+  const operator = requireOperator(named.operator, "admit an item");
+  await operator.updateItem(item, { addLabels: route.labels, removeLabels: [] }, deps.ctx);
+  deps.wake();
+  return { item, workflow, labels: route.labels };
 }
 
 /**
@@ -469,6 +494,14 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       const created = await operator.createItem({ title, body: neutraliseMarkers(body), labels: wanted, ...(relate.length === 0 ? {} : { relate }) }, ctx);
       wakeLoop();
       return { ...summarise(created), workflow: w.id, started: admit.length > 0 && admit.every((l) => wanted.includes(l)) };
+    },
+
+    async admit(item, workflow) {
+      within(workflow);
+      return admitItem({
+        workflows: workflows.map((w) => ({ id: w.id, workflow: w.workflow, operator: w.registry.operator })),
+        listing: about, ctx, wake: wakeLoop,
+      }, item, workflow);
     },
 
     async updateItem(item, { title, body, state, addLabels = [], removeLabels = [], relate = [], unrelate = [] }) {
