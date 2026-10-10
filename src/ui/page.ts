@@ -53,7 +53,7 @@ const ICON_BUTTON =
  * what someone is typing survives every poll.
  */
 const PANEL = `
-<aside id="panel" aria-label="Item" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl max-sm:hidden dark:border-neutral-800 dark:bg-neutral-900 sm:w-[28rem]">
+<aside id="panel" aria-label="Item" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl max-sm:hidden dark:border-neutral-800 dark:bg-neutral-900 sm:w-[28rem]" inert>
 <p id="panel-empty" class="flex flex-1 items-center justify-center px-4 text-center text-sm text-neutral-500 dark:text-neutral-400">Select an item to see its details</p>
 <div id="panel-item" hidden class="flex min-h-0 flex-1 flex-col">
 <div class="flex items-start gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
@@ -96,7 +96,7 @@ const MARK = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" clas
 export const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><style>path { fill: #111111 } @media (prefers-color-scheme: dark) { path { fill: #f5f5f5 } }</style><path d="${MARK_PATH}"/></svg>`;
 
 export const PAGE_HTML = `<!doctype html>
-<html lang="en" class="scroll-pt-[var(--header-h)]">
+<html lang="en" class="scroll-pt-[var(--header-h)]" aria-busy="true">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -107,7 +107,7 @@ export const PAGE_HTML = `<!doctype html>
 <script src="/app.js" defer></script>
 </head>
 <body class="min-h-screen bg-neutral-50 font-sans text-sm text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100 sm:pr-[28rem]">
-<header class="sticky top-0 z-10 border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+<header class="sticky top-0 z-10 border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900" inert>
 <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
 <div class="flex min-w-0 flex-wrap items-center gap-2">
 ${MARK}
@@ -129,8 +129,8 @@ ${MARK}
 </div>
 </div>
 </header>
-<div class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 sm:flex-row sm:px-6">
-<nav id="sidebar" aria-label="Pages" class="sm:sticky sm:top-[var(--header-h)] sm:max-h-[calc(100vh-var(--header-h))] sm:w-48 sm:shrink-0 sm:self-start sm:overflow-y-auto"><ul id="nav" class="flex flex-wrap gap-2 sm:flex-col sm:gap-1"></ul></nav>
+<div id="content" class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 sm:flex-row sm:px-6" inert>
+<nav id="sidebar" aria-label="Pages" class="sm:sticky sm:top-[calc(var(--header-h)+1.5rem)] sm:max-h-[calc(100vh-var(--header-h)-3rem)] sm:w-48 sm:shrink-0 sm:self-start sm:overflow-y-auto"><ul id="nav" class="flex flex-wrap gap-2 sm:flex-col sm:gap-1"></ul></nav>
 <main class="min-w-0 flex-1">
 <div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
 <input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
@@ -143,7 +143,6 @@ ${MARK}
 </div>
 <p id="no-match" role="status" aria-live="polite" class="mb-4 px-1 text-sm italic text-neutral-400 empty:hidden dark:text-neutral-500"></p>
 ${lane("needs-you", "Needs you", " border-l-4 border-l-rose-500 [&_h2]:text-rose-600 dark:[&_h2]:text-rose-400 [&_.lane-count]:bg-rose-100 [&_.lane-count]:text-rose-700 dark:[&_.lane-count]:bg-rose-950 dark:[&_.lane-count]:text-rose-300")}
-<p id="listing" hidden role="status" class="px-1 py-8 text-sm italic text-neutral-400 dark:text-neutral-500">Listing…</p>
 <div id="all-set" hidden class="flex flex-col items-center gap-2 py-16 text-center text-neutral-400 dark:text-neutral-600">
 <svg role="img" aria-label="Every item checked off" viewBox="0 0 240 200" class="h-40 w-48" fill="none">
 <ellipse cx="120" cy="108" rx="72" ry="52" fill="currentColor" opacity="0.04"/>
@@ -190,6 +189,13 @@ ${collapsedLane("discharged", "Done")}
 </main>
 </div>
 ${PANEL}
+<div id="loading" role="status" aria-live="polite" class="fixed inset-0 z-30 flex items-center justify-center bg-neutral-50/80 p-6 backdrop-blur-sm dark:bg-neutral-950/80">
+<div class="flex max-w-sm flex-col items-center gap-3 text-center">
+<span aria-hidden="true" class="h-8 w-8 animate-spin rounded-full border-4 border-neutral-200 border-t-neutral-600 dark:border-neutral-700 dark:border-t-neutral-300"></span>
+<p class="text-sm font-medium text-neutral-700 dark:text-neutral-200">Waiting for the first tick…</p>
+<p class="text-xs text-neutral-500 dark:text-neutral-400">Landrace reads the tracker once before it can show anything. If this stays, the terminal running <code class="font-mono">landrace start</code> says why.</p>
+</div>
+</div>
 </body>
 </html>
 `;
@@ -1355,12 +1361,6 @@ function allSetHidden(page, roots, search, listed) {
   return !allSet(page, roots, search, listed);
 }
 
-// Home, before the first listing: no rows then means nothing was read, not
-// that nothing needs the person, so it says so instead of the beach.
-function listingShown(page, listed) {
-  return page === null && listed !== true;
-}
-
 // Only on Needs You, with nothing on it and no query: a search that matched
 // nothing says so ("Nothing matches."), it is not good news.
 function allSet(page, roots, search, listed) {
@@ -1432,6 +1432,7 @@ for (const lane of document.querySelectorAll("details[data-lane]")) {
 
 function render(view) {
   lastView = view;
+  syncLoading(view);
   const page = pageNow();
   const now = Date.now();
   // Every row's DOM (and any menu/focus it held) is about to be replaced
@@ -1457,9 +1458,10 @@ function render(view) {
   // By lane, not page: a sent copy is moved to Waiting but stays on Needs You's page.
   const home = laneRoots(view.rows, page, "needs-you", () => true);
   const done = allSet(page, home, search, view.listed);
-  const listing = listingShown(page, view.listed);
+  // Home, before the first listing: no rows then means nothing was read, not
+  // that nothing needs the person, so neither the beach nor an empty lane shows.
+  const unlisted = page === null && !viewListed(view);
   document.getElementById("all-set").hidden = allSetHidden(page, home, search, view.listed);
-  document.getElementById("listing").hidden = !listing;
   for (const lane of document.querySelectorAll("[data-lane]")) {
     // The server's copies, each holding the items filed in this lane under
     // their parents, and counted by those items, so a lane's number is how
@@ -1475,7 +1477,7 @@ function render(view) {
     lane.querySelector(".lane-count").textContent = String(drawn === null ? 0 : drawn.count);
     // Without a query every lane stays, saying "None" when empty — a lane that
     // vanished would read as a fault. With one, a lane nothing matched is noise.
-    lane.hidden = laneHidden(drawn === null ? null : roots, search, done || listing);
+    lane.hidden = laneHidden(drawn === null ? null : roots, search, done || unlisted);
     // A match inside a closed Not admitted / Done lane would show only as a count.
     if (lane.tagName === "DETAILS") syncDetails(lane, search !== null && roots.length > 0, started, ended);
     matched += roots.length;
@@ -2464,6 +2466,20 @@ function bellState(on, permission) {
 // item is gone.
 function viewListed(view) {
   return view !== null && view !== undefined && view.listed === true;
+}
+
+// Before the first listing the overlay covers the board, and everything behind
+// it is inert: a fixed overlay stops the mouse but not Tab. A later view is
+// never unlisted, since the server keeps its last listing, so once down it
+// stays down for this page load.
+const loading = { done: false };
+function syncLoading(view) {
+  if (viewListed(view)) loading.done = true;
+  document.getElementById("loading").hidden = loading.done;
+  for (const el of [document.querySelector("body > header"), document.getElementById("content"), document.getElementById("panel")]) {
+    el.toggleAttribute("inert", !loading.done);
+  }
+  document.documentElement.setAttribute("aria-busy", loading.done ? "false" : "true");
 }
 
 // One poll's announcements, and what the next poll compares against. A view

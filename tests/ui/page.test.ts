@@ -94,11 +94,17 @@ describe("the top bar and the sidebar while the page scrolls", () => {
     expect(panel).toEqual(expect.arrayContaining(["fixed", "z-20"]));
   });
 
-  it("sticks the sidebar just below the top bar from sm up, scrolling on its own when taller than the space left", () => {
+  // Unstuck, the container's py-6 holds the sidebar 1.5rem below the top bar;
+  // stuck at the bar's height alone, "Needs You" touched the bar's border.
+  it("sticks the sidebar 1.5rem below the top bar from sm up, scrolling on its own when taller than the space left", () => {
+    expect(PAGE_HTML).toMatch(/<div id="content" class="[^"]*\bpy-6\b[^"]*"[^>]*>\n<nav id="sidebar"/);
     expect(sidebar).toEqual(expect.arrayContaining([
-      "sm:sticky", "sm:self-start", "sm:top-[var(--header-h)]",
-      "sm:max-h-[calc(100vh-var(--header-h))]", "sm:overflow-y-auto",
+      "sm:sticky", "sm:self-start", "sm:top-[calc(var(--header-h)+1.5rem)]",
+      "sm:max-h-[calc(100vh-var(--header-h)-3rem)]", "sm:overflow-y-auto",
     ]));
+    expect(sidebar).not.toContain("sm:top-[var(--header-h)]");
+    expect(APP_CSS).toContain("top:calc(var(--header-h) + 1.5rem)");
+    expect(APP_CSS).toContain("max-height:calc(100vh - var(--header-h) - 3rem)");
   });
 
   // stepFocus scrolls a row into view with block "nearest", which would land
@@ -3637,19 +3643,11 @@ describe("the empty Needs You", () => {
     expect(allSet(null, [], null, false)).toBe(false);
   });
 
-  it("says Listing… on the home page until the first listing, and nowhere else", () => {
-    const run = (args: unknown[]): boolean => {
-      const c: Record<string, unknown> = { args };
-      runInNewContext(fnSource("listingShown"), c);
-      return runInNewContext("listingShown(...args)", c) as boolean;
-    };
-    expect(run([null, false])).toBe(true);
-    expect(run([null, true])).toBe(false);
-    expect(run(["main", false])).toBe(false);
-    const block = /<p id="listing"[^>]*>[^<]*<\/p>/.exec(PAGE_HTML)?.[0] ?? "";
-    expect(block).toContain("Listing…");
-    expect(block).toContain("hidden");
-    expect(block).not.toContain("rose");
+  // The loading overlay says it on every page now; the home page's own line is gone.
+  it("has no Listing… of its own: the loading overlay says it on every page", () => {
+    expect(PAGE_HTML).not.toContain('id="listing"');
+    expect(PAGE_HTML).not.toContain("Listing…");
+    expect(APP_JS).not.toContain("listingShown");
   });
 
   it("draws every item checked off, in the page's own colour and one emerald accent", () => {
@@ -3684,9 +3682,91 @@ describe("the empty Needs You", () => {
     expect(render).toContain("const home = laneRoots(view.rows, page, \"needs-you\", () => true)");
     expect(render).toContain("allSet(page, home, search, view.listed)");
     expect(render).toContain("hidden = allSetHidden(page, home, search, view.listed)");
-    expect(render).toContain("hidden = !listing");
-    // The unlisted home replaces the empty lane too, as the beach does.
-    expect(render).toContain("const listing = listingShown(page, view.listed)");
-    expect(render).toContain("laneHidden(drawn === null ? null : roots, search, done || listing)");
+    // The unlisted home hides its empty lane too, as the beach does: the overlay covers it.
+    expect(render).toContain("const unlisted = page === null && !viewListed(view)");
+    expect(render).toContain("laneHidden(drawn === null ? null : roots, search, done || unlisted)");
+  });
+});
+
+describe("the board before the first tick lists", () => {
+  const overlay = /<div id="loading"[^>]*>[\s\S]*?<\/div>\n<\/div>/.exec(PAGE_HTML)?.[0] ?? "";
+  const openTag = /<div id="loading"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
+  const classesOf = (re: RegExp): string[] => (re.exec(PAGE_HTML)?.[1] ?? "").split(" ");
+
+  // In the initial HTML and not hidden, so no empty board flashes before the first poll answers.
+  it("starts with the overlay shown, saying what it waits for", () => {
+    expect(openTag).not.toBe("");
+    expect(openTag).not.toMatch(/\shidden[\s>]/);
+    expect(openTag).toContain('role="status"');
+    expect(openTag).toContain('aria-live="polite"');
+    expect(overlay).toContain("Waiting for the first tick…");
+    expect(overlay).toContain("Landrace reads the tracker once before it can show anything. If this stays, the terminal running <code");
+    expect(overlay).toMatch(/landrace start<\/code> says why\./);
+    expect(overlay).toContain("animate-spin");
+    expect(overlay).not.toMatch(/<img|<svg/);
+    expect(APP_CSS).toContain(".animate-spin{");
+  });
+
+  it("starts with the top bar, the content and the panel inert and the page busy", () => {
+    expect(PAGE_HTML).toMatch(/<html [^>]*aria-busy="true"/);
+    expect(PAGE_HTML).toMatch(/<body[^>]*>\n<header [^>]*\sinert>/);
+    expect(PAGE_HTML).toMatch(/<div id="content" [^>]*\sinert>/);
+    expect(PAGE_HTML).toMatch(/<aside id="panel" [^>]*\sinert>/);
+    // The overlay itself sits outside all three, or it would be inert too:
+    // after the panel, the body's last child.
+    expect(PAGE_HTML).toMatch(/<\/aside>\n<div id="loading"[\s\S]*?<\/div>\n<\/div>\n<\/body>/);
+  });
+
+  it("covers the panel, with its own colours in light and dark", () => {
+    const panel = classesOf(/<aside id="panel"[^>]*class="([^"]*)"/);
+    const own = classesOf(/<div id="loading"[^>]*class="([^"]*)"/);
+    const z = (cs: string[]): number => Number(/^z-(\d+)$/.exec(cs.find((c) => /^z-\d+$/.test(c)) ?? "")?.[1] ?? NaN);
+    expect(z(own)).toBeGreaterThan(z(panel));
+    expect(own).toEqual(expect.arrayContaining(["fixed", "inset-0"]));
+    expect(own.some((c) => c.startsWith("bg-"))).toBe(true);
+    expect(own.some((c) => c.startsWith("dark:bg-"))).toBe(true);
+    expect(APP_CSS).toContain(".z-30{");
+  });
+
+  const fakeEl = (): { hidden: boolean; attrs: Map<string, string>; setAttribute: (k: string, v: string) => void; toggleAttribute: (k: string, on: boolean) => void } => {
+    const attrs = new Map<string, string>();
+    return {
+      hidden: false, attrs,
+      setAttribute: (k, v) => { attrs.set(k, v); },
+      toggleAttribute: (k, on) => { if (on) attrs.set(k, ""); else attrs.delete(k); },
+    };
+  };
+  const run = (views: unknown[]) => {
+    const els = { loading: fakeEl(), header: fakeEl(), content: fakeEl(), panel: fakeEl(), root: fakeEl() };
+    const document = {
+      documentElement: els.root,
+      getElementById: (id: string) => ({ loading: els.loading, content: els.content, panel: els.panel })[id] ?? null,
+      querySelector: (sel: string) => (sel === "body > header" ? els.header : null),
+    };
+    const c: Record<string, unknown> = { document, VIEWS: views };
+    runInNewContext(fnSource("viewListed") + fnSource("syncLoading") + constSource("loading") + "for (const v of VIEWS) syncLoading(v);", c);
+    return els;
+  };
+  const inert = (els: ReturnType<typeof run>): boolean[] => [els.header, els.content, els.panel].map((e) => e.attrs.has("inert"));
+
+  it("keeps the overlay up and the page inert on a view not yet listed", () => {
+    const els = run([{ listed: false, rows: [] }]);
+    expect(els.loading.hidden).toBe(false);
+    expect(inert(els)).toEqual([true, true, true]);
+    expect(els.root.attrs.get("aria-busy")).toBe("true");
+  });
+
+  it("drops the overlay and frees the page once a view is listed, and never raises it again", () => {
+    const els = run([{ listed: false, rows: [] }, { listed: true, rows: [] }]);
+    expect(els.loading.hidden).toBe(true);
+    expect(inert(els)).toEqual([false, false, false]);
+    expect(els.root.attrs.get("aria-busy")).toBe("false");
+    const later = run([{ listed: true, rows: [] }, { listed: false, rows: [] }]);
+    expect(later.loading.hidden).toBe(true);
+    expect(inert(later)).toEqual([false, false, false]);
+  });
+
+  it("is run by render on every view", () => {
+    expect(fnSource("render")).toContain("syncLoading(view);");
   });
 });
