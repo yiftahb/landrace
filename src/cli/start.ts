@@ -1085,7 +1085,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const sources = sourceReaders(rt.workflows, rt.ctx);
   const ui = await startUi({
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
-    interactive: process.stdout.isTTY === true,
+    interactive: opts.interactive ?? process.stdout.isTTY === true, open: opts.open,
     tick: schedule.wake,
     goto: gotoByClaim(writeOwner, new Map(rt.workflows.map((w) => [w.id, gotoFor({
       source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx, workflow: w.deps.workflow,

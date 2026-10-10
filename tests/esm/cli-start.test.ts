@@ -1369,10 +1369,13 @@ describeLoopback("runStart's page while a source cannot list", () => {
     console.error = (line: unknown): void => {
       said.push(String(line));
     };
-    const running = runStart(dir, { uiPort: 0 });
+    // A terminal, so the board is opened, by a stub: no test spawns a browser.
+    const opened: string[] = [];
+    const running = runStart(dir, { uiPort: 0, interactive: true, open: async (u) => { opened.push(u); } });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
+      expect(opened).toEqual([url]);
       const listed = async (): Promise<string[]> => ((await (await fetch(`${url}board.json`)).json()) as BoardView).rows.map((r) => r.id);
       const post = (path: string, action: string): Promise<Response> =>
         fetch(`${url}${path}`, { method: "POST", headers: { "x-landrace-action": action } });
@@ -1422,7 +1425,7 @@ describeLoopback("runStart's page over two workflows", () => {
     console.error = (line: unknown): void => {
       said.push(String(line));
     };
-    const running = runStart(dir, { uiPort: 0 });
+    const running = runStart(dir, { uiPort: 0, interactive: false, open: async () => { throw new Error("opened a browser"); } });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";

@@ -2548,6 +2548,10 @@ export interface StartOptions {
   /** Serve the triage page. Default true; `--headless`, or its older name `--no-ui`, turns it off. */
   ui?: boolean;
   uiPort?: number;
+  /** A person is at a terminal to see the board open. Default: stdout is a TTY. */
+  interactive?: boolean;
+  /** Opens the served board. Default: the platform's own opener; a test passes a stub, so none spawns a browser. */
+  open?: BrowserOpener;
   /** See BuildOptions.otel. */
   otel?: readonly string[];
 }
