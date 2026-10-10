@@ -69,6 +69,7 @@ import { admitProblems, branchIsolationProblems, claimProblems, createProblems, 
 import { loadWorkspace } from "#workflow/workspace.js";
 import { watchWake, wakePath } from "#wake.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
+import { boardLiveness, removeInstance, writeInstance } from "#cli/port.js";
 
 /**
  * "60s", "2m", "1h" — anything else is a configuration error, not a default.
@@ -1017,6 +1018,21 @@ export async function loop(rt: Pick<WorkspaceRuntime, "stop">, schedule: Schedul
 }
 
 export async function runStart(dir: string, opts: StartOptions): Promise<void> {
+  // One board per workspace: a second would overwrite the record and leave
+  // `landrace port` naming one of two. Asked of the board itself, so a
+  // record a crash left behind does not block. A start that serves no board
+  // writes no record and is not refused.
+  const serves = (opts.ui ?? true) && !(opts.once ?? false);
+  if (serves) {
+    const running = await boardLiveness(dir);
+    if ("live" in running) {
+      throw new Error(
+        `a landrace start already serves this workspace's board at ${running.live} (pid ${running.instance.pid}); ` +
+        "stop it first, or start this one with --headless",
+      );
+    }
+  }
+
   // The board has to exist before the runtime does, because it listens to
   // the runtime's events. Its workflow is filled in once the runtime has
   // loaded one; until then it has nothing listed and renders nothing.
@@ -1126,6 +1142,14 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     }),
   });
   if (ui) {
+    // Once the board listens, on the port it bound — never the flag's, which
+    // may be 0 — and naming the workspace the board publishes as its own.
+    try {
+      await writeInstance(dir, { pid: process.pid, port: ui.port, workspace, startedAt: new Date().toISOString() });
+    } catch (e) {
+      await ui.close();
+      throw new Error(`could not record which port serves this workspace's board: ${messageOf(e)}`);
+    }
     console.error(`landrace: triage page at ${ui.url}`);
     pageRef.url = ui.url;
   }
@@ -1142,6 +1166,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     unwatch?.();
     off();
     await ui?.close();
+    if (ui) await removeInstance(dir, process.pid).catch((e: unknown) => console.error(`landrace: could not remove the board's record: ${messageOf(e)}`));
     // --once, a normal stop and the first Ctrl-C all come through here; the
     // batch would otherwise lose up to its whole export interval of records.
     await rt.telemetry?.shutdown();

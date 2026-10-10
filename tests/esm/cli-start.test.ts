@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { buildWorkspaceRuntime, childServerCommand, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
+import { portCommand, readInstance, removeInstance, writeInstance } from "#cli/port.js";
 import type { BoardView, BuildOptions, LandraceEvent, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
 import { createActivityLog } from "#runner/activity.js";
 import { acquire, release } from "#runner/lock.js";
@@ -1497,6 +1498,108 @@ describeLoopback("runStart's page over two workflows", () => {
       process.emit("SIGINT");
       await running;
       [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+});
+
+/*
+ * The instance record `landrace port` reads, through the daemon's own path:
+ * written once the board listens, gone on a clean stop, and never by a start
+ * that serves no board.
+ */
+describe("runStart's instance record, with no board", () => {
+  it("writes none for --once, and is not refused by a record it does not read", async () => {
+    const { dir } = await fixture();
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (): void => {};
+    try {
+      // A record naming this live process: a --once start is not refused by it.
+      await writeInstance(dir, { pid: process.pid, port: 1, workspace: "/elsewhere", startedAt: "2026-10-10T00:00:00.000Z" });
+      await runStart(dir, { once: true });
+      expect(await readInstance(dir)).toEqual({ instance: { pid: process.pid, port: 1, workspace: "/elsewhere", startedAt: "2026-10-10T00:00:00.000Z" } });
+      await removeInstance(dir, process.pid);
+      await runStart(dir, { once: true });
+      expect(await readInstance(dir)).toEqual({ missing: true });
+    } finally {
+      [console.log, console.error] = [log, error];
+    }
+  });
+});
+
+describeLoopback("runStart's instance record", () => {
+  const quiet = (): { said: string[]; restore: () => void } => {
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => {
+      said.push(String(line));
+    };
+    return { said, restore: () => { [console.log, console.error] = [log, error]; } };
+  };
+  const portOf = async (dir: string): Promise<{ out: string[]; err: string[]; code: number }> => {
+    const out: string[] = [];
+    const err: string[] = [];
+    let code = 0;
+    await portCommand({ out: (l) => out.push(l), err: (l) => err.push(l), exit: (c) => { code = c; } })
+      .parseAsync(["-w", dir], { from: "user" });
+    return { out, err, code };
+  };
+  const pageOf = (said: string[]): string => said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
+
+  it("is written once the board listens, answered by landrace port, and removed on a clean stop", async () => {
+    const { dir } = await fixture();
+    const { said, restore } = quiet();
+    const running = runStart(dir, { uiPort: 0, interactive: false });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      const url = pageOf(said);
+      const read = await readInstance(dir);
+      expect(read).toEqual({ instance: expect.objectContaining({ pid: process.pid, port: Number(new URL(url).port) }) });
+      expect(await portOf(dir)).toEqual({ out: [url.replace(/\/$/, "")], err: [], code: 0 });
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      restore();
+    }
+    expect(await readInstance(dir)).toEqual({ missing: true });
+    expect(await portOf(dir)).toMatchObject({ out: ["offline"], code: 1 });
+  }, 30_000);
+
+  it("refuses a second board-serving start on the workspace, naming the running URL and pid, before its first tick", async () => {
+    const { dir, record } = await fixture();
+    const { said, restore } = quiet();
+    const running = runStart(dir, { uiPort: 0, interactive: false });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      await until(async () => (await applied(record)).length === 1, "the first tick");
+      const url = pageOf(said).replace(/\/$/, "");
+      await expect(runStart(dir, { uiPort: 0, interactive: false })).rejects.toThrow(
+        `a landrace start already serves this workspace's board at ${url} (pid ${process.pid}); stop it first, or start this one with --headless`,
+      );
+      // Refused before it ticked: the first start's one write is still the only one.
+      expect(await applied(record)).toHaveLength(1);
+      // The refused start took nothing: the record still names the live one.
+      expect(await portOf(dir)).toEqual({ out: [url], err: [], code: 0 });
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      restore();
+    }
+  }, 30_000);
+
+  it("is not blocked by a record a crash left behind, and overwrites it", async () => {
+    const { dir } = await fixture();
+    await writeInstance(dir, { pid: 999_999_999, port: 1, workspace: "/gone", startedAt: "2026-10-10T00:00:00.000Z" });
+    const { said, restore } = quiet();
+    const running = runStart(dir, { uiPort: 0, interactive: false });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      expect(await readInstance(dir)).toEqual({ instance: expect.objectContaining({ pid: process.pid, port: Number(new URL(pageOf(said)).port) }) });
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      restore();
     }
   }, 30_000);
 });
