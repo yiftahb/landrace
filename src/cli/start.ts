@@ -1023,14 +1023,16 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // record a crash left behind does not block. A start that serves no board
   // writes no record and is not refused.
   const serves = (opts.ui ?? true) && !(opts.once ?? false);
+  const running = async (): Promise<string | null> => {
+    const found = await boardLiveness(dir);
+    return "live" in found
+      ? `a landrace start already serves this workspace's board at ${found.live} (pid ${found.instance.pid}); ` +
+        "stop it first, or start this one with --headless"
+      : null;
+  };
   if (serves) {
-    const running = await boardLiveness(dir);
-    if ("live" in running) {
-      throw new Error(
-        `a landrace start already serves this workspace's board at ${running.live} (pid ${running.instance.pid}); ` +
-        "stop it first, or start this one with --headless",
-      );
-    }
+    const refused = await running();
+    if (refused) throw new Error(refused);
   }
 
   // The board has to exist before the runtime does, because it listens to
@@ -1144,6 +1146,17 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   if (ui) {
     // Once the board listens, on the port it bound — never the flag's, which
     // may be 0 — and naming the workspace the board publishes as its own.
+    // Asked again: building the runtime and the preflights take seconds, and
+    // a board another start brought up meanwhile would lose its record to
+    // this one, leaving `port` naming one of two.
+    const refused = await running().catch(async (e: unknown) => {
+      await ui.close();
+      throw e;
+    });
+    if (refused) {
+      await ui.close();
+      throw new Error(refused);
+    }
     try {
       await writeInstance(dir, { pid: process.pid, port: ui.port, workspace, startedAt: new Date().toISOString() });
     } catch (e) {

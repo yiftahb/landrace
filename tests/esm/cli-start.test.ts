@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { buildWorkspaceRuntime, childServerCommand, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
-import { portCommand, readInstance, removeInstance, writeInstance } from "#cli/port.js";
+import { portCommand, readInstance, writeInstance } from "#cli/port.js";
 import type { BoardView, BuildOptions, LandraceEvent, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
 import { createActivityLog } from "#runner/activity.js";
 import { acquire, release } from "#runner/lock.js";
@@ -1508,17 +1509,12 @@ describeLoopback("runStart's page over two workflows", () => {
  * that serves no board.
  */
 describe("runStart's instance record, with no board", () => {
-  it("writes none for --once, and is not refused by a record it does not read", async () => {
+  it("writes none for --once", async () => {
     const { dir } = await fixture();
     const [log, error] = [console.log, console.error];
     console.log = (): void => {};
     console.error = (): void => {};
     try {
-      // A record naming this live process: a --once start is not refused by it.
-      await writeInstance(dir, { pid: process.pid, port: 1, workspace: "/elsewhere", startedAt: "2026-10-10T00:00:00.000Z" });
-      await runStart(dir, { once: true });
-      expect(await readInstance(dir)).toEqual({ instance: { pid: process.pid, port: 1, workspace: "/elsewhere", startedAt: "2026-10-10T00:00:00.000Z" } });
-      await removeInstance(dir, process.pid);
       await runStart(dir, { once: true });
       expect(await readInstance(dir)).toEqual({ missing: true });
     } finally {
@@ -1584,6 +1580,82 @@ describeLoopback("runStart's instance record", () => {
     } finally {
       process.emit("SIGINT");
       await running;
+      restore();
+    }
+  }, 30_000);
+
+  /*
+   * Refused by a live board alone: the record names a real board answering
+   * for this workspace, so a start that read it would be refused, and these
+   * pass only because a start that serves no board never reads it.
+   */
+  it("does not refuse --once or --headless while a board serves the workspace, and neither touches its record", async () => {
+    const { dir, record } = await fixture();
+    const { said, restore } = quiet();
+    const running = runStart(dir, { uiPort: 0, interactive: false });
+    let headless: Promise<void> | undefined;
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      const url = pageOf(said).replace(/\/$/, "");
+      const before = await readInstance(dir);
+      await runStart(dir, { once: true });
+      headless = runStart(dir, { ui: false });
+      // It ran: a refused start would have rejected before any tick wrote.
+      const ran = (await applied(record)).length;
+      await until(async () => (await applied(record)).length > ran, "the headless start to tick");
+      expect(await readInstance(dir)).toEqual(before);
+      expect(await portOf(dir)).toEqual({ out: [url], err: [], code: 0 });
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      await headless;
+      restore();
+    }
+  }, 30_000);
+
+  /*
+   * The first check runs before the runtime is built and the preflights run,
+   * which can take seconds; a board another start brings up in that window
+   * would otherwise be overwritten in the record, leaving `port` naming one
+   * of two. The preflight here holds the first start in that window.
+   */
+  it("refuses a start whose board another start brought up while it was still preparing, and closes its own", async () => {
+    const root = await mkdtemp(join(tmpdir(), "lr-gate-"));
+    const [hold, held, release] = ["hold", "held", "release"].map((f) => join(root, f)) as [string, string, string];
+    const { dir } = await fixture({
+      hookExtra: `
+import { renameSync } from "node:fs";
+export const preflight = brand("preflight", {
+  id: "gate",
+  check: async (): Promise<void> => {
+    try { renameSync(${JSON.stringify(hold)}, ${JSON.stringify(held)}); } catch { return; }
+    while (!existsSync(${JSON.stringify(release)})) await new Promise((r) => setTimeout(r, 25));
+  },
+});
+`,
+    });
+    await writeFile(hold, "");
+    const { said, restore } = quiet();
+    const first = runStart(dir, { uiPort: 0, interactive: false });
+    const refused = first.then(() => null, (e: unknown) => e as Error);
+    let second: Promise<void> | undefined;
+    try {
+      await until(() => existsSync(held), "the first start to reach its preflight");
+      second = runStart(dir, { uiPort: 0, interactive: false });
+      await until(() => said.some((l) => l.includes("triage page at ")), "the second start's page");
+      const url = pageOf(said).replace(/\/$/, "");
+      await writeFile(release, "");
+      expect((await refused)?.message).toBe(
+        `a landrace start already serves this workspace's board at ${url} (pid ${process.pid}); stop it first, or start this one with --headless`,
+      );
+      // It served nothing: the only page is the second start's, still named by the record.
+      expect(said.filter((l) => l.includes("triage page at "))).toHaveLength(1);
+      expect(await portOf(dir)).toEqual({ out: [url], err: [], code: 0 });
+    } finally {
+      await writeFile(release, "");
+      process.emit("SIGINT");
+      await refused;
+      await second;
       restore();
     }
   }, 30_000);
