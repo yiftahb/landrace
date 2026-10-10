@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -8,6 +10,7 @@ import { buildWorkspaceRuntime, childServerCommand, runStart } from "#cli/start.
 import { runStatus } from "#cli/status.js";
 import { portCommand, readInstance, writeInstance } from "#cli/port.js";
 import type { BoardView, BuildOptions, LandraceEvent, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
+import { repositoryRoot } from "#agent/worktree.js";
 import { createActivityLog } from "#runner/activity.js";
 import { acquire, release } from "#runner/lock.js";
 import { sandboxRoot } from "#sandbox.js";
@@ -1671,6 +1674,37 @@ export const preflight = brand("preflight", {
     } finally {
       process.emit("SIGINT");
       await running;
+      restore();
+    }
+  }, 30_000);
+
+  /*
+   * A crash left a record for a port, and its pid has gone to an unrelated
+   * live process. The first check passes, since nothing answers that port;
+   * this start then binds it, and the re-check finds a live pid and its own
+   * board answering for this workspace. The record can only be stale.
+   */
+  it("is not refused by a stale record naming the port its own board then bound, under a reused pid", async () => {
+    const { dir } = await fixture();
+    const free = createServer();
+    await new Promise<void>((resolve) => free.listen(0, "127.0.0.1", resolve));
+    const port = (free.address() as AddressInfo).port;
+    await new Promise((resolve) => free.close(resolve));
+    const workspace = await repositoryRoot(dir).catch(() => process.cwd());
+    await writeInstance(dir, { pid: process.ppid, port, workspace, startedAt: "2026-10-10T00:00:00.000Z" });
+    const { said, restore } = quiet();
+    const running = runStart(dir, { uiPort: port, interactive: false });
+    const failed = running.then(() => null, (e: unknown) => e as Error);
+    try {
+      await Promise.race([
+        until(() => said.some((l) => l.includes("triage page at ")), "the page to start"),
+        failed.then((e) => { if (e) throw e; }),
+      ]);
+      expect(new URL(pageOf(said)).port).toBe(String(port));
+      expect(await readInstance(dir)).toEqual({ instance: expect.objectContaining({ pid: process.pid, port }) });
+    } finally {
+      process.emit("SIGINT");
+      await failed;
       restore();
     }
   }, 30_000);

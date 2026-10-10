@@ -1023,9 +1023,12 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // record a crash left behind does not block. A start that serves no board
   // writes no record and is not refused.
   const serves = (opts.ui ?? true) && !(opts.once ?? false);
-  const running = async (): Promise<string | null> => {
+  const running = async (own?: number): Promise<string | null> => {
     const found = await boardLiveness(dir);
-    return "live" in found
+    // A record naming the port this start's own board holds can only be a
+    // crash's: its pid, reused by an unrelated process, still looks alive,
+    // and this board answers for this workspace, so it would refuse itself.
+    return "live" in found && found.instance.port !== own
       ? `a landrace start already serves this workspace's board at ${found.live} (pid ${found.instance.pid}); ` +
         "stop it first, or start this one with --headless"
       : null;
@@ -1149,7 +1152,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     // Asked again: building the runtime and the preflights take seconds, and
     // a board another start brought up meanwhile would lose its record to
     // this one, leaving `port` naming one of two.
-    const refused = await running().catch(async (e: unknown) => {
+    const refused = await running(ui.port).catch(async (e: unknown) => {
       await ui.close();
       throw e;
     });
