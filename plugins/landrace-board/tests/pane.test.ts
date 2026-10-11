@@ -322,6 +322,31 @@ test('a board that has not listed yet seeds nothing: its first listing announces
   expect(seen.status.at(-1)).toBe('landrace: 1 needs you')
 })
 
+test("a restarted board that has not listed yet clears the old board's rows and count", async ($, on) => {
+  const port = { answer: ran(0, URL) }
+  const served = { view: VIEW as BoardView | null }
+  const { clock, seen } = world(on, port, served)
+  await start($)
+  await clock.settle()
+  expect(seen.status.at(-1)).toBe('landrace: 1 needs you')
+  served.view = null
+  port.answer = ran(0, 'http://127.0.0.1:4646')
+  await clock.advance(5000)
+  expect(seen.argv.length).toBe(2)
+  served.view = { ...VIEW, listed: false, needsYou: 0, workflows: [], rows: [] }
+  await clock.advance(5000)
+  expect(seen.fetched.at(-1)).toBe('http://127.0.0.1:4646/board.json')
+  expect(seen.status.at(-1)).toBeUndefined()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'landrace-board', surface, component: 'Pane', requestId: 'needs-you', props: PANE('Needs You · 1') })
+    expect(await ui.find({ text: 'Waiting for the first tick…' })).toBeDefined()
+    expect(await ui.find({ key: 'row:needs-you:11' })).toBeUndefined()
+    expect(await ui.find({ key: 'lane:needs-you' })).toBeUndefined()
+    expect(await ui.find({ text: /stale since/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
 test('a read that never answers counts as failed, and port is asked again', async ($, on) => {
   const served = { view: VIEW as BoardView | null, hang: false }
   const { clock, seen } = world(on, { answer: ran(0, URL) }, served)

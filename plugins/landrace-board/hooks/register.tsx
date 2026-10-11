@@ -159,8 +159,11 @@ async function poll($: EngineInterface): Promise<void> {
   // Before the first listing the rows are empty because nothing was read, as
   // the board page knows: drawn, every lane says None, and seeding the
   // arrivals from it would announce everything already waiting on the next.
+  // A board that restarted is one too: the last board's rows and count are
+  // not this one's, so the view is cleared and the pane waits for its listing.
   if (!view.listed) {
-    await update($, board, state => ({ ...state, isLive: true }))
+    await update($, board, state => ({ ...state, view: null, isLive: true, readAt: null }))
+    await showStatus($)
     return
   }
   const now = await $.clock.now()
