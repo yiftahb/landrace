@@ -69,7 +69,8 @@ async function ensureRoot(path: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
 }
 
-const alive = (pid: number): boolean => {
+/** Whether a process with this pid exists — the locks' liveness, and the board record's. */
+export const alive = (pid: number): boolean => {
   try {
     process.kill(pid, 0);
     return true;

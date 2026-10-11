@@ -69,6 +69,7 @@ import { admitProblems, branchIsolationProblems, claimProblems, createProblems, 
 import { loadWorkspace } from "#workflow/workspace.js";
 import { watchWake, wakePath } from "#wake.js";
 import { STOP_SIGNALS } from "#cli/reexec.js";
+import { boardLiveness, removeInstance, writeInstance } from "#cli/port.js";
 
 /**
  * "60s", "2m", "1h" — anything else is a configuration error, not a default.
@@ -102,9 +103,6 @@ export async function startUi(
     board: Board; ui: boolean; once: boolean; port: number; tick?: () => WakeResult; goto?: GotoPath | undefined;
     refresh?: (() => Promise<void>) | undefined; panel?: ItemPanel | undefined;
     admit?: ((item: string, workflow: string) => Promise<AdmitResult>) | undefined;
-    /** Stdout is a terminal, so a person is there to see the browser open. Absent, nothing opens. */
-    interactive?: boolean | undefined;
-    open?: BrowserOpener | undefined;
   },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
@@ -125,7 +123,6 @@ export async function startUi(
     }
     throw e;
   }
-  openBoard(ui.url, { interactive: opts.interactive ?? false, open: opts.open ?? openBrowser });
   return ui;
 }
 
@@ -1017,6 +1014,26 @@ export async function loop(rt: Pick<WorkspaceRuntime, "stop">, schedule: Schedul
 }
 
 export async function runStart(dir: string, opts: StartOptions): Promise<void> {
+  // One board per workspace: a second would overwrite the record and leave
+  // `landrace port` naming one of two. Asked of the board itself, so a
+  // record a crash left behind does not block. A start that serves no board
+  // writes no record and is not refused.
+  const serves = (opts.ui ?? true) && !(opts.once ?? false);
+  const running = async (own?: number): Promise<string | null> => {
+    const found = await boardLiveness(dir);
+    // A record naming the port this start's own board holds can only be a
+    // crash's: its pid, reused by an unrelated process, still looks alive,
+    // and this board answers for this workspace, so it would refuse itself.
+    return "live" in found && found.instance.port !== own
+      ? `a landrace start already serves this workspace's board at ${found.live} (pid ${found.instance.pid}); ` +
+        "stop it first, or start this one with --headless"
+      : null;
+  };
+  if (serves) {
+    const refused = await running();
+    if (refused) throw new Error(refused);
+  }
+
   // The board has to exist before the runtime does, because it listens to
   // the runtime's events. Its workflow is filled in once the runtime has
   // loaded one; until then it has nothing listed and renders nothing.
@@ -1085,7 +1102,6 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const sources = sourceReaders(rt.workflows, rt.ctx);
   const ui = await startUi({
     board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
-    interactive: opts.interactive ?? process.stdout.isTTY === true, open: opts.open,
     tick: schedule.wake,
     goto: gotoByClaim(writeOwner, new Map(rt.workflows.map((w) => [w.id, gotoFor({
       source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx, workflow: w.deps.workflow,
@@ -1126,8 +1142,30 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     }),
   });
   if (ui) {
+    // Once the board listens, on the port it bound — never the flag's, which
+    // may be 0 — and naming the workspace the board publishes as its own.
+    // Asked again: building the runtime and the preflights take seconds, and
+    // a board another start brought up meanwhile would lose its record to
+    // this one, leaving `port` naming one of two.
+    const refused = await running(ui.port).catch(async (e: unknown) => {
+      await ui.close();
+      throw e;
+    });
+    if (refused) {
+      await ui.close();
+      throw new Error(refused);
+    }
+    try {
+      await writeInstance(dir, { pid: process.pid, port: ui.port, workspace, startedAt: new Date().toISOString() });
+    } catch (e) {
+      await ui.close();
+      throw new Error(`could not record which port serves this workspace's board: ${messageOf(e)}`);
+    }
     console.error(`landrace: triage page at ${ui.url}`);
     pageRef.url = ui.url;
+    // Only now: a start refused above, or one that could not write its
+    // record, has already closed its board, and a tab on it would be dead.
+    openBoard(ui.url, { interactive: opts.interactive ?? process.stdout.isTTY === true, open: opts.open ?? openBrowser });
   }
 
   // What `landrace mcp` touches after a person's write, in its own process:
@@ -1142,6 +1180,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     unwatch?.();
     off();
     await ui?.close();
+    if (ui) await removeInstance(dir, process.pid).catch((e: unknown) => console.error(`landrace: could not remove the board's record: ${messageOf(e)}`));
     // --once, a normal stop and the first Ctrl-C all come through here; the
     // batch would otherwise lose up to its whole export interval of records.
     await rt.telemetry?.shutdown();

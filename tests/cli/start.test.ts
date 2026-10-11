@@ -617,60 +617,6 @@ describeLoopback("startUi", () => {
     }
   });
 
-  describe("opening the board in a browser", () => {
-    let said: string[];
-    let spy: jest.SpyInstance;
-    beforeEach(() => {
-      said = [];
-      spy = jest.spyOn(console, "error").mockImplementation((line: unknown) => { said.push(String(line)); });
-    });
-    afterEach(() => spy.mockRestore());
-    // What the opener's failure prints is said after a turn of the loop, never before startUi returns.
-    const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
-
-    it("opens the served board's URL once, when run in a terminal", async () => {
-      const open = jest.fn(async () => {});
-      const ui = await startUi({ board: board(), ui: true, once: false, port: 0, interactive: true, open });
-      try {
-        await settle();
-        expect(open).toHaveBeenCalledTimes(1);
-        expect(open).toHaveBeenCalledWith(ui?.url);
-        expect(said).toEqual([]);
-      } finally {
-        await ui?.close();
-      }
-    });
-
-    it("opens nothing with --headless, --once, or when stdout is not a terminal", async () => {
-      const open = jest.fn(async () => {});
-      expect(await startUi({ board: board(), ui: false, once: false, port: 0, interactive: true, open })).toBeNull();
-      expect(await startUi({ board: board(), ui: true, once: true, port: 0, interactive: true, open })).toBeNull();
-      const ui = await startUi({ board: board(), ui: true, once: false, port: 0, interactive: false, open });
-      try {
-        // Not a terminal still serves the board: only the browser is skipped.
-        expect(ui?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
-        await settle();
-        expect(open).not.toHaveBeenCalled();
-      } finally {
-        await ui?.close();
-      }
-    });
-
-    it.each([
-      ["throws", (): Promise<void> => { throw new Error("spawn xdg-open ENOENT"); }],
-      ["reports an error", (): Promise<void> => Promise.reject(new Error("spawn xdg-open ENOENT"))],
-    ])("keeps the start running when the opener %s, and says where the board is", async (_, open) => {
-      const ui = await startUi({ board: board(), ui: true, once: false, port: 0, interactive: true, open });
-      try {
-        expect(ui?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);
-        await settle();
-        expect(said).toEqual([`landrace: could not open a browser (spawn xdg-open ENOENT); the board is at ${ui?.url}`]);
-      } finally {
-        await ui?.close();
-      }
-    });
-  });
-
   /**
    * The wiring itself: startUi is the one place a caller's `tick` reaches
    * serveBoard, so this is what stands between the schedule's own wake and
