@@ -3,6 +3,7 @@ import { test, expect } from 'claude-code/testing'
 import {
   arrivals,
   argvOf,
+  boardLink,
   needingIds,
   paneId,
   paneLanes,
@@ -140,4 +141,10 @@ test('the status line says which condition fired', async () => {
   expect(statusLine({ kind: 'offline', reason: 'x' }, null, 'landrace')).toBe('landrace: offline')
   expect(statusLine({ kind: 'no-port' }, null, 'landrace')).toBe("landrace: no 'port' command; update landrace")
   expect(statusLine({ kind: 'not-found' }, null, 'node dist/cli.js')).toBe("landrace: 'node dist/cli.js' not found; set the command option")
+})
+
+test('the board link names localhost, which a desktop surface links and the board answers', async () => {
+  expect(boardLink('http://127.0.0.1:4545')).toBe('http://localhost:4545')
+  expect(boardLink('http://127.0.0.1:4545/')).toBe('http://localhost:4545/')
+  expect(boardLink('https://board.example')).toBe('https://board.example')
 })

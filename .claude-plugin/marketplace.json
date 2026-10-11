@@ -1,6 +1,7 @@
 {
   "name": "landrace",
   "owner": { "name": "Yiftah Barouch" },
+  "description": "Claude Code plugins that ship with Landrace",
   "plugins": [
     {
       "name": "landrace-board",
