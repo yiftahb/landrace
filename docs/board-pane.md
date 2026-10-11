@@ -46,4 +46,4 @@ A toast says when an item newly needs you, as in `landrace: #40 needs you: Pick 
 
 - Only the session's own board. Another project's `landrace start` is not shown.
 - The pane draws rows, not the board page itself. The item panel, search and the writes are on the board page.
-- In the desktop app, links that are not `https:` draw as plain text, so `Board ↗` names `localhost` in place of `127.0.0.1`. The board answers both.
+- The desktop app links only `https:` and `http://localhost` addresses, and draws any other as plain text. `port` names `127.0.0.1`, so `Board ↗` links `localhost` in its place. The board answers both.

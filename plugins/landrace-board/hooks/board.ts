@@ -165,9 +165,10 @@ export const statusLine = (reach: BoardReach | null, view: BoardView | null, com
 }
 
 /**
- * The `Board ↗` link. `port` names 127.0.0.1, which a desktop surface draws
- * as plain text, linking only https and http://localhost; the board answers
- * both host names. Reads keep the URL `port` gave.
+ * The `Board ↗` link. A desktop surface links only https: and
+ * http://localhost, and draws `port`'s 127.0.0.1 as plain text (the engine
+ * says so; a pane test pins it); the board answers both host names. Reads
+ * keep the URL `port` gave.
  */
 export const boardLink = (url: string): string => url.replace(/^http:\/\/127\.0\.0\.1(?=[:/]|$)/, 'http://localhost')
 

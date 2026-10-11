@@ -201,6 +201,17 @@ test('a tab draws its lanes from the split tree: an item in two lanes is in both
   expect(seen.filled).toEqual(["Let's talk about #11", "Let's talk about #11"])
 })
 
+test("the desktop links http://localhost and draws port's 127.0.0.1 as plain text, so Board ↗ names localhost", async ($, on) => {
+  on('ui.render', { component: 'Pane', requestId: 'PROBE' }, ($, e) => {
+    const { Box, Link } = $.ui.resolve(e)
+    return h(Box, null, h(Link, { href: 'http://localhost:4545', label: 'local' }), h(Link, { href: URL, label: 'loopback' }))
+  })
+  const ui = await $.ui.mount({ plugin: 'landrace-board', surface: 'desktop', component: 'Pane', requestId: 'PROBE', props: PANE('Probe') })
+  expect(await ui.find({ type: 'Link', text: 'local' })).toBeDefined()
+  expect(await ui.find({ type: 'Link', text: 'loopback' })).toBeUndefined()
+  await ui.unmount()
+})
+
 test("another plugin's pane with an id shaped like a workflow's is left to its owner", async ($, on) => {
   const { clock } = world(on, { answer: ran(0, URL) }, { view: VIEW })
   on('ui.render', { component: 'Pane', requestId: 'LOG' }, ($, e) => {
