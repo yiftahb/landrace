@@ -1,0 +1,11 @@
+{
+  "name": "landrace",
+  "owner": { "name": "Yiftah Barouch" },
+  "plugins": [
+    {
+      "name": "landrace-board",
+      "source": "./plugins/landrace-board",
+      "description": "Your project's Landrace board in a Claude Code pane"
+    }
+  ]
+}

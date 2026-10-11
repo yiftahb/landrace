@@ -91,5 +91,7 @@ const jestConfig = {
   transform: { "^.+\\.ts$": ["ts-jest", { useESM: true, tsconfig: { paths } }] },
   // tests/esm/** needs jest's ESM runtime, which is a process-wide node flag,
   // so it runs as a second pass under jest.esm.config.mjs. See that file.
-  testPathIgnorePatterns: ["/node_modules/", "<rootDir>/tests/esm/"],
+  // plugins/** are Claude Code mods: their *.test.ts import `claude-code/testing`
+  // and run under `claude plugin test`, never jest.
+  testPathIgnorePatterns: ["/node_modules/", "<rootDir>/tests/esm/", "<rootDir>/plugins/"],
 };
