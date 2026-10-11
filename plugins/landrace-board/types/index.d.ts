@@ -31,6 +31,8 @@ export type BoardRow = {
 export type BoardWorkflow = { id: string; name: string; needsYou: number }
 
 export type BoardView = {
+  /** Whether a listing has been taken yet: before it `rows` is empty because nothing was read. */
+  listed: boolean
   rows: BoardRow[]
   workflows: BoardWorkflow[]
   needsYou: number

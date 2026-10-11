@@ -19,6 +19,7 @@ import type { BoardReach, BoardRow, BoardState, BoardView } from '../types'
 
 const READ_MS = 5_000
 const RETRY_MS = 30_000
+const READ_TIMEOUT_MS = 10_000
 // `port` gives up on the board after two seconds; this is for a node that
 // cannot even start in time.
 const PORT_TIMEOUT_MS = 15_000
@@ -60,16 +61,43 @@ let command = 'landrace'
 let timer: Timer | null = null
 let isBusy = false
 
-/** Runs one ask or one read, unless the last is still running. */
+/**
+ * Runs one ask or one read, unless the last is still running. One that
+ * throws before any timer was set would leave nothing to ask again, so it
+ * sets the 30 s ask.
+ */
 async function turn($: EngineInterface, mode: 'ask' | 'read'): Promise<void> {
   if (isBusy) return
   isBusy = true
   try {
     if (mode === 'ask') await discover($, true)
     else await poll($)
+  } catch {
+    if (timer === null) every($, RETRY_MS, 'ask')
   } finally {
     isBusy = false
   }
+}
+
+/**
+ * `/board.json`, or null when the read failed. The fetch takes no timeout,
+ * and a board that took the connection and never answers would hold `turn`
+ * busy for good: past READ_TIMEOUT_MS the read counts as failed.
+ */
+async function fetchView($: EngineInterface, url: string): Promise<BoardView | null> {
+  return new Promise<BoardView | null>(resolve => {
+    const late = $.clock.after(READ_TIMEOUT_MS, () => resolve(null))
+    $.http.fetch(`${url}/board.json`).then(
+      answer => {
+        late.cancel()
+        resolve(answer.ok ? parseView(answer.text) : null)
+      },
+      () => {
+        late.cancel()
+        resolve(null)
+      },
+    )
+  })
 }
 
 function every($: EngineInterface, ms: number, mode: 'ask' | 'read'): void {
@@ -117,16 +145,17 @@ async function discover($: EngineInterface, readNow: boolean): Promise<void> {
 async function poll($: EngineInterface): Promise<void> {
   const before = await read($, board)
   if (before.reach?.kind !== 'live') return
-  let view: BoardView | null = null
-  try {
-    const answer = await $.http.fetch(`${before.reach.url}/board.json`)
-    view = answer.ok ? parseView(answer.text) : null
-  } catch {
-    view = null
-  }
+  const view = await fetchView($, before.reach.url)
   if (view === null) {
     await update($, board, state => ({ ...state, isLive: false }))
     await discover($, false)
+    return
+  }
+  // Before the first listing the rows are empty because nothing was read, as
+  // the board page knows: drawn, every lane says None, and seeding the
+  // arrivals from it would announce everything already waiting on the next.
+  if (!view.listed) {
+    await update($, board, state => ({ ...state, isLive: true }))
     return
   }
   const now = await $.clock.now()
@@ -195,6 +224,7 @@ export const register: Register = (on, options) => {
       reach !== null && reach.kind !== 'live' ? <Text color="red">{statusLine(reach, null, command)}</Text> : null,
       reach?.kind === 'offline' ? <Text dimColor>{reach.reason}</Text> : null,
       reach === null ? <Text dimColor>Looking for this project's board…</Text> : null,
+      reach?.kind === 'live' && state.view === null ? <Text dimColor>Waiting for the first tick…</Text> : null,
       dim && state.readAt !== null ? <Text dimColor>stale since {clockOf(state.readAt)}</Text> : null,
     ]
 

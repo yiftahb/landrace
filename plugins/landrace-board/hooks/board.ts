@@ -178,7 +178,8 @@ export const parseView = (text: string): BoardView | null => {
     return null
   }
   if (typeof raw !== 'object' || raw === null) return null
-  const { rows, workflows, needsYou } = raw as Record<string, unknown>
+  const { rows, workflows, needsYou, listed } = raw as Record<string, unknown>
   if (!Array.isArray(rows) || !Array.isArray(workflows) || typeof needsYou !== 'number') return null
-  return raw as BoardView
+  // As the board page reads it: listed only when it says so.
+  return { ...(raw as BoardView), listed: listed === true }
 }

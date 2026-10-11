@@ -37,6 +37,7 @@ const pull = row('pr-7', { kind: 'pull-request', title: 'PR for 11', badge: null
 // waits itself, story #11 under it needs you, task #12 under it is running.
 // Each copy holds only its own lane's children.
 const VIEW: BoardView = {
+  listed: true,
   needsYou: 1,
   workflows: [
     { id: 'full-cycle', name: 'Full cycle', needsYou: 1 },
@@ -79,7 +80,7 @@ test('a workflow tab draws every lane in the board order, an item once in each l
 test('the cycle guard is per lane, never shared across lanes', async () => {
   const looped = row('30', { page: 'w', lane: 'waiting' })
   looped.children = [looped]
-  const view: BoardView = { needsYou: 0, workflows: [{ id: 'w', name: 'W', needsYou: 0 }], rows: [looped, { ...looped, lane: 'running' }] }
+  const view: BoardView = { listed: true, needsYou: 0, workflows: [{ id: 'w', name: 'W', needsYou: 0 }], rows: [looped, { ...looped, lane: 'running' }] }
   const lanes = paneLanes(view, 'w')
   expect(lanes.find(l => l.lane === 'running')?.rows.map(r => r.row.id)).toEqual(['30'])
   expect(lanes.find(l => l.lane === 'waiting')?.rows.map(r => r.row.id)).toEqual(['30'])

@@ -24,12 +24,12 @@ The plugin runs `<command> port` in the session's folder to find the board. `com
 
 Type `/board` to open the panes. Nothing opens on its own when a session starts. In the terminal's fullscreen layout the panes dock beside the transcript; otherwise they sit above the prompt.
 
-- **Tabs.** One tab per page of the board's sidebar: `Needs You`, then each workflow by name. Each tab's title carries its count of items that need you, as in `Needs You · 2` or `Full cycle · 1`, and no count at zero. A workflow that appears on the board opens its tab while the panes are open, and one that leaves closes it. A tab you close stays closed until you type `/board` again.
+- **Tabs.** One tab per page of the board's sidebar: `Needs You`, then each workflow by name. Each tab's title carries its count of items that need you, as in `Needs You · 2` or `Full cycle · 1`, and no count at zero. A workflow that appears on the board opens its tab while the panes are open, once the terminal is wide enough for Claude Code to place a pane nobody asked for, and one that leaves closes it. A tab you close stays closed until you type `/board` again.
 - **Lanes.** Needs You shows only its own lane. A workflow tab shows every lane, in the board's order: Needs you, Agent running, Held elsewhere, Waiting, Not admitted and Done. Not admitted and Done start collapsed; press a lane's header to open or close it. A lane's count is the items filed in it, as on the board.
 - **Rows.** Each item is `#<id> <title>`, then its stage and note. Its pull requests and documents sit under it, each linked where it has a link. A parent whose children are in several lanes appears in each of those lanes, with only that lane's children, exactly as the board draws it. A parent shown only as the path to its children is dimmed and offers nothing.
 - **Actions.** On an item's own row, `Open ↗` opens it in its tracker, and `Chat here` puts the board's chat prompt for that item in your prompt box. Nothing is sent until you send it. `Board ↗`, at the top of each tab, opens the full board in your browser.
 
-The plugin reads the board every 5 seconds. A read that fails keeps the last rows on screen, dimmed, under "stale since HH:MM", and asks `port` again at once.
+The plugin reads the board every 5 seconds. Until the first tick has listed the tracker, the pane says "Waiting for the first tick…". A read that fails, or gives no answer within 10 seconds, keeps the last rows on screen, dimmed, under "stale since HH:MM", and asks `port` again at once.
 
 ## Signals
 

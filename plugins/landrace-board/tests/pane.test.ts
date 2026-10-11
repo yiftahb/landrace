@@ -24,6 +24,7 @@ const story = () => row('11', { badge: 'needs-you', stage: 'spec', note: 'approv
 
 // Epic #10 waits itself; story #11 under it needs you; task #12 runs.
 const VIEW: BoardView = {
+  listed: true,
   needsYou: 1,
   workflows: [
     { id: 'full-cycle', name: 'Full cycle', needsYou: 1 },
@@ -43,7 +44,7 @@ const ran = (exitCode: number, stdout: string, stderr = ''): ProcessRunResult =>
   ({ exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false })
 
 /** The world beneath the plugin: landrace, its board, and the session's UI calls, recorded. */
-function world(on: On, port: { answer: ProcessRunResult | Error }, served: { view: BoardView | null }) {
+function world(on: On, port: { answer: ProcessRunResult | Error; cwdFails?: boolean }, served: { view: BoardView | null; hang?: boolean }) {
   const clock = mock.clock(on, { now: Date.UTC(2026, 9, 11, 9, 30) })
   const seen = {
     argv: [] as string[][],
@@ -56,7 +57,13 @@ function world(on: On, port: { answer: ProcessRunResult | Error }, served: { vie
     closed: [] as string[],
   }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
-  on('session.cwd', () => ({ value: '/work/project' }))
+  on('session.cwd', () => {
+    if (port.cwdFails) {
+      port.cwdFails = false
+      throw new Error('no session folder yet')
+    }
+    return { value: '/work/project' }
+  })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('process.run', ($, e) => {
     seen.argv.push([...e.argv])
@@ -64,9 +71,10 @@ function world(on: On, port: { answer: ProcessRunResult | Error }, served: { vie
     if (port.answer instanceof Error) throw port.answer
     return { value: port.answer }
   })
-  on('http.fetch', ($, e) => {
+  on('http.fetch', async ($, e) => {
     seen.fetched.push(e.url)
     const view = served.view
+    if (served.hang) await clock.sleep(3_600_000)
     return view === null
       ? { value: { status: 502, ok: false, headers: {}, text: 'bad gateway' } }
       : { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(view) } }
@@ -248,4 +256,40 @@ test('/board opens one pane per sidebar page, counted; a workflow that leaves cl
     ['wf-docs', 'Docs'],
   ])
   expect(seen.closed).toEqual(['wf-fastlane'])
+})
+
+test('a board that has not listed yet seeds nothing: its first listing announces nothing already waiting', async ($, on) => {
+  const served = { view: { ...VIEW, listed: false, needsYou: 0, rows: [] } as BoardView | null }
+  const { clock, seen } = world(on, { answer: ran(0, URL) }, served)
+  await start($)
+  await clock.settle()
+  served.view = VIEW
+  await clock.advance(5000)
+  expect(seen.toasts).toEqual([])
+  expect(seen.status.at(-1)).toBe('landrace: 1 needs you')
+})
+
+test('a read that never answers counts as failed, and port is asked again', async ($, on) => {
+  const served = { view: VIEW as BoardView | null, hang: false }
+  const { clock, seen } = world(on, { answer: ran(0, URL) }, served)
+  await start($)
+  await clock.settle()
+  served.hang = true
+  await clock.advance(5000)
+  expect(seen.argv.length).toBe(1)
+  await clock.advance(10_000)
+  expect(seen.argv.length).toBe(2)
+  served.hang = false
+  await clock.advance(5000)
+  expect(seen.fetched.length).toBe(3)
+})
+
+test('a first ask that throws is asked again in 30 s', async ($, on) => {
+  const { clock, seen } = world(on, { answer: ran(0, URL), cwdFails: true }, { view: VIEW })
+  await start($)
+  await clock.settle()
+  expect(seen.argv).toEqual([])
+  await clock.advance(30_000)
+  expect(seen.argv.length).toBe(1)
+  expect(seen.status.at(-1)).toBe('landrace: 1 needs you')
 })
