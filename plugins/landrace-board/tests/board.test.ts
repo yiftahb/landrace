@@ -5,6 +5,7 @@ import {
   argvOf,
   boardLink,
   needingIds,
+  pageOfPane,
   paneId,
   paneLanes,
   paneTitle,
@@ -91,11 +92,27 @@ test('a tab title carries its count, and none at zero', async () => {
   expect(paneTitle('Fastlane', 0)).toBe('Fastlane')
 })
 
-test('a pane id keeps to the letters a pane id may hold', async () => {
+test('a pane id is one per workflow id, even two of 64 characters alike but for the last', async () => {
   expect(paneId(null)).toBe('needs-you')
-  expect(paneId('full-cycle')).toBe('wf-full-cycle')
-  expect(paneId('a.b c')).toBe('wf-a_b_c')
-  expect(paneId('x'.repeat(80)).length).toBe(64)
+  expect(paneId('full-cycle')).toBe('FULL_CYCLE')
+  const a = `${'x'.repeat(63)}a`
+  const b = `${'x'.repeat(63)}b`
+  expect(a.length).toBe(64)
+  expect(paneId(a)).not.toBe(paneId(b))
+  for (const id of [a, b, 'needs-you', '0-9', 'full-cycle']) {
+    const pane = paneId(id)
+    expect(pane).toMatch(/^[A-Za-z0-9_-]{1,64}$/)
+    expect(pane).not.toBe(paneId(null))
+    expect(pageOfPane(pane ?? '')).toBe(id)
+  }
+  expect(pageOfPane('needs-you')).toBeNull()
+  expect(pageOfPane('clock')).toBeUndefined()
+})
+
+test('a workflow id outside the rule gets no pane rather than one it could share', async () => {
+  expect(paneId('a.b')).toBeUndefined()
+  expect(paneId('A-b')).toBeUndefined()
+  expect(paneId('x'.repeat(65))).toBeUndefined()
 })
 
 test('the second line is the stage and the note, either alone when the other is missing', async () => {

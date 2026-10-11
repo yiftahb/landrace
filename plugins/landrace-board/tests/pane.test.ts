@@ -175,7 +175,7 @@ test('a tab draws its lanes from the split tree: an item in two lanes is in both
   await start($)
   await clock.settle()
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ plugin: 'landrace-board', surface, component: 'Pane', requestId: 'wf-full-cycle', props: PANE('Full cycle · 1') })
+    const ui = await $.ui.mount({ plugin: 'landrace-board', surface, component: 'Pane', requestId: 'FULL_CYCLE', props: PANE('Full cycle · 1') })
     expect((await ui.find({ type: 'Link', text: 'Board ↗' }))?.props.href).toBe('http://localhost:4545')
     expect(await ui.find({ key: 'row:needs-you:10' })).toBeDefined()
     expect(await ui.find({ key: 'row:running:10' })).toBeDefined()
@@ -213,6 +213,20 @@ test('Needs You draws only its lane', async ($, on) => {
   }
 })
 
+test('a workflow id outside the rule opens no tab, and Needs You says so', async ($, on) => {
+  const served = { view: { ...VIEW, workflows: [...VIEW.workflows, { id: 'Bad id', name: 'Bad', needsYou: 0 }] } as BoardView | null }
+  const { clock, seen } = world(on, { answer: ran(0, URL) }, served)
+  await start($)
+  await clock.settle()
+  await $.command.run({ command: 'board', args: '' } as never)
+  expect([...seen.panes.keys()]).toEqual(['needs-you', 'FULL_CYCLE', 'FASTLANE'])
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'landrace-board', surface, component: 'Pane', requestId: 'needs-you', props: PANE('Needs You · 1') })
+    expect(await ui.find({ text: "no tab for workflow 'Bad id': not a workflow id" })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
 test('a failed read keeps the rows, dimmed and stale since the last good read, and asks port again at once', async ($, on) => {
   const served = { view: VIEW as BoardView | null }
   const { clock, seen } = world(on, { answer: ran(0, URL) }, served)
@@ -241,8 +255,8 @@ test('/board opens one pane per sidebar page, counted; a workflow that leaves cl
   await $.command.run({ command: 'board', args: '' } as never)
   expect([...seen.panes]).toEqual([
     ['needs-you', 'Needs You · 1'],
-    ['wf-full-cycle', 'Full cycle · 1'],
-    ['wf-fastlane', 'Fastlane'],
+    ['FULL_CYCLE', 'Full cycle · 1'],
+    ['FASTLANE', 'Fastlane'],
   ])
   served.view = {
     ...VIEW,
@@ -252,10 +266,10 @@ test('/board opens one pane per sidebar page, counted; a workflow that leaves cl
   await clock.advance(5000)
   expect([...seen.panes]).toEqual([
     ['needs-you', 'Needs You · 2'],
-    ['wf-full-cycle', 'Full cycle · 2'],
-    ['wf-docs', 'Docs'],
+    ['FULL_CYCLE', 'Full cycle · 2'],
+    ['DOCS', 'Docs'],
   ])
-  expect(seen.closed).toEqual(['wf-fastlane'])
+  expect(seen.closed).toEqual(['FASTLANE'])
 })
 
 test('a board that has not listed yet seeds nothing: its first listing announces nothing already waiting', async ($, on) => {

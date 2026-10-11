@@ -88,9 +88,20 @@ export const paneLanes = (view: BoardView, page: string | null): PaneLane[] =>
 
 export const paneTitle = (name: string, count: number): string => (count > 0 ? `${name} · ${count}` : name)
 
-/** A pane id is 1-64 of letters, digits, `_` and `-`; a workflow id may hold more. */
-export const paneId = (page: string | null): string =>
-  page === null ? 'needs-you' : `wf-${page.replace(/[^A-Za-z0-9_-]/g, '_')}`.slice(0, 64)
+// A pane id is 1-64 of letters, digits, `_` and `-`, and a workflow id 1-64 of
+// lowercase letters, digits and `-`: a prefix cannot fit, and truncating gave
+// two 64-character ids one pane. Uppercasing and `-` to `_` maps one to one,
+// and never onto the lowercase `needs-you`.
+const WORKFLOW_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
+const WORKFLOW_PANE = /^[A-Z0-9][A-Z0-9_]{0,63}$/
+
+/** The page's pane id; none for a workflow id outside the rule, which could share one. */
+export const paneId = (page: string | null): string | undefined =>
+  page === null ? 'needs-you' : WORKFLOW_ID.test(page) ? page.toUpperCase().replaceAll('-', '_') : undefined
+
+/** The page a pane id names: null for Needs You, undefined for a pane not this plugin's. */
+export const pageOfPane = (id: string): string | null | undefined =>
+  id === 'needs-you' ? null : WORKFLOW_PANE.test(id) ? id.toLowerCase().replaceAll('_', '-') : undefined
 
 export const subtitleOf = (row: BoardRow): string => [row.stage, row.note].filter(part => part !== null && part !== '').join(' · ')
 

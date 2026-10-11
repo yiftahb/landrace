@@ -7,6 +7,7 @@ import {
   boardLink,
   clockOf,
   needingIds,
+  pageOfPane,
   paneId,
   paneLanes,
   paneTitle,
@@ -25,6 +26,7 @@ const READ_TIMEOUT_MS = 10_000
 const PORT_TIMEOUT_MS = 15_000
 
 const NEEDS_YOU = 'Needs You'
+const NEEDS_YOU_PANE = 'needs-you'
 
 const INITIAL: BoardState = { view: null, reach: null, isLive: false, readAt: null, needing: null }
 const board = atom({ plugin: 'landrace-board', key: 'board' } as const, INITIAL)
@@ -32,8 +34,11 @@ const toggled = atom({ plugin: 'landrace-board', key: 'toggled' } as const, [] a
 
 /** Each sidebar page's pane: Needs You first, then each workflow, with its count. */
 const pagesOf = (view: BoardView | null): { id: string; title: string }[] => [
-  { id: paneId(null), title: paneTitle(NEEDS_YOU, view?.needsYou ?? 0) },
-  ...(view?.workflows ?? []).map(w => ({ id: paneId(w.id), title: paneTitle(w.name, w.needsYou) })),
+  { id: NEEDS_YOU_PANE, title: paneTitle(NEEDS_YOU, view?.needsYou ?? 0) },
+  ...(view?.workflows ?? []).flatMap(w => {
+    const id = paneId(w.id)
+    return id === undefined ? [] : [{ id, title: paneTitle(w.name, w.needsYou) }]
+  }),
 ]
 
 const findRow = (rows: readonly BoardRow[], id: string): BoardRow | undefined => {
@@ -210,10 +215,9 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     const state = await read($, board)
-    const workflow = state.view?.workflows.find(w => paneId(w.id) === e.requestId)
+    const page = pageOfPane(e.requestId)
     // Another plugin's pane.
-    if (e.requestId !== paneId(null) && workflow === undefined && !e.requestId.startsWith('wf-')) return next(e)
-    const page = e.requestId === paneId(null) ? null : (workflow?.id ?? e.requestId.slice(3))
+    if (page === undefined) return next(e)
     const opened = await read($, toggled)
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const reach = state.reach
@@ -226,6 +230,9 @@ export const register: Register = (on, options) => {
       reach === null ? <Text dimColor>Looking for this project's board…</Text> : null,
       reach?.kind === 'live' && state.view === null ? <Text dimColor>Waiting for the first tick…</Text> : null,
       dim && state.readAt !== null ? <Text dimColor>stale since {clockOf(state.readAt)}</Text> : null,
+      ...(page === null ? (state.view?.workflows ?? []) : [])
+        .filter(w => paneId(w.id) === undefined)
+        .map(w => <Text color="red">no tab for workflow '{w.id}': not a workflow id</Text>),
     ]
 
     // A context row is only the path to a match: dimmed, and with no actions,
