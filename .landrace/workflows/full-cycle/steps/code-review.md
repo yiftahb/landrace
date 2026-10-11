@@ -83,11 +83,22 @@ in its own sandbox. Do not try to run anything, and do not send a subagent to �
 it has no shell either. Judge by reading.
 
 **Step 5 — Re-check your own open threads.** For each thread marked "raised by
-the reviewer" that the fixer answered: fixed now, or a pushback that holds →
-put its id in `resolved`. Still wrong → a reply on it in `replies`, "Still
-wrong: <why>", in one or two sentences; that sends it back to the fixer. One
-still awaiting a fix, you leave as it is. Never list a thread a person raised,
-and never reply on one; it is theirs to close.
+the reviewer", read the code at the head you are reviewing, whether or not
+the fixer answered it:
+
+- The head's code fixes it — through a fix round, a rework build, or a
+  person's own push → put its id in `resolved`. A fix that landed with no
+  answer on the thread is still a fix: left open, the thread holds the merge
+  for nothing.
+- The fixer answered with a pushback that holds → put its id in `resolved`.
+- The fixer answered, and it is still wrong → a reply on it in `replies`,
+  "Still wrong: <why>", in one or two sentences; that sends it back to the
+  fixer.
+- No answer from the fixer, and the code does not fix it → leave it as it
+  is: it is still awaiting a fix.
+
+Never list a thread a person raised, and never reply on one; it is theirs to
+close.
 
 **Step 6 — Keep only the findings you can stand behind.** You did not write
 this code and you will not fix it. Do not invent nitpicks to justify a
