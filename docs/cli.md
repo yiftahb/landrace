@@ -147,7 +147,7 @@ The page follows the system's light or dark preference, or whatever you last tog
 landrace port [-w, --workspace <dir>]
 ```
 
-Prints the URL of the board that the `landrace start` running for this workspace serves, so a script or an editor pane that knows only the folder finds that project's own board when several projects run `landrace start` on one machine. The workspace defaults to `.landrace` in the current folder.
+Prints the URL of the board that the `landrace start` running for this workspace serves, so a script or an editor pane that knows only the folder finds that project's own board when several projects run `landrace start` on one machine. The [Claude Code pane](board-pane.md) finds its board this way. The workspace defaults to `.landrace` in the current folder.
 
 A start that serves a board writes a record once the board listens: its process id, the port it bound, the repository checkout the board shows, and when it started. The record lives under `$TMPDIR/landrace/<repo>/boards/`, keyed by the workspace folder's real path, never inside the working tree. A clean stop removes it. `--headless` and `--once` serve no board and write none.
 

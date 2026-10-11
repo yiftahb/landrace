@@ -5,6 +5,7 @@
 - [Workflows](workflows.md) — start here when you need to read or write a `workflow.yaml` or a step file, or to know how the shipped full-cycle and fastlane workflows behave.
 - [validate](validate.md) — start here when you need to know what `landrace validate` reported, or why it said nothing.
 - [Command line](cli.md) — start here when you need a command or a flag, the board, or the MCP tools.
+- [The board in a Claude Code pane](board-pane.md) — start here when you want the board beside a Claude Code chat: installing the plugin, its tabs and its status line.
 - [Integrations](integrations.md) — start here when you need to set up GitHub, GitLab, Jira, Notion, Slack, Claude Code or Codex: tokens, limits and live checks.
 - [Writing an integration](hooks.md) — start here when you need to connect a tracker, forge, docs site, notifier or coding agent Landrace does not ship.
 - [Security](security.md) — start here when you need to know what Landrace trusts, what it guards, and what to set up before letting it merge.
