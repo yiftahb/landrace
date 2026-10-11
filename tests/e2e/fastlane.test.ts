@@ -71,6 +71,8 @@ function road(opts: {
   seed?: (state: ExternalState) => void;
   before?: (effect: Effect, state: ExternalState) => void;
   log?: Logger;
+  /** One converge's passes: a road past the default's thirty settles over more ticks than one. */
+  maxPasses?: number;
 } = {}) {
   const { workflow, steps } = flow("fastlane");
   const state = createExternalState({
@@ -95,6 +97,7 @@ function road(opts: {
     startedAt: (branch) => headOn(state, branch),
     ...(opts.during ? { during: (at: { stage: string; round: number }) => opts.during?.(at, pr) } : {}),
     ...(opts.log ? { log: opts.log } : {}),
+    ...(opts.maxPasses === undefined ? {} : { maxPasses: opts.maxPasses }),
   });
   /** A person's goto, as the board and `landrace_goto` send it: to `target`, or Retry with none. */
   const goto = async (target: string | null): Promise<unknown> => {
@@ -370,7 +373,7 @@ describe("fastlane, end to end", () => {
     expect(state.item("1").closed).toBe("done");
   });
 
-  it("7. leaves the item stuck once four reviews have each left a finding", async () => {
+  it("7. leaves the item stuck once six reviews have each left a finding", async () => {
     const { state, run, pr } = road({
       during: ({ stage }, pull) => {
         if (stage === "code-review") Object.assign(pull(), { awaitingFix: 1, openThreads: 1 });
@@ -380,11 +383,11 @@ describe("fastlane, end to end", () => {
     const r = await run.converge();
 
     expect(run.trail()).toEqual([
-      "build", "publish", "code-review", "fix-review", "code-review", "fix-review",
-      "code-review", "fix-review", "code-review", "stuck",
+      "build", "publish", "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
+      "code-review", "fix-review", "code-review", "fix-review", "code-review", "stuck",
     ]);
     expect(r.result.settled).toBe("wait");
-    expect(run.counts()).toEqual({ build: 1, "code-review": 4, "fix-review": 3 });
+    expect(run.counts()).toEqual({ build: 1, "code-review": 6, "fix-review": 5 });
     expect(state.stage("1")).toBe("stuck");
     expect(state.item("1").labels).toContain("lr:awaiting");
     expect(state.item("1").labels).not.toContain("lr:working");
@@ -392,10 +395,11 @@ describe("fastlane, end to end", () => {
   });
 
   /*
-   * #71, as #56 went: three reviews each found behaviour to fix, and a fourth
-   * found only wording in `docs/`, flagged so. That goes round once more
-   * instead of to `stuck`; the retro the fix rounds earn is reviewed in round
-   * 6, clean, and Landrace merges — no person anywhere on the road.
+   * #71, as #56 went, at #154's caps: five reviews each found behaviour to
+   * fix, and a sixth found only wording in `docs/`, flagged so. That goes
+   * round once more instead of to `stuck`; the retro the fix rounds earn is
+   * reviewed in round 8, clean, and Landrace merges — no person anywhere on
+   * the road.
    */
   const CHANGED = [
     { path: "src/export.ts", status: "modified", additions: 20, deletions: 0 },
@@ -413,10 +417,12 @@ describe("fastlane, end to end", () => {
     findings: [{ file: "docs/export.md", line: 2, body: "Say semicolon, not comma.", wording: true }],
   });
 
-  it("7b. merges an item whose fourth review found only wording in docs/, with no person", async () => {
-    const { state, run, pr, merges } = road({
+  it("7b. merges an item whose sixth review found only wording in docs/, with no person", async () => {
+    const { state, run, pr, merges } = road({ maxPasses: 60,
       answers: {
-        "code-review": reviewer({ 1: behaviour(1), 2: behaviour(2), 3: behaviour(3), 4: wording(4), 5: { resolved: ["T4"] } }),
+        "code-review": reviewer({
+          1: behaviour(1), 2: behaviour(2), 3: behaviour(3), 4: behaviour(4), 5: behaviour(5), 6: wording(6), 7: { resolved: ["T6"] },
+        }),
         "fix-review": fixer,
         retro: json({ kind: "nothing", reason: "Each finding was this item's own." }),
       },
@@ -428,10 +434,11 @@ describe("fastlane, end to end", () => {
 
     expect(run.trail()).toEqual([
       "build", "publish", "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
-      "code-review", "fix-review", "code-review", "ci", "retro", "code-review", "ci", "merge", "done",
+      "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
+      "code-review", "ci", "retro", "code-review", "ci", "merge", "done",
     ]);
     expect(r.result.settled).toBe("terminal");
-    expect(run.counts()).toEqual({ build: 1, "code-review": 6, "fix-review": 4, retro: 1 });
+    expect(run.counts()).toEqual({ build: 1, "code-review": 8, "fix-review": 6, retro: 1 });
     expect(merges()).toBe(1);
     expect(pr()).toMatchObject({ merged: true, closed: "done", openThreads: 0, awaitingFix: 0 });
     expect(state.item("1").closed).toBe("done");
@@ -480,11 +487,13 @@ describe("fastlane, end to end", () => {
     expect(state.comments("1").at(-1)).toContain("`src/b.ts:4`");
   });
 
-  it("7c. leaves the item stuck on the wording budget once a sixth review still finds only wording", async () => {
+  it("7c. leaves the item stuck on the wording budget once an eighth review still finds only wording", async () => {
     const why: unknown[] = [];
-    const { state, run, pr } = road({
+    const { state, run, pr } = road({ maxPasses: 60,
       answers: {
-        "code-review": reviewer({ 1: behaviour(1), 2: behaviour(2), 3: behaviour(3), 4: wording(4), 5: wording(5), 6: wording(6) }),
+        "code-review": reviewer({
+          1: behaviour(1), 2: behaviour(2), 3: behaviour(3), 4: behaviour(4), 5: behaviour(5), 6: wording(6), 7: wording(7), 8: wording(8),
+        }),
         "fix-review": fixer,
       },
       log: (name, data = {}) => {
@@ -495,13 +504,46 @@ describe("fastlane, end to end", () => {
 
     expect(run.trail()).toEqual([
       "build", "publish", "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
-      "code-review", "fix-review", "code-review", "fix-review", "code-review", "stuck",
+      "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
+      "code-review", "fix-review", "code-review", "stuck",
     ]);
     expect(r.result.settled).toBe("wait");
     expect(why).toEqual(["the wording budget is exhausted"]);
-    expect(run.counts()).toEqual({ build: 1, "code-review": 6, "fix-review": 5 });
+    expect(run.counts()).toEqual({ build: 1, "code-review": 8, "fix-review": 7 });
     expect(state.item("1").labels).toContain("lr:awaiting");
     expect(pr()).toMatchObject({ merged: false, awaitingFix: 1, awaitingWordingFix: 1 });
+  });
+
+  /*
+   * #154: the retro's commit gets a review round the loop's budget does not
+   * pay for. Four reviews found behaviour, the fifth none; the retro's
+   * commit, reviewed in round 6, holds a behaviour finding of its own. At the
+   * plain cap of six that round would leave the item stuck; after the retro
+   * it goes to the fixer, round 7 is clean, and Landrace merges.
+   */
+  it("7f. gives the retro's commit a review round of its own, past the behaviour cap", async () => {
+    const { state, run, merges } = road({ maxPasses: 60,
+      answers: {
+        "code-review": reviewer({
+          1: behaviour(1), 2: behaviour(2), 3: behaviour(3), 4: behaviour(4), 5: { resolved: ["T4"] }, 6: behaviour(6), 7: { resolved: ["T6"] },
+        }),
+        "fix-review": fixer,
+        retro: json({ kind: "nothing", reason: "Each finding was this item's own." }),
+      },
+      during: ({ stage, round }, pull) => {
+        if (stage === "code-review" && round === 1) Object.assign(pull(), { files: CHANGED });
+      },
+    });
+    const r = await run.converge();
+
+    expect(run.trail()).toEqual([
+      "build", "publish", "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
+      "code-review", "fix-review", "code-review", "ci", "retro", "code-review", "fix-review", "code-review", "ci", "merge", "done",
+    ]);
+    expect(r.result.settled).toBe("terminal");
+    expect(run.counts()).toEqual({ build: 1, "code-review": 7, "fix-review": 5, retro: 1 });
+    expect(merges()).toBe(1);
+    expect(state.item("1").closed).toBe("done");
   });
 
   /*

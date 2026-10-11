@@ -549,21 +549,28 @@ describe("fastlane's stages", () => {
 
   /*
    * Each goto's cap, at the round below it and at it. Code review is held
-   * to eight from a halt, past its loop's four; the retro to two, so a failed
-   * retro's Retry is taken once.
+   * to ten from a halt, past its loop's six — nine for wording after a
+   * retro; the retro to two, so a failed retro's Retry is taken once.
    */
   it.each([
     ...["blocked", "screened"].flatMap((halt) => [
-      [halt, "build", 3], [halt, "code-review", 8], [halt, "fix-review", 8], [halt, "retro", 2], [halt, "triage", 20],
+      [halt, "build", 3], [halt, "code-review", 10], [halt, "fix-review", 12], [halt, "retro", 2], [halt, "triage", 20],
       [halt, "publish", 3], [halt, "merge", 3], [halt, "closed", 3],
     ] as const),
-    ["stuck", "build", 3], ["stuck", "code-review", 4],
+    ["stuck", "build", 3], ["stuck", "code-review", 6],
   ] as const)("from %s, a goto to %s is taken below %i rounds and declined at it", (from, to, cap) => {
     const retried = ["publish", "merge", "closed"].includes(to) ? { failedStage: to } : {};
     const at = (rounds: number): Snapshot => snapshotOf({ stage: from, human: true, counters: { [to]: rounds }, ...retried });
     expect(gotoNotListed(stageOf(from), to)).toBeNull();
     expect(gotoDeclined(stageOf(from), at(cap - 1), to)).toBeNull();
     expect(gotoDeclined(stageOf(from), at(cap), to)).toMatch(/only while/);
+  });
+
+  // The retro's commit gets a review round of its own, which the loop's cap does not count (#154).
+  it("from stuck, a goto to code-review is taken one round further once the retro ran", () => {
+    const at = (rounds: number): Snapshot => snapshotOf({ stage: "stuck", human: true, counters: { "code-review": rounds, retro: 1 } });
+    expect(gotoDeclined(stageOf("stuck"), at(6), "code-review")).toBeNull();
+    expect(gotoDeclined(stageOf("stuck"), at(7), "code-review")).toMatch(/only while/);
   });
 });
 
@@ -577,6 +584,13 @@ describe("fastlane's stages", () => {
  * the engine's own compiler, as decide() puts them, and exactly the exit the
  * plan names must match. Nothing matches only where the plan means a wait.
  */
+
+/**
+ * Code review's caps (#154): six reviews for behaviour, eight while only
+ * wording awaits a fix, each one higher once the retro ran — its commit's
+ * review round is not the loop's.
+ */
+const reviewCap = (f: Facts, wording: boolean): number => (wording ? 8 : 6) + (count(f, "retro") >= 1 ? 1 : 0);
 
 /** The facts a fastlane trigger reads at one item. */
 interface Facts {
@@ -754,40 +768,41 @@ const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => s
   // No pull request at publish is no exit: pull.open lands before the position moves there.
   ["publish", { total: [0, 1] }, (f) => (n(f.total, 1) > 0 ? "code-review" : null)],
   // A pull request a person closed during a review, a fix or the retro is their stop: stuck.
-  // Past round 3, only wording awaiting a fix goes round twice more (#71).
+  // Past the behaviour cap, only wording awaiting a fix goes round twice
+  // more (#71); the retro's round adds one to either (#154).
   ["code-review", {
     total: [0, 1], awaitingBehaviourFix: [0, 1], awaitingFix: [0, 1], openThreads: [0, 1], notMerged: [0, 1],
-    "counters.code-review": [3, 4, 5, 6],
+    "counters.code-review": [5, 6, 7, 8, 9], "counters.retro": [0, 1],
   }, (f) => {
     if (n(f.total, 1) === 0) return "stuck";
     if (n(f.awaitingFix, 0) > 0) {
       const round = count(f, "code-review");
-      return round < 4 || (round < 6 && n(f.awaitingBehaviourFix, 1) === 0) ? "fix-review" : "stuck";
+      return round < reviewCap(f, false) || (round < reviewCap(f, true) && n(f.awaitingBehaviourFix, 1) === 0) ? "fix-review" : "stuck";
     }
     if (n(f.openThreads, 0) > 0) return "stuck";
     return n(f.notMerged, 1) > 0 ? "ci" : "done";
   }],
-  ["fix-review", { total: [0, 1], "counters.fix-review": [7, 8] }, (f) =>
-    (n(f.total, 1) === 0 ? "stuck" : count(f, "fix-review") < 8 ? "code-review" : "stuck")],
+  ["fix-review", { total: [0, 1], "counters.fix-review": [11, 12] }, (f) =>
+    (n(f.total, 1) === 0 ? "stuck" : count(f, "fix-review") < 12 ? "code-review" : "stuck")],
   // Checks still running is one wait here, and conflicts no forge has
   // worked out the other. A thread opened while they ran goes to review
   // first; a conflict goes back to build as red checks do (#126).
   ["ci", {
     total: [0, 1], openThreads: [0, 1], ciPending: [0, 1], ciFailed: [0, 1], conflicts: [null, 0, 1], notMerged: [0, 1],
-    "counters.code-review": [3, 4], "counters.build": [1, 2, 3], "counters.fix-review": [0, 1],
+    "counters.code-review": [5, 6, 7], "counters.build": [1, 2, 3], "counters.fix-review": [0, 1],
     "counters.triage": [0, 1], "counters.retro": [0, 1],
   }, (f) => {
     if (n(f.total, 1) === 0) return "stuck";
-    if (n(f.openThreads, 0) > 0) return count(f, "code-review") < 4 ? "code-review" : "stuck";
+    if (n(f.openThreads, 0) > 0) return count(f, "code-review") < reviewCap(f, false) ? "code-review" : "stuck";
     if (n(f.ciFailed, 0) > 0 || (f.conflicts ?? 0) > 0) return count(f, "build") < 3 ? "build" : "stuck";
     if (n(f.ciPending, 0) > 0 || f.conflicts === null) return null;
     return count(f, "retro") < 1 && friction(f) && n(f.notMerged, 1) > 0 ? "retro" : "merge";
   }],
   ["retro", { total: [0, 1] }, (f) => (n(f.total, 1) === 0 ? "stuck" : "code-review")],
-  ["merge", { total: [0, 1], notMerged: [0, 1], "counters.code-review": [3, 4] }, (f) => {
+  ["merge", { total: [0, 1], notMerged: [0, 1], "counters.code-review": [5, 6, 7], "counters.retro": [0, 1] }, (f) => {
     if (n(f.total, 1) === 0) return "stuck";
     if (n(f.notMerged, 1) === 0) return "done";
-    return count(f, "code-review") < 4 ? "code-review" : "stuck";
+    return count(f, "code-review") < reviewCap(f, false) ? "code-review" : "stuck";
   }],
   ["triage", { intent: ["rework", "close", "question", "unclear"], previous: ["stuck", "blocked", "screened"] }, (f) => {
     if (f.intent === "rework") return "build";
@@ -857,20 +872,48 @@ describe("every exit from a fastlane stage is exclusive", () => {
   });
 
   /*
-   * #71: past round 3 a review leaves the item for a person on the budget
-   * named for what still awaits a fix — wording after round 5, behaviour
-   * after round 3 — and a clean round 6 goes on to CI.
+   * #71, #154: a review leaves the item for a person on the budget named for
+   * what still awaits a fix — behaviour from round 6, wording from round 8,
+   * each a round later once the retro ran — and a clean last round goes on
+   * to CI. Each edge asserts the counters it was put at.
    */
   it("leaves code review for a person on the budget named for what still awaits a fix", () => {
     const { workflow } = flow("fastlane");
-    const at = (round: number, facts: Partial<Facts>): string[] =>
-      exitsFrom(workflow, { stage: "code-review", counters: { "code-review": round }, openThreads: 2, awaitingFix: 1, awaitingBehaviourFix: 0, ...facts });
-    expect(at(4, {})).toEqual(["fix-review: the reviewer left threads awaiting a fix"]);
-    expect(at(5, {})).toEqual(["fix-review: the reviewer left threads awaiting a fix"]);
-    expect(at(6, {})).toEqual(["stuck: the wording budget is exhausted"]);
-    expect(at(4, { awaitingFix: 2, awaitingBehaviourFix: 1 })).toEqual(["stuck: the review budget is exhausted"]);
-    expect(at(6, { awaitingFix: 2, awaitingBehaviourFix: 1 })).toEqual(["stuck: the review budget is exhausted"]);
-    expect(at(6, { openThreads: 0, awaitingFix: 0 })).toEqual(["ci: the review settled with every thread resolved"]);
+    const at = (round: number, facts: Partial<Facts>, retro = 0): string[] => {
+      const s = snapshotOf({ stage: "code-review", counters: { "code-review": round, retro }, openThreads: 2, awaitingFix: 1, awaitingBehaviourFix: 0, ...facts });
+      expect([s.run?.counters["code-review"], s.run?.counters.retro ?? 0]).toEqual([round, retro]);
+      return exitsFrom(workflow, { stage: "code-review" }, s);
+    };
+    const behaviour = { awaitingFix: 2, awaitingBehaviourFix: 1 };
+    const fix = ["fix-review: the reviewer left threads awaiting a fix"];
+    expect(at(4, behaviour)).toEqual(fix);
+    expect(at(5, behaviour)).toEqual(fix);
+    expect(at(6, behaviour)).toEqual(["stuck: the review budget is exhausted"]);
+    expect(at(6, behaviour, 1)).toEqual(fix);
+    expect(at(7, behaviour, 1)).toEqual(["stuck: the review budget is exhausted"]);
+    expect(at(6, {})).toEqual(fix);
+    expect(at(7, {})).toEqual(fix);
+    expect(at(8, {})).toEqual(["stuck: the wording budget is exhausted"]);
+    expect(at(8, {}, 1)).toEqual(fix);
+    expect(at(9, {}, 1)).toEqual(["stuck: the wording budget is exhausted"]);
+    expect(at(8, behaviour)).toEqual(["stuck: the review budget is exhausted"]);
+    expect(at(8, { openThreads: 0, awaitingFix: 0 })).toEqual(["ci: the review settled with every thread resolved"]);
+    expect(at(9, { openThreads: 0, awaitingFix: 0 }, 1)).toEqual(["ci: the review settled with every thread resolved"]);
+  });
+
+  /*
+   * #154: fix rounds past the old cap of eight still go back to review, and
+   * the twelfth, finishing at the cap, leaves the item for a person.
+   */
+  it("sends every fix round below twelve back to review, and the twelfth to stuck", () => {
+    const { workflow } = flow("fastlane");
+    for (const round of [8, 9, 10, 11, 12]) {
+      const s = snapshotOf({ stage: "fix-review", counters: { "fix-review": round } });
+      expect(s.run?.counters["fix-review"]).toBe(round);
+      expect([round, exitsFrom(workflow, { stage: "fix-review" }, s)]).toEqual([
+        round, [round < 12 ? "code-review: the fixer finished a round" : "stuck: the fix budget is exhausted"],
+      ]);
+    }
   });
 
   /*
@@ -878,9 +921,9 @@ describe("every exit from a fastlane stage is exclusive", () => {
    * or one written before it — reads as behaviour: its items keep the
    * review budget as it was, and never reach the wording budget.
    */
-  it("reads a behaviour count no forge reported as behaviour, at every round past three", () => {
+  it("reads a behaviour count no forge reported as behaviour, at every round from six", () => {
     const { workflow } = flow("fastlane");
-    for (const round of [4, 5, 6]) {
+    for (const round of [6, 7, 8]) {
       const s = snapshotOf({ stage: "code-review", counters: { "code-review": round }, openThreads: 1, awaitingFix: 1 });
       const sum = (s.rel as { implements: { in: { sum: Record<string, number> } } }).implements.in.sum;
       delete sum.awaitingBehaviourFix;

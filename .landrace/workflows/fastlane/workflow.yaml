@@ -40,12 +40,16 @@ description: "Small changes from the item's own text: build, review, CI, then me
 # - Friction — what sends a green pull request to the retro first — is a
 #   second build (a CI fix or a rework), any fix round, or any reply a person
 #   had to write. The retro runs at most once.
-# - Caps: build 3, CI fixes included; code review 4; fix review 8. At a cap
-#   the item is `stuck`, and waits on a person. Code review's 4 is for
+# - Caps: build 3, CI fixes included; code review 6; fix review 12. At a
+#   cap the item is `stuck`, and waits on a person. Code review's 6 is for
 #   behaviour, which loops; a review whose every thread awaiting a fix is a
 #   wording finding — docs or code comments only, flagged by the reviewer —
-#   goes round twice more, to 6 (#71). A mislabel costs two fix rounds, each
-#   re-reviewed, and the merge's guards are the same.
+#   goes round twice more, to 8 (#71). A mislabel costs two fix rounds, each
+#   re-reviewed, and the merge's guards are the same. The retro's commit
+#   gets one review round of its own, which neither budget pays for: once
+#   the retro ran, each code review cap is one higher, 7 and 9 (#154).
+#   Conditions have no arithmetic, so each is an `$or` of the plain cap and
+#   the cap plus one beside `run.counters.retro: { $gte: 1 }`.
 # - The merge needs every thread resolved. A review that leaves threads open
 #   with none awaiting a fix is `stuck` too, since a thread the fixer answered
 #   waits on a person, never on a step; and a thread opened while the checks
@@ -208,9 +212,10 @@ stages:
   #
   # full-cycle's reviewer and fixer, shown the item's own text where full-cycle's are
   # shown the spec, and otherwise as they are. Every build is reviewed
-  # through publish, uncapped; every fix within fix review's eight; the
+  # through publish, uncapped; every fix within fix review's twelve; the
   # retro's commit once; and a head that moved under the merge, or a thread
-  # opened while the checks ran, within code review's own four — loops through
+  # opened while the checks ran, within code review's own six, seven once the
+  # retro ran — loops through
   # stages with no step, whose counters count only a refused way in.
   #
   # No `requires` here or on the retro: a pull request a person closed while
@@ -227,7 +232,7 @@ stages:
           "run.stage": fix-review
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
-          "run.counters.fix-review": { $lt: 8 }
+          "run.counters.fix-review": { $lt: 12 }
       - name: the retro is done
         when: { "run.stage": retro, "run.lastOutputValid": null, "rel.implements.in.total": { $gt: 0 } }
       - name: the head moved before the merge
@@ -235,7 +240,9 @@ stages:
           "run.stage": merge
           "run.lastOutputValid": null
           "rel.implements.in.not.merged": { $gt: 0 }
-          "run.counters.code-review": { $lt: 4 }
+          $or:
+            - { "run.counters.code-review": { $lt: 6 } }
+            - { "run.counters.code-review": { $lt: 7 }, "run.counters.retro": { $gte: 1 } }
       # A person's objection, in a flow with no person: before anything else
       # at ci, whatever the checks say. A finding like any other, it goes to
       # the fixer, and the person resolves their own thread.
@@ -244,7 +251,9 @@ stages:
           "run.stage": ci
           "run.lastOutputValid": null
           "rel.implements.in.sum.openThreads": { $gt: 0 }
-          "run.counters.code-review": { $lt: 4 }
+          $or:
+            - { "run.counters.code-review": { $lt: 6 } }
+            - { "run.counters.code-review": { $lt: 7 }, "run.counters.retro": { $gte: 1 } }
     on_enter:
       # The enter record first, as full-cycle's: a push the forge refuses is code
       # review's rejected round, a halt with the reason. Then the push, before
@@ -255,9 +264,10 @@ stages:
       - { type: tracker.status, value: code-review }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
 
-  # Within code review's four; or within six when every thread awaiting a fix
-  # is the reviewer's wording finding — docs or code comments only (#71). A
-  # count the forge did not report is behaviour, and matches only the four.
+  # Within code review's six; or within eight when every thread awaiting a
+  # fix is the reviewer's wording finding — docs or code comments only (#71).
+  # Each is one higher once the retro ran: its commit's round is free (#154).
+  # A count the forge did not report is behaviour, and matches only the six.
   - id: fix-review
     step: steps/fix-review.md
     branch: "landrace/{item}"
@@ -268,8 +278,10 @@ stages:
           "run.lastOutputValid": null
           "rel.implements.in.sum.awaitingFix": { $gt: 0 }
           $or:
-            - { "run.counters.code-review": { $lt: 4 } }
-            - { "run.counters.code-review": { $lt: 6 }, "rel.implements.in.sum.awaitingBehaviourFix": 0 }
+            - { "run.counters.code-review": { $lt: 6 } }
+            - { "run.counters.code-review": { $lt: 7 }, "run.counters.retro": { $gte: 1 } }
+            - { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.sum.awaitingBehaviourFix": 0 }
+            - { "run.counters.code-review": { $lt: 9 }, "run.counters.retro": { $gte: 1 }, "rel.implements.in.sum.awaitingBehaviourFix": 0 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Addressing the open threads, round {round}." }
       - { type: tracker.status, value: fix-review }
@@ -479,7 +491,11 @@ stages:
     goto:
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
       - stage: code-review
-        when: { "run.counters.code-review": { $lt: 4 }, "rel.implements.in.total": { $gt: 0 } }
+        when:
+          "rel.implements.in.total": { $gt: 0 }
+          $or:
+            - { "run.counters.code-review": { $lt: 6 } }
+            - { "run.counters.code-review": { $lt: 7 }, "run.counters.retro": { $gte: 1 } }
     triggers:
       # The gate's third condition (see `waiting`), fresh and at `waiting`:
       # a blocker dropped, the item on a cycle of blockers, or its blockers
@@ -523,21 +539,26 @@ stages:
       # The awaiting-fix count is the condition, as in full-cycle's: a last review
       # that left nothing awaiting a fix goes on to CI instead. Then which
       # budget: behaviour awaiting a fix — or a count the forge did not
-      # report — after four reviews; only wording after six.
+      # report — after six reviews; only wording after eight; each a review
+      # later once the retro ran. fix-review's trigger, negated.
       - name: the review budget is exhausted
         when:
           "run.stage": code-review
           "run.lastOutputValid": null
           "rel.implements.in.sum.awaitingFix": { $gt: 0 }
           "rel.implements.in.sum.awaitingBehaviourFix": { $ne: 0 }
-          "run.counters.code-review": { $gte: 4 }
+          $or:
+            - { "run.counters.code-review": { $gte: 7 } }
+            - { "run.counters.code-review": { $gte: 6 }, "run.counters.retro": { $lt: 1 } }
       - name: the wording budget is exhausted
         when:
           "run.stage": code-review
           "run.lastOutputValid": null
           "rel.implements.in.sum.awaitingFix": { $gt: 0 }
           "rel.implements.in.sum.awaitingBehaviourFix": 0
-          "run.counters.code-review": { $gte: 6 }
+          $or:
+            - { "run.counters.code-review": { $gte: 9 } }
+            - { "run.counters.code-review": { $gte: 8 }, "run.counters.retro": { $lt: 1 } }
       - name: threads are open that no fix awaits
         when:
           "run.stage": code-review
@@ -549,7 +570,7 @@ stages:
           "run.stage": fix-review
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
-          "run.counters.fix-review": { $gte: 8 }
+          "run.counters.fix-review": { $gte: 12 }
       - name: CI is still failing, or the pull request still conflicts, after three builds
         when:
           "run.stage": ci
@@ -564,7 +585,9 @@ stages:
           "run.stage": ci
           "run.lastOutputValid": null
           "rel.implements.in.sum.openThreads": { $gt: 0 }
-          "run.counters.code-review": { $gte: 4 }
+          $or:
+            - { "run.counters.code-review": { $gte: 7 } }
+            - { "run.counters.code-review": { $gte: 6 }, "run.counters.retro": { $lt: 1 } }
       # A person closed it unmerged — their way of saying stop — during a
       # review, a fix, the retro, CI or the merge. With no pull request the
       # item has nothing to check or merge, and is theirs. After a build,
@@ -594,7 +617,9 @@ stages:
           "run.stage": merge
           "run.lastOutputValid": null
           "rel.implements.in.not.merged": { $gt: 0 }
-          "run.counters.code-review": { $gte: 4 }
+          $or:
+            - { "run.counters.code-review": { $gte: 7 } }
+            - { "run.counters.code-review": { $gte: 6 }, "run.counters.retro": { $lt: 1 } }
       - name: your reply changed nothing here
         when:
           "run.stage": triage
@@ -639,8 +664,9 @@ stages:
   #
   # As full-cycle's: Retry is a goto to the step whose failure put the item here,
   # so the halts list every step, each within its own rounds and only where
-  # it can run. Code review is held to eight, past its loop's four: each
-  # build adds a review through publish, uncapped, and a moved head another.
+  # it can run. Code review is held to ten, past its loop's highest cap —
+  # nine, for wording once the retro ran: each build adds a review through
+  # publish, uncapped, and a moved head another. Fix review to its own twelve.
   # The retro is held to two — its one round, and one Retry of it. And the
   # three stages with no step whose way in the forge can refuse — publish,
   # merge and closed — three times each, their rounds being only the refused
@@ -652,9 +678,9 @@ stages:
       - { stage: build, when: { "run.counters.build": { $lt: 3 } } }
       - { stage: publish, retry: only, when: { "run.counters.publish": { $lt: 3 } } }
       - stage: code-review
-        when: { "run.counters.code-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } }
+        when: { "run.counters.code-review": { $lt: 10 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: fix-review
-        when: { "run.counters.fix-review": { $lt: 8 }, "rel.implements.in.total": { $gt: 0 } }
+        when: { "run.counters.fix-review": { $lt: 12 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: retro
         when:
           "run.counters.retro": { $lt: 2 }
