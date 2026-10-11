@@ -55,6 +55,12 @@ export type BoardState = {
   readAt: number | null
   /** Ids that needed the person at the last read; null before the first. */
   needing: string[] | null
+  /**
+   * The pane ids of the last listed view's sidebar pages, kept while a
+   * restarted board clears `view`, so a tab the person closed is not taken
+   * for a new page and reopened by the next listing.
+   */
+  pages: string[]
 }
 
 declare module 'claude-code' {

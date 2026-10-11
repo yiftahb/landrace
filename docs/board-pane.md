@@ -29,7 +29,7 @@ Type `/board` to open the panes. Nothing opens on its own when a session starts.
 - **Rows.** Each item is `#<id> <title>`, then its stage and note. Its pull requests and documents sit under it, each linked where it has a link. A parent whose children are in several lanes appears in each of those lanes, with only that lane's children, exactly as the board draws it. A parent shown only as the path to its children is dimmed and offers nothing.
 - **Actions.** On an item's own row, `Open ↗` opens it in its tracker, and `Chat here` puts the board's chat prompt for that item in your prompt box. Nothing is sent until you send it. `Board ↗`, at the top of each tab, opens the full board in your browser.
 
-The plugin reads the board every 5 seconds. Until the first tick has listed the tracker, the pane says "Waiting for the first tick…". A board that restarts is read the same way: the last board's rows and count are cleared until its first tick. A read that fails, or gives no answer within 10 seconds, keeps the last rows on screen, dimmed, under "stale since HH:MM", and asks `port` again at once.
+The plugin reads the board every 5 seconds. Until the first tick has listed the tracker, the pane says "Waiting for the first tick…". A board that restarts is read the same way: the last board's rows and count are cleared until its first tick, and each open tab's title loses its count until then. A tab you closed stays closed through the restart. A read that fails, or gives no answer within 10 seconds, keeps the last rows on screen, dimmed, under "stale since HH:MM", and asks `port` again at once.
 
 ## Signals
 

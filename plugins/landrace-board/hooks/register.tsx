@@ -28,7 +28,7 @@ const PORT_TIMEOUT_MS = 15_000
 const NEEDS_YOU = 'Needs You'
 const NEEDS_YOU_PANE = 'needs-you'
 
-const INITIAL: BoardState = { view: null, reach: null, isLive: false, readAt: null, needing: null }
+const INITIAL: BoardState = { view: null, reach: null, isLive: false, readAt: null, needing: null, pages: [NEEDS_YOU_PANE] }
 const board = atom({ plugin: 'landrace-board', key: 'board' } as const, INITIAL)
 const toggled = atom({ plugin: 'landrace-board', key: 'toggled' } as const, [] as string[])
 
@@ -164,29 +164,46 @@ async function poll($: EngineInterface): Promise<void> {
   if (!view.listed) {
     await update($, board, state => ({ ...state, view: null, isLive: true, readAt: null }))
     await showStatus($)
+    await uncount($, before.view)
     return
   }
   const now = await $.clock.now()
   const needing = needingIds(view.rows, before.needing)
   const fresh = arrivals(before.needing, needing)
   const got = view
-  await update($, board, state => ({ ...state, view: got, isLive: true, readAt: now, needing }))
+  const pages = pagesOf(view).map(page => page.id)
+  await update($, board, state => ({ ...state, view: got, isLive: true, readAt: now, needing, pages }))
   if (fresh.length > 0) $.ui.toast(arrivalToast(view, fresh))
   await showStatus($)
-  await follow($, before.view, view)
+  await follow($, before.pages, view)
+}
+
+/**
+ * Retitles the open panes without their counts once the view that gave them
+ * is cleared: the last board's counts are not the restarted one's.
+ */
+async function uncount($: EngineInterface, was: BoardView | null): Promise<void> {
+  if (was === null) return
+  const open = new Map((await $.ui.panes()).map(pane => [pane.id, pane.title]))
+  const bare = { ...was, needsYou: 0, workflows: was.workflows.map(w => ({ ...w, needsYou: 0 })) }
+  for (const page of pagesOf(bare)) {
+    const title = open.get(page.id)
+    if (title !== undefined && title !== page.title) await $.ui.open(page)
+  }
 }
 
 /**
  * Keeps open panes in step with the view: retitles each whose count moved,
  * opens a workflow that appeared, closes one that left. Only while the
  * person has the board's panes open: a read never opens one unasked, and
- * never reopens one the person closed. Opened before any read, the
+ * never reopens one the person closed: what is known is the last listing's
+ * pages, never a view a restart cleared. Opened before any listing, the
  * workflows' panes open with the first.
  */
-async function follow($: EngineInterface, was: BoardView | null, view: BoardView): Promise<void> {
+async function follow($: EngineInterface, was: readonly string[], view: BoardView): Promise<void> {
   const open = new Map((await $.ui.panes()).map(pane => [pane.id, pane.title]))
   if (open.size === 0) return
-  const known = new Set(pagesOf(was).map(page => page.id))
+  const known = new Set(was)
   const pages = pagesOf(view)
   for (const page of pages) {
     const title = open.get(page.id)
@@ -212,6 +229,9 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'board' }, async $ => {
     const state = await read($, board)
+    // Typed while a restarted board lists, it can open only Needs You; the
+    // workflows' panes then open with the first listing, as asked.
+    if (state.view === null) await update($, board, s => ({ ...s, pages: [NEEDS_YOU_PANE] }))
     for (const page of pagesOf(state.view)) await $.ui.open(page)
     return { text: state.view === null ? `Opened the board's pane; ${statusLine(state.reach, null, command) ?? 'landrace: not read yet'}.` : 'Opened the board.' }
   })

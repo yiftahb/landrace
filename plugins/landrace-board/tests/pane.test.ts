@@ -347,6 +347,57 @@ test("a restarted board that has not listed yet clears the old board's rows and 
   }
 })
 
+test('a tab closed before a restart stays closed after it, and the open tabs drop their counts while the new board lists', async ($, on) => {
+  const port = { answer: ran(0, URL) }
+  const served = { view: VIEW as BoardView | null }
+  const { clock, seen } = world(on, port, served)
+  await start($)
+  await clock.settle()
+  await $.command.run({ command: 'board', args: '' } as never)
+  expect([...seen.panes.keys()]).toEqual(['needs-you', 'FULL_CYCLE', 'FASTLANE'])
+  // The person closes Fastlane's tab.
+  seen.panes.delete('FASTLANE')
+  served.view = null
+  port.answer = ran(0, 'http://127.0.0.1:4646')
+  await clock.advance(5000)
+  expect(seen.argv.length).toBe(2)
+  served.view = { ...VIEW, listed: false, needsYou: 0, workflows: [], rows: [] }
+  await clock.advance(5000)
+  expect(seen.fetched.at(-1)).toBe('http://127.0.0.1:4646/board.json')
+  expect([...seen.panes]).toEqual([
+    ['needs-you', 'Needs You'],
+    ['FULL_CYCLE', 'Full cycle'],
+  ])
+  served.view = VIEW
+  await clock.advance(5000)
+  expect([...seen.panes]).toEqual([
+    ['needs-you', 'Needs You · 1'],
+    ['FULL_CYCLE', 'Full cycle · 1'],
+  ])
+})
+
+test('/board typed while a restarted board lists opens every workflow tab with its first listing', async ($, on) => {
+  const port = { answer: ran(0, URL) }
+  const served = { view: VIEW as BoardView | null }
+  const { clock, seen } = world(on, port, served)
+  await start($)
+  await clock.settle()
+  await $.command.run({ command: 'board', args: '' } as never)
+  seen.panes.delete('FASTLANE')
+  served.view = null
+  await clock.advance(5000)
+  served.view = { ...VIEW, listed: false, needsYou: 0, workflows: [], rows: [] }
+  await clock.advance(5000)
+  await $.command.run({ command: 'board', args: '' } as never)
+  served.view = VIEW
+  await clock.advance(5000)
+  expect([...seen.panes]).toEqual([
+    ['needs-you', 'Needs You · 1'],
+    ['FULL_CYCLE', 'Full cycle · 1'],
+    ['FASTLANE', 'Fastlane'],
+  ])
+})
+
 test('a read that never answers counts as failed, and port is asked again', async ($, on) => {
   const served = { view: VIEW as BoardView | null, hang: false }
   const { clock, seen } = world(on, { answer: ran(0, URL) }, served)
