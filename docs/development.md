@@ -36,6 +36,13 @@ pnpm typecheck && pnpm lint && pnpm test && pnpm build
 
 Where the process may not bind `127.0.0.1` — inside a write step's sandbox, for one — the tests that start a local server are skipped, and jest says so once, first.
 
+Neither pass runs `plugins/`. The [board pane](board-pane.md) is a Claude Code plugin outside the engine, which `tsc`, `eslint` and the npm package leave out too. Its tests import `claude-code/testing` and run under Claude Code's own runner. Run its checks when you change it:
+
+```sh
+claude plugin validate plugins/landrace-board
+claude plugin test plugins/landrace-board
+```
+
 How tests are written here:
 
 - **Test first.** Write the failing test, run it, watch it fail, then implement. A test that has never failed has proved nothing.

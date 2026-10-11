@@ -146,6 +146,8 @@ Both also stop for a person at a halt: a step whose output was broken, a push th
 
 From the board, a person can reply on an item, ask the step that last ran a question, then hand the item back to its workflow. They can retry a failed step, or send an item back to an earlier step. They can also pair on a step. Browser notifications say when an item needs you.
 
+A Claude Code plugin shows the same board in a pane beside the chat: see [The board in a Claude Code pane](docs/board-pane.md).
+
 ## MCP
 
 `landrace mcp` is Landrace's operator server: an MCP server over stdio, whose tools read and drive items as the board does, and also open and edit them. Claude Code, Codex or Cursor use it from a chat, where you type requests such as:

@@ -20,5 +20,5 @@ export default async () => ({
   testMatch: ["<rootDir>/tests/esm/**/*.test.ts"],
   // The default pass's ignore list is what sends these here; keeping it would
   // send them nowhere.
-  testPathIgnorePatterns: ["/node_modules/"],
+  testPathIgnorePatterns: ["/node_modules/", "<rootDir>/plugins/"],
 });

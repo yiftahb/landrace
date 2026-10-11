@@ -1,0 +1,16 @@
+{
+  "name": "landrace-board",
+  "version": "0.1.0",
+  "description": "Your project's Landrace board in a pane: Needs You first, then one tab per workflow",
+  "author": { "name": "Yiftah Barouch" },
+  "homepage": "https://github.com/yiftahb/landrace",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "command": {
+      "type": "string",
+      "title": "landrace command",
+      "description": "How to run landrace in a project, split on spaces, with `port` appended. A checkout of landrace itself sets `node dist/cli.js`.",
+      "default": "landrace"
+    }
+  }
+}
