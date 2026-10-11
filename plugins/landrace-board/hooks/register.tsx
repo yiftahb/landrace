@@ -216,8 +216,12 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     const state = await read($, board)
     const page = pageOfPane(e.requestId)
-    // Another plugin's pane.
-    if (page === undefined) return next(e)
+    // A workflow's pane id is any upper-case word, so another plugin's `LOG`
+    // has its shape: only a pane this plugin has open, or one the view names,
+    // is ours to draw.
+    const isOurs =
+      pagesOf(state.view).some(p => p.id === e.requestId) || (await $.ui.panes()).some(pane => pane.id === e.requestId)
+    if (page === undefined || !isOurs) return next(e)
     const opened = await read($, toggled)
     const { Box, Text, Button, Link } = $.ui.resolve(e)
     const reach = state.reach

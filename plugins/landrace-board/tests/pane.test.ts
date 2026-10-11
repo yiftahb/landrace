@@ -201,6 +201,34 @@ test('a tab draws its lanes from the split tree: an item in two lanes is in both
   expect(seen.filled).toEqual(["Let's talk about #11", "Let's talk about #11"])
 })
 
+test("another plugin's pane with an id shaped like a workflow's is left to its owner", async ($, on) => {
+  const { clock } = world(on, { answer: ran(0, URL) }, { view: VIEW })
+  on('ui.render', { component: 'Pane', requestId: 'LOG' }, ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return h(Text, null, 'the log')
+  })
+  await start($)
+  await clock.settle()
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'landrace-board', surface, component: 'Pane', requestId: 'LOG', props: PANE('Log') })
+    expect(await ui.find({ text: 'the log' })).toBeDefined()
+    expect(await ui.find({ type: 'Link', text: 'Board ↗' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('a workflow pane still open after its workflow left the view is drawn, not handed on', async ($, on) => {
+  const { clock, seen } = world(on, { answer: ran(0, URL) }, { view: VIEW })
+  await start($)
+  await clock.settle()
+  seen.panes.set('GONE', 'Gone')
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'landrace-board', surface, component: 'Pane', requestId: 'GONE', props: PANE('Gone') })
+    expect(await ui.find({ type: 'Link', text: 'Board ↗' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
 test('Needs You draws only its lane', async ($, on) => {
   const { clock } = world(on, { answer: ran(0, URL) }, { view: VIEW })
   await start($)
