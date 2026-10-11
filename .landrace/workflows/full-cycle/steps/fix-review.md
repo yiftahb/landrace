@@ -92,7 +92,9 @@ code, and write down why in one line. The person's request is done, not
 argued; if it cannot be, say why in your summary.
 
 **Step 4 — Fix the ones you will fix, committing as you go.** Each with a test
-wherever behaviour changes. Commit as you go: this worktree is removed when the
+wherever behaviour changes. A fix keeps everything the code it replaces also
+did — a prefix or a narrower match that kept others' input out — and a test
+tries that input too: a fix that opens a new finding costs a round. Commit as you go: this worktree is removed when the
 step ends, and anything you did not commit is lost with it. Before the first
 commit, find this repository's commit conventions — a commitlint
 configuration, a `commit-msg` hook, a contributing guide — and follow them: a
