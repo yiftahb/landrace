@@ -6,22 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-11
+
 ### Added
 
-- **The board in a Claude Code pane.** `landrace-board`, a Claude Code plugin in `plugins/landrace-board/`, installs with `/plugin install landrace-board --marketplace yiftahb/landrace`. In each session it runs `landrace port` in the session's folder and shows that project's board: `/board` opens a Needs You tab and one tab per workflow, each titled with its count, drawn lane by lane as the board page draws them. Items offer `Open ↗` and `Chat here`, which fills the prompt box; the pane writes nothing. The status line says how many items need you, or that the board is offline and why, and a toast says when an item newly needs you. A `command` option, default `landrace`, says how to run landrace. See [The board in a Claude Code pane](docs/board-pane.md).
-
 - **Start work on a Not admitted item.** A new MCP tool, `landrace_admit`, takes `item` and `workflow` and adds that workflow's `admit` labels the item lacks, so the next tick works it. It predicts the claim first, with those labels added, and writes only when that workflow alone would claim the item. Otherwise it refuses, writing nothing, and names what would happen instead: another workflow would claim it, two would, or the workflow's own `eligible` rule would still turn it away. It also refuses an item that is closed, already in a workflow, claimed by two or reported by two trackers, or not listed by the workflow's tracker, and a workflow that admits nothing. It never removes a label. An item that ran in the workflow before keeps its `lr:stage:*` label, so it resumes at the stage it stopped at. On the board, a Not admitted row's "⋯", and the panel's, offer **Start work** for each workflow that would take it, named **Start work in `<name>`** when there are several. It asks first and posts under its own `x-landrace-action: admit` header. **Pairing…** now shows only on an item one workflow owns and may write. `BoardRow` gains `admit`. See [The board](docs/cli.md#the-board) and [The operator tools](docs/cli.md#the-operator-tools).
-
 - **`start` opens the board in your browser.** Once the board is served, `start` opens it in the default browser, once, when its output is a terminal: `open` on macOS, `xdg-open` on Linux, `cmd /c start` on Windows. A start under a supervisor, in CI or with its output piped serves the board and opens nothing. A browser that fails to open prints one line with the board's URL, and the start carries on. See [The board](docs/cli.md#the-board).
-
-- **`landrace port`** prints the URL of the board this workspace's `landrace start` serves, or `offline` with exit code 1 and one line on stderr saying why: no record, a dead process, a port that does not answer, or a port that answers for another workspace. A board-serving `start` records its process id and port under `$TMPDIR/landrace/<repo>/boards/` once the board listens and removes the record on a clean stop. A second board-serving `start` on the same workspace refuses, naming the running URL and process id. See [`landrace port`](docs/cli.md#landrace-port).
-
 - **`start --headless`** serves no board and opens no browser. `--no-ui` still works and means the same. A taken `--ui-port` now names `--headless` as the way to turn the board off. See [`landrace start`](docs/cli.md#landrace-start).
+- **`landrace port`** prints the URL of the board this workspace's `landrace start` serves, or `offline` with exit code 1 and one line on stderr saying why: no record, a dead process, a port that does not answer, or a port that answers for another workspace. A board-serving `start` records its process id and port under `$TMPDIR/landrace/<repo>/boards/` once the board listens and removes the record on a clean stop. A second board-serving `start` on the same workspace refuses, naming the running URL and process id. See [`landrace port`](docs/cli.md#landrace-port).
+- **The board in a Claude Code pane.** `landrace-board`, a Claude Code plugin in `plugins/landrace-board/`, installs with `/plugin install landrace-board --marketplace yiftahb/landrace`. In each session it runs `landrace port` in the session's folder and shows that project's board: `/board` opens a Needs You tab and one tab per workflow, each titled with its count, drawn lane by lane as the board page draws them. Items offer `Open ↗` and `Chat here`, which fills the prompt box; the pane writes nothing. The status line says how many items need you, or that the board is offline and why, and a toast says when an item newly needs you. A `command` option, default `landrace`, says how to run landrace. See [The board in a Claude Code pane](docs/board-pane.md).
 
 ### Changed
 
 - **The board waits for the first tick.** Until the first tick has listed the tracker, a spinner covers every page with "Waiting for the first tick…", and the page behind it takes no clicks or keyboard focus. Before, workflow pages showed every lane as "None" and only Needs You said "Listing…"; that line is gone. See [The board](docs/cli.md#the-board).
 - **A gap above the stuck sidebar.** From 640 px up, the sidebar now sticks 1.5rem below the top bar, the gap it has before you scroll, instead of touching the bar's border.
+- **Fastlane goes round more before it stops for a person.** Code review's cap rises from four rounds to six, and from six to eight when every thread awaiting a fix is a wording finding. The retro's commit gets its review round free: once the retro has run, each cap is one higher, seven and nine. Fix review's cap rises from eight to twelve, and the `blocked` halt's Retry ceilings rise with them, to ten for code review and twelve for fix review. The reviewer now resolves its own thread once the head's code fixes it, whether the fix came from a fix round, a rework build or a person's own push, and whether or not the fixer answered on the thread. Before, a thread a rework build had fixed stayed open with no answer, and the next review sent the item back to `stuck`. That change is in the shared `code-review` step, so full-cycle gets it too. The new caps take effect when the engine restarts. See [Workflows](docs/workflows.md#fastlane).
 
 ## [1.5.0] - 2026-10-08
 
@@ -140,7 +139,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Versions and updates.** `landrace version` (and `--version`) prints the version and whether npm has a newer one; `landrace update` updates the project's own dependency with its package manager, or the global install; `landrace start` says when a newer version is out. The check asks npm's registry once, gives up after two seconds, and is off in CI or with `LANDRACE_NO_UPDATE_CHECK=1`.
 - **Notifications and telemetry.** A `notify` block tells a person, through a notifier hook, when an item comes to rest needing them. `--telemetry` exports the engine's events as OpenTelemetry log records.
 
-[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/yiftahb/landrace/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/yiftahb/landrace/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/yiftahb/landrace/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/yiftahb/landrace/compare/v1.2.1...v1.3.0
