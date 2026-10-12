@@ -307,7 +307,9 @@ export interface Trigger {
 /** An entry in a stage's `goto`: a stage it may always send an item to, or one it may while `when` holds. */
 /**
  * `retry: only` declares a target Retry's alone: taken only while it is what
- * failed, `run.failedStage`, and never offered under "Go to step…".
+ * failed, and never offered under "Go to step…". What failed is
+ * `run.failedStage` on an open item; on a closed one, the `closed: run` stage
+ * it rests at, when that stage's own round failed (`retriedStage`).
  */
 export type GotoEntry = string | { stage: string; when?: Condition | undefined; retry?: "only" | undefined };
 
@@ -2836,7 +2838,8 @@ export interface BoardRow {
   stale: boolean;
   /**
    * Where the page's Retry posts, for an item that is blocked or screened
-   * right now; null everywhere else. Built by the server from a checked id,
+   * right now, or a closed item resting at a `closed: run` stage that lists
+   * itself `retry: only`; null everywhere else. Built by the server from a checked id,
    * so the page never puts a URL together itself. A Retry is now a goto with
    * no step named — the stage that last failed.
    */
