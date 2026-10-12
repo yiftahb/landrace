@@ -14,9 +14,11 @@ import {
   NODES_CLOSE_EFFECT,
   OUTPUT_KIND,
   PULL_CLOSE_EFFECT,
+  PULL_DESCRIPTION_FIELDS,
   PULL_MERGE_EFFECT,
   PULL_OPEN_EFFECT,
   PULL_REVIEW_EFFECT,
+  PULL_TITLE_FIELDS,
   RECORD_EFFECT,
   RELATED_FACTS,
   retiredCapabilityPointers,
@@ -347,6 +349,7 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
     }
   }
 
+  problems.push(...pullTextProblems(w, steps));
   problems.push(...haltLabelProblems(w));
   problems.push(...entryFirstProblems(w));
   problems.push(...itemBranchProblems(w, steps, branch));
@@ -884,6 +887,49 @@ function mergeGuardProblems(w: Workflow, stage: Stage, effect: Record<string, un
     else if (named === undefined) said(`reviewedBy names "${by}", which is not a stage of this workflow`);
     else if (named.step === undefined) said(`reviewedBy names "${by}", which runs no step, so no head is ever recorded for it`);
     else if (named.branch === undefined) said(`reviewedBy names "${by}", which works on no branch, so no head is ever recorded for it`);
+  }
+  return problems;
+}
+
+/**
+ * `pull-text`: a `pull.open` effect's own `title` and `description` are
+ * templates over exactly the fields the forge's `pull.title` and
+ * `pull.description` take. The engine fills `{item}`, `{stage}` and `{round}`
+ * in every effect field before the forge sees it, and leaves any other name
+ * as written, so a placeholder outside the forge's fields would otherwise
+ * first show up as braces in a pull request's title — or, for `{stage}` and
+ * `{round}`, as a template only this one pull request's text could read.
+ * Read with core's own template syntax, so a dotted `{item.body}` counts too.
+ */
+function pullTextProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
+  const problems: Problem[] = [];
+  const check = (where: string, effect: Effect): void => {
+    if (effect.type !== PULL_OPEN_EFFECT) return;
+    for (const [field, known] of [["title", PULL_TITLE_FIELDS], ["description", PULL_DESCRIPTION_FIELDS]] as const) {
+      if (!(field in effect)) continue;
+      const value = effect[field];
+      const said = (why: string): void => {
+        problems.push({ rule: "pull-text", message: `${where} has a ${effect.type} whose ${field} ${why}` });
+      };
+      if (typeof value !== "string") {
+        said(`is ${JSON.stringify(value)}; it must be a template string`);
+        continue;
+      }
+      const unknown = new Set<string>();
+      fillTemplate(value, (name) => {
+        if (!known.includes(name)) unknown.add(name);
+        return undefined;
+      });
+      const list = (names: Iterable<string>): string => [...names].map((n) => `{${n}}`).join(", ");
+      if (unknown.size > 0) said(`names ${list(unknown)}; it may name only ${list(known)}`);
+    }
+  };
+  for (const stage of w.stages) {
+    for (const effect of stage.on_enter ?? []) check(`stage "${stage.id}"`, effect);
+    const step = stage.step ? steps.get(stage.step) : undefined;
+    for (const route of step?.output?.routes ?? []) {
+      for (const effect of routeEffects(route)) check(`step ${stage.step}'s route for ${JSON.stringify(route.when)}`, effect);
+    }
   }
   return problems;
 }

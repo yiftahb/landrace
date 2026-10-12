@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **A pull request's own title and description.** A `pull.open` effect, in a stage's `on_enter` or a step's route, takes an optional `title` and `description` that replace the forge's `pull.title` and `pull.description` for the one pull request it opens, so a retro's second pull request on an item no longer reads like the feature's. `title` names `{item}` and `{title}`; `description` is the template text itself and names `{item}`, `{link}` and `{spec}`. `validate` refuses any other placeholder, or a value that is not a string, under the new `pull-text` rule. With neither field, nothing changes. A pull request is still found by its branch, never its title. `BaseForge`'s protected `opening` now takes the effect as well as the context. `createExternalState` takes `forge: { pull, root }`. See [Effects](docs/workflows.md#effects).
+
 ## [1.6.0] - 2026-10-11
 
 ### Added
