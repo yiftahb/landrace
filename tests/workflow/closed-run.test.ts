@@ -3,8 +3,10 @@ import type { Effect, Stage, Step, Workflow } from "#namespace.js";
 
 /*
  * `closed: run`: the one stage a closed item may enter and run its step at —
- * a retro after a ticket is resolved. It works on no branch and touches no
- * forge, since the item's work is over, and only a closed item reaches it.
+ * a retro after a ticket is resolved. Only a closed item reaches it. The
+ * item's own work is over, so it never names the item branch: it works on no
+ * branch, or on a variant (`landrace/{item}-retro`), and plans only
+ * `branch.push` and `pull.open`, both on that variant.
  */
 const ENTER = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
 
@@ -40,21 +42,62 @@ describe("closed-run", () => {
     expect(validate(flow(retro()).w, flow(retro()).steps)).toEqual([]);
   });
 
-  it("refuses one on a branch", () => {
-    expect(closedRun(flow(retro({ branch: "landrace/{item}" })))).toEqual([
-      expect.stringMatching(/stage "retro" runs on a closed item, so it works on no branch/),
+  /*
+   * A closed item's item branch is merged or dropped already, so the only
+   * branch it may work on is a variant of it (#158) — `landrace/{item}-retro`,
+   * cut fresh — and what it may publish there is that branch and a pull
+   * request from it, never a merge, a review or a close.
+   */
+  const VARIANT = "landrace/{item}-retro";
+  const onVariant = (over: Partial<Stage> = {}): Stage => retro({ branch: VARIANT, ...over });
+  const publishes = (branch = VARIANT): Partial<Step> => ({ output: { discriminator: "kind", shapes: { learned: {} }, routes: [
+    { when: { kind: "learned" }, effects: [{ type: "branch.push", branch }, { type: "pull.open", branch, title: "{item}: retro lessons" }] },
+  ] } });
+  const variantRun = ({ w, steps }: { w: Workflow; steps: Map<string, Step> }): string[] =>
+    validate(w, steps, undefined, "landrace/{item}", ["retro"]).filter((p) => p.rule === "closed-run" || p.rule === "branch").map((p) => p.message);
+
+  it("passes one on a variant that pushes it and opens a pull request from it", () => {
+    const { w, steps } = flow(onVariant(), publishes());
+    expect(validate(w, steps, undefined, "landrace/{item}", ["retro"])).toEqual([]);
+  });
+
+  it("refuses one on the item branch, naming the variant rule", () => {
+    expect(variantRun(flow(retro({ branch: "landrace/{item}" })))).toEqual([
+      expect.stringMatching(/stage "retro" runs on a closed item, whose item branch landrace\/\{item\} is merged or dropped already: it may work only on a variant/),
     ]);
   });
 
-  it("refuses one that touches the forge as it is entered, or as its step answers", () => {
-    const opens: Effect = { type: "pull.open", branch: "landrace/{item}" };
-    expect(closedRun(flow(retro({ on_enter: [ENTER, opens] })))).toEqual([
-      expect.stringMatching(/stage "retro" runs on a closed item and plans pull.open/),
-    ]);
-    const pushes = { output: { discriminator: "kind", shapes: { learned: {} }, routes: [
-      { when: { kind: "learned" }, effects: [{ type: "branch.push", branch: "landrace/{item}" }] },
+  it("refuses a variant landrace.yaml does not name, under branch, naming it", () => {
+    const { w, steps } = flow(onVariant(), publishes());
+    expect(validate(w, steps).filter((p) => p.rule === "branch").map((p) => p.message)).toEqual(expect.arrayContaining([
+      expect.stringMatching(/stage "retro" works on branch "landrace\/\{item\}-retro"; it must be landrace\/\{item\}/),
+    ]));
+  });
+
+  it("refuses one that merges, reviews or closes a pull request, as it is entered or as its step answers", () => {
+    for (const type of ["pull.merge", "pull.review", "pull.close"]) {
+      expect(variantRun(flow(onVariant({ on_enter: [ENTER, { type, branch: VARIANT }] })))).toEqual([
+        expect.stringMatching(new RegExp(`stage "retro" runs on a closed item and plans ${type}; a closed item's work is merged or dropped already`)),
+      ]);
+    }
+    const merges = { output: { discriminator: "kind", shapes: { learned: {} }, routes: [
+      { when: { kind: "learned" }, effects: [{ type: "pull.merge", branch: VARIANT }] },
     ] } };
-    expect(closedRun(flow(retro(), pushes))).toEqual([expect.stringMatching(/plans branch.push/)]);
+    expect(variantRun(flow(onVariant(), merges))).toEqual(expect.arrayContaining([expect.stringMatching(/plans pull.merge/)]));
+  });
+
+  it("refuses a push or a pull request on any branch but its own, or with no branch of its own", () => {
+    expect(variantRun(flow(onVariant(), publishes("landrace/{item}")))).toEqual([
+      expect.stringMatching(/stage "retro" runs on a closed item and plans branch.push on landrace\/\{item\}; it may publish only its own branch, landrace\/\{item\}-retro/),
+      expect.stringMatching(/plans pull.open on landrace\/\{item\}; it may publish only its own branch/),
+    ]);
+    const opens: Effect = { type: "pull.open", branch: VARIANT };
+    expect(variantRun(flow(retro({ on_enter: [ENTER, opens] })))).toEqual([
+      expect.stringMatching(/stage "retro" runs on a closed item and plans pull.open, but works on no branch: name a variant as its branch/),
+    ]);
+    expect(variantRun(flow(retro(), publishes()))).toEqual([
+      expect.stringMatching(/plans branch.push, but works on no branch/), expect.stringMatching(/plans pull.open, but works on no branch/),
+    ]);
   });
 
   it("refuses a trigger that does not read node.closed", () => {

@@ -15,7 +15,7 @@ import {
 import { defineSource } from "#hooks/contracts.js";
 import { compose } from "#kit/compose.js";
 import { BaseDocs } from "#kit/docs.js";
-import { BaseForge, conflictCount, isFinding, itemBranchOf, placeFindings, prBranch } from "#kit/forge.js";
+import { BaseForge, conflictCount, isFinding, itemBranchesOf, itemBranchOf, placeFindings, prBranch } from "#kit/forge.js";
 import { BaseTracker, commentSatisfied, createdSatisfied } from "#kit/tracker.js";
 import type {
   BranchHeads,
@@ -433,8 +433,8 @@ export class MemoryForge extends BaseForge {
   }
 
   async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
-    const branch = prBranch(item, itemBranchOf(ctx.config));
-    return [...this.rows.values()].filter((p) => p.branch === branch || (p.items ?? []).includes(item)).map(pullRecordOf);
+    const branches = new Set(itemBranchesOf(ctx.config).map((template) => prBranch(item, template)));
+    return [...this.rows.values()].filter((p) => branches.has(p.branch ?? "") || (p.items ?? []).includes(item)).map(pullRecordOf);
   }
 
   // ponytail: counts, not threads — briefed as none open, whatever the count says; hold thread text here if a test ever briefs it.

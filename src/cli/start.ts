@@ -601,7 +601,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // `landrace status` reads, and a workflow it cannot run is still one it can
   // describe.
   refuseUnsound(dir, ws.workflows.map(({ id, workflow, steps }): [string, Problem[]] => [id, [
-    ...validate(workflow, steps, undefined, loaded.config.branch),
+    ...validate(workflow, steps, undefined, loaded.config.branch, loaded.config.branchVariants),
     ...(opts.readOnly ? [] : [
       ...branchIsolationProblems(workflow, loaded.config.agent.isolation),
       ...pairingIsolationProblems(workflow, loaded.config.agent.isolation),
@@ -629,7 +629,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
      * the whole graph — when any loaded hook declares no `provides` at all.
      */
     refuseUnsound(dir, [[w.id, [
-      ...validate(w.workflow, w.steps, snapshotProvides(registry.pre, registry.source) ?? undefined, loaded.config.branch),
+      ...validate(w.workflow, w.steps, snapshotProvides(registry.pre, registry.source) ?? undefined, loaded.config.branch, loaded.config.branchVariants),
       // Where the loaded tracker files issues, as `validate` reports it. A
       // write, so only where the loop runs, as admission is.
       ...(opts.readOnly ? [] : createProblems(w.workflow, w.steps, registry.post)),

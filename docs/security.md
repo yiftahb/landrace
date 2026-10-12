@@ -28,7 +28,7 @@ Landrace runs coding agents on your machine, over text that strangers can write,
 
 ## A write step's sandbox
 
-A step declaring `repo:write` runs shell commands. In this repository that is `build`, `fix-review` and `retro`: each merges `origin/main`, installs, runs the tests, commits, and pushes its own branch. The Claude Code integration runs every command such a step runs inside Claude Code's sandbox (Seatbelt on macOS, bubblewrap on Linux), configured by `agent.sandbox`:
+A step declaring `repo:write` runs shell commands. In this repository that is `build`, `fix-review` and `retro`: each merges `origin/main`, installs, runs the tests, commits, and pushes its own branch — all but fastlane's `retro`, whose branch Landrace pushes. The Claude Code integration runs every command such a step runs inside Claude Code's sandbox (Seatbelt on macOS, bubblewrap on Linux), configured by `agent.sandbox`:
 
 ```yaml
 agent:

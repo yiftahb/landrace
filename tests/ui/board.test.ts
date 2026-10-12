@@ -2,11 +2,12 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claimItems } from "#core/index.js";
-import type { Entry, Graph, Held, Node, Relationship, Running, Stage, Workflow } from "#namespace.js";
+import type { Entry, Graph, Held, Node, Relationship, Running, RuntimeContext, Stage, Workflow } from "#namespace.js";
 import { chatFor } from "#ui/chat.js";
 import { boardView, conversationOf, createBoard } from "#ui/board.js";
 import { admitRoute } from "#runner/route.js";
 import { laneOf } from "#runner/status.js";
+import { createExternalState } from "#testing/index.js";
 import { loadWorkspace } from "#workflow/workspace.js";
 
 const workflow: Workflow = {
@@ -1686,5 +1687,21 @@ describe("a Not admitted row's Start work", () => {
         claims: claimItems([{ id: "full", workflow: FULL, source: 0 }, { id: "fast", workflow: FAST, source: 1 }], [g, graph([])]) },
     }).rows);
     expect(rows.find((r) => r.id === "1")?.admit.map((a) => a.workflow)).toEqual(["full"]);
+  });
+});
+
+/*
+ * #158: a retro's pull request is opened from a variant of the item branch,
+ * landrace/7-retro. The forge ties it to 7 by the variants the configuration
+ * names, as `follows-up`, and the board, nesting by every relationship the
+ * source declares singular as `start` hands it, lists it under 7.
+ */
+describe("boardView: a pull request on a variant of the item branch", () => {
+  it("is listed under its item", async () => {
+    const state = createExternalState({ items: [{ id: "7", labels: ["go"] }] });
+    const retro = state.openPull("7", { branch: "landrace/7-retro" });
+    const ctx = { config: { branchVariants: ["retro"] }, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+    const nest = new Set(state.source.relations.filter((r) => r.singular).map((r) => r.type));
+    expect(shape(view(await state.source.list(ctx), { nest }).rows)).toEqual([["7", [retro]]]);
   });
 });

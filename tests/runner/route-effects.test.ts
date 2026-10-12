@@ -1,4 +1,8 @@
 import { createExternalState, createHarness } from "#testing/index.js";
+import { EffectRefused } from "#conventions.js";
+import { definePostHook, definePreHook } from "#hooks/contracts.js";
+import { pushSatisfied } from "#kit/forge.js";
+import { headIn, headsOf } from "#kit/git.js";
 import type { Effect, ExternalState, Step, Workflow } from "#namespace.js";
 
 /*
@@ -148,5 +152,66 @@ describe("a route with effects, run", () => {
     const parts = state.comments("1").filter((b) => b.includes('"marker":"part:diagnose:1:0"'));
     expect(parts).toHaveLength(1);
     expect(markers(state)).toEqual(["enter:1", "part:1", "part:1", "output:1"]);
+  });
+});
+
+describe("a route that publishes a branch its step created", () => {
+  // The retro's case (#158): the branch does not exist until the step's
+  // worktree cuts it, so the snapshot read before the step has no head for
+  // it, and the kit reads a branch with no local head as nothing to push.
+  const publishing: Step = {
+    ...diagnose,
+    output: {
+      ...diagnose.output!,
+      routes: [{
+        when: { kind: "answered" },
+        effects: [{ type: "branch.push", branch: "landrace/{item}-retro" }, { type: "pull.open", branch: "landrace/{item}-retro" }],
+      }],
+    },
+  };
+
+  it("pushes it and opens its pull request: the route is checked against the heads after the step, not before", async () => {
+    const state = createExternalState({ items: [{ id: "1" }] });
+    const local: Record<string, string> = {};
+    const remote: Record<string, string> = {};
+    const pushed: string[] = [];
+    const heads = definePreHook({ id: "heads", run: () => ({ git: { local: { ...local }, remote: { ...remote } } }) });
+    const opened: string[] = [];
+    const push = definePostHook({
+      id: "push", handles: ["branch.push", "pull.open"],
+      satisfied: (snapshot, effect) => effect.type === "branch.push" ? pushSatisfied(snapshot, effect) : false,
+      apply: async (effect, ctx) => {
+        const branch = String(effect.branch);
+        if (effect.type === "pull.open") {
+          // The kit's own refusal, asked of the snapshot it is handed.
+          if (headIn(headsOf(ctx.snapshot).local, branch) === undefined) throw new EffectRefused(`no such branch ${branch}`);
+          opened.push(branch);
+          return;
+        }
+        pushed.push(branch);
+        const head = local[branch];
+        if (head !== undefined) remote[branch] = head;
+      },
+    });
+    // The memory forge pushes whenever planned and opens without asking for
+    // a head, which hides this.
+    const tracker = definePostHook({
+      id: "tracker", handles: state.post.handles.filter((type) => !push.handles.includes(type)),
+      satisfied: (snapshot, effect) => state.post.satisfied(snapshot, effect),
+      apply: (effect, ctx) => state.post.apply(effect, ctx),
+    });
+    const run = await createHarness({
+      workflow, steps: new Map([["steps/diagnose.md", publishing]]),
+      source: state.source, pre: [state.pre, heads], post: [tracker, push],
+      answers: { diagnose: ANSWER },
+      during: () => {
+        local["landrace/1-retro"] = "abc";
+      },
+    }).converge();
+
+    expect(run.result.settled).toBe("terminal");
+    expect(pushed).toEqual(["landrace/1-retro"]);
+    expect(remote["landrace/1-retro"]).toBe("abc");
+    expect(opened).toEqual(["landrace/1-retro"]);
   });
 });

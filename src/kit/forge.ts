@@ -17,7 +17,7 @@ import {
   BRANCH_PUSH_EFFECT, EffectRefused, effectBranch, hasPullFrom, ITEM_BRANCH, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT,
   PULL_MERGE_EFFECT,
   PULL_DESCRIPTION_FIELDS, PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, PULL_TITLE_FIELDS, pullsFrom, RELATIONS, renderMarker, sameLogin, signBody, splitSignature,
-  stripMarker,
+  stripMarker, variantBranch,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
 import { createdAtOf, nodesCloseSatisfied, stillOpen, updatedAtOf, wroteIt } from "#kit/tracker.js";
@@ -167,6 +167,17 @@ export function placeFindings(findings: unknown[], changed: ChangedFile[], stage
  * default every parsed one does.
  */
 export const itemBranchOf = (config: { branch?: string | undefined }): string => config.branch ?? ITEM_BRANCH;
+
+/**
+ * Every branch template a forge ties a pull request to an item by: the item
+ * branch, `itemBranchOf`, then each variant of it landrace.yaml's
+ * `branchVariants` names — `landrace/{item}-retro` — which `validate` holds
+ * a stage to beside the item branch.
+ */
+export const itemBranchesOf = (config: { branch?: string | undefined; branchVariants?: readonly string[] | undefined }): string[] => {
+  const template = itemBranchOf(config);
+  return [template, ...(config.branchVariants ?? []).map((name) => variantBranch(template, name))];
+};
 
 /**
  * Derived from the item, never stored — the same rule the spec's path
@@ -528,22 +539,29 @@ export function pushSatisfied(snapshot: Snapshot, effect: Effect): boolean {
 }
 
 /**
- * What stands for `{item}` in a pull request's head, read between the
- * template's fixed text, whether or not it is an item. `start` refuses a
- * template with no fixed text before `{item}`, without which `main` would
- * read as an item called "main".
+ * What stands for `{item}` in a pull request's head, read between each
+ * template's fixed text, whether or not it is an item — one reading per
+ * template it fits, so `landrace/7-retro` reads as `7-retro` on the item
+ * branch and as `7` on its retro variant. `start` refuses a template with no
+ * fixed text before `{item}`, without which `main` would read as an item
+ * called "main".
  */
-const headOf = (pull: Pick<PullRecord, "branch">, template: string): string | undefined => {
-  const [before = "", after = ""] = template.split("{item}");
+const headOf = (pull: Pick<PullRecord, "branch">, templates: readonly string[]): string[] => {
   const branch = pull.branch;
-  if (branch === undefined || branch.length <= before.length + after.length) return undefined;
-  return branch.startsWith(before) && branch.endsWith(after) ? branch.slice(before.length, branch.length - after.length) : undefined;
+  if (branch === undefined) return [];
+  const heads = new Set<string>();
+  for (const template of templates) {
+    const [before = "", after = ""] = template.split("{item}");
+    if (branch.length <= before.length + after.length) continue;
+    if (branch.startsWith(before) && branch.endsWith(after)) heads.add(branch.slice(before.length, branch.length - after.length));
+  }
+  return [...heads];
 };
 
 /**
- * Every item a pull request is tied to: the one a head on the item branch
- * `template` is for, when that is one of the `known` items, and any an
- * integration ties it to itself — none, for the forges landrace ships. Not
+ * Every item a pull request is tied to: each one a head on the item branch
+ * or a variant of it — `templates`, `itemBranchesOf` — is for, when that is
+ * one of the `known` items, and any an integration ties it to itself — none, for the forges landrace ships. Not
  * what its own text says it closes: anybody can write `Closes #7`, from a
  * fork on a public repository too, and what that tied to an item was briefed
  * to the agents of a workflow that merges with no person. A branch named any
@@ -553,12 +571,23 @@ const headOf = (pull: Pick<PullRecord, "branch">, template: string): string | un
  * tracker whose ids may carry a "-" could not otherwise tell from an item
  * called "7-api".
  */
-export function itemsNamedBy(pull: Pick<PullRecord, "branch" | "items">, known: ReadonlySet<string>, template: string): Set<string> {
+export function itemsNamedBy(pull: Pick<PullRecord, "branch" | "items">, known: ReadonlySet<string>, templates: readonly string[]): Set<string> {
   const named = new Set(pull.items);
-  const head = headOf(pull, template);
-  if (head !== undefined && known.has(head)) named.add(head);
+  for (const head of headOf(pull, templates)) if (known.has(head)) named.add(head);
   return named;
 }
+
+/**
+ * How a pull request tied to `item` relates to it: `follows-up` from a
+ * variant of the item branch — `landrace/7-retro`, for 7 — and `implements`
+ * from anything else. A workflow's gates read the item's work as
+ * `rel.implements`, and a retro's pull request, still open on an item
+ * reopened after it, is not that work.
+ */
+const relationTo = (pull: Pick<PullRecord, "branch">, item: string, config: RuntimeContext["config"]): string =>
+  (config.branchVariants ?? []).some((name) => prBranch(item, variantBranch(itemBranchOf(config), name)) === pull.branch)
+    ? RELATIONS.followsUp
+    : RELATIONS.implements;
 
 /** The pull request number a `pr-{n}` node id stands for. */
 const pullNumber = (id: string): number => {
@@ -737,9 +766,10 @@ export abstract class BaseForge {
   /** Every open pull request, and any closed one the board should still show. */
   abstract pulls(ctx: RuntimeContext): Promise<PullRecord[]>;
   /**
-   * Every pull request on the item's branch — `prBranch(item,
-   * itemBranchOf(ctx.config))` — as its head in this repository, merged and closed ones too — never a fork's, and never one
-   * that only says it closes the item.
+   * Every pull request on one of the item's branches — `prBranch(item, t)`
+   * for each `t` of `itemBranchesOf(ctx.config)`, the item branch and its
+   * variants — as its head in this repository, merged and closed ones too —
+   * never a fork's, and never one that only says it closes the item.
    */
   abstract pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]>;
   /** Every review thread on a pull request, resolved or not, every page — or a refusal, never a short list. */
@@ -892,7 +922,7 @@ export abstract class BaseForge {
   }
 
   relations(): RelationDecl[] {
-    return [{ type: RELATIONS.implements, singular: true }];
+    return [{ type: RELATIONS.implements, singular: true }, { type: RELATIONS.followsUp, singular: true }];
   }
 
   /** Exactly what `observe` puts in the snapshot. */
@@ -918,13 +948,13 @@ export abstract class BaseForge {
   async list(items: ReadonlySet<string>, ctx: RuntimeContext): Promise<Graph> {
     const nodes: Node[] = [];
     const relationships: Relationship[] = [];
-    const template = itemBranchOf(ctx.config);
+    const templates = itemBranchesOf(ctx.config);
     for (const pull of await this.pulls(ctx)) {
-      const [only, ...more] = itemsNamedBy(pull, items, template);
+      const [only, ...more] = itemsNamedBy(pull, items, templates);
       if (only === undefined || more.length > 0 || !items.has(only)) continue;
       const node = this.node(pull);
       nodes.push(node);
-      relationships.push({ from: node.id, to: only, type: RELATIONS.implements });
+      relationships.push({ from: node.id, to: only, type: relationTo(pull, only, ctx.config) });
     }
     return { nodes, relationships };
   }
@@ -948,12 +978,11 @@ export abstract class BaseForge {
     const nodes = new Map<number, Node>();
     const relationships: Relationship[] = [];
     const known = new Set(items);
-    const template = itemBranchOf(ctx.config);
+    const templates = itemBranchesOf(ctx.config);
     for (const item of items) {
       for (const pull of await this.pullsNaming(item, ctx)) {
-        const named = itemsNamedBy(pull, known, template);
-        const head = headOf(pull, template);
-        if (head !== undefined && !named.has(head) && (await isItem(head))) named.add(head);
+        const named = itemsNamedBy(pull, known, templates);
+        for (const head of headOf(pull, templates)) if (!named.has(head) && (await isItem(head))) named.add(head);
         if (named.size > 1) {
           throw new Error(
             `pull request #${pull.number} is tied to ${[...named].map((t) => `#${t}`).join(" and ")}; a pull request implements one item`,
@@ -967,7 +996,7 @@ export abstract class BaseForge {
         const ci = checkCounts(open ? await this.checks(pull, ctx) : "none");
         const node = this.node(pull, threads, { ...ci, reviewPending: open ? await this.reviewPending(pull, ctx) : 0 });
         nodes.set(pull.number, node);
-        relationships.push({ from: node.id, to: item, type: RELATIONS.implements });
+        relationships.push({ from: node.id, to: item, type: relationTo(pull, item, ctx.config) });
       }
     }
     return { nodes: [...nodes.values()], relationships };
@@ -1199,10 +1228,13 @@ export abstract class BaseForge {
 
   /**
    * `threads`, what is left to address on the item's open pull requests,
-   * `diff`, what they change, and `ci`, their checks and what failed.
+   * `diff`, what they change, and `ci`, their checks and what failed. Not
+   * one that follows the item up from a variant of its branch: a retro's is
+   * not the work a review or a fix round is briefed on.
    */
   briefs(): BriefTable {
-    const open = async (ctx: HookContext): Promise<PullRecord[]> => (await this.pullsNaming(ctx.item, ctx)).filter(isOpen);
+    const open = async (ctx: HookContext): Promise<PullRecord[]> => (await this.pullsNaming(ctx.item, ctx))
+      .filter((pull) => isOpen(pull) && relationTo(pull, ctx.item, ctx.config) === RELATIONS.implements);
     return {
       threads: async (ctx) => {
         const pulls = await open(ctx);

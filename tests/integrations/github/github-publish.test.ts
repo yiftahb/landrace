@@ -564,6 +564,25 @@ describe("pull.open", () => {
     expect(post(gh).satisfied(await snapshotOf(gh), open)).toBe(true);
   });
 
+  /*
+   * A variant's pull request follows the item up and does not implement it:
+   * `Closes #1` on it would close #1 again on its merge, after a person
+   * reopened it.
+   */
+  it("writes no closing reference on a variant branch's pull request", async () => {
+    const { root } = await checkout();
+    await build(root, "landrace/1-retro");
+    const gh = createFakeTracker([{ number: 1, title: "Add CSV export" }], { git: gitIn(root) });
+    const variants = { ...gh.ctx, config: { ...gh.ctx.config, branchVariants: ["retro"] } };
+
+    await post(gh).apply({ type: "pull.open", branch: "landrace/1-retro" }, { ...contextOf(gh, await snapshotOf(gh)), ...variants });
+
+    const [opened] = [...gh.pulls.values()];
+    expect(opened).toMatchObject({ head: "landrace/1-retro" });
+    expect(opened?.body ?? "").not.toMatch(/Closes/);
+    expect(opened?.closes ?? []).toEqual([]);
+  });
+
   it("opens with the title and description the forge's pull options make, read from the checkout's .landrace/", async () => {
     const { root } = await checkout();
     await build(root, "landrace/1");

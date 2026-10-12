@@ -38,7 +38,9 @@ const flow = (id: string): LoadedWorkflow => {
   return found;
 };
 
-const ctx: RuntimeContext = { config: {} as RuntimeContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} };
+/** As .landrace/landrace.yaml configures it: the retro's landrace/{item}-retro is the item's branch too (#158). */
+const config = { branchVariants: ["retro"] } as RuntimeContext["config"];
+const ctx: RuntimeContext = { config, secrets: new Map(), signal: new AbortController().signal, log: () => {} };
 
 /** Set by a scenario to have the next merge fail on the way, as a 502 does. */
 let outage = false;
@@ -92,7 +94,7 @@ function road(opts: {
     },
   };
   const run = createHarness({
-    workflow, steps, source: state.source, pre: [state.pre], post: [post],
+    workflow, steps, source: state.source, pre: [state.pre], post: [post], config,
     answers: { ...ANSWERS, ...opts.answers },
     startedAt: (branch) => headOn(state, branch),
     ...(opts.during ? { during: (at: { stage: string; round: number }) => opts.during?.(at, pr) } : {}),
@@ -155,10 +157,11 @@ const ROAD_TO_STUCK = [
 
 describe("fastlane, end to end", () => {
   /*
-   * A finding, its fix, red CI and the build that fixes it, the retro the
-   * corrections earn, and the merge: every stage of the road, in order.
+   * A finding, its fix, red CI and the build that fixes it, the merge, and
+   * on the closed item the retro the corrections earn (#158): every stage of
+   * the road, in order.
    */
-  it("1. takes the whole road: a finding, red CI, a retro, then the merge, and closes the item", async () => {
+  it("1. takes the whole road: a finding, red CI, the merge, then on the closed item a retro", async () => {
     const { state, run, pr } = road({
       during: ({ stage, round }, pull) => {
         if (stage === "code-review" && round === 1) Object.assign(pull(), { awaitingFix: 1, openThreads: 1 });
@@ -171,10 +174,10 @@ describe("fastlane, end to end", () => {
 
     expect(run.trail()).toEqual([
       "build", "publish", "code-review", "fix-review", "code-review", "ci",
-      "build", "publish", "code-review", "ci", "retro", "code-review", "ci", "merge", "done",
+      "build", "publish", "code-review", "ci", "merge", "done",
     ]);
     expect(r.result.settled).toBe("terminal");
-    expect(run.counts()).toEqual({ build: 2, "code-review": 4, "fix-review": 1, retro: 1 });
+    expect(run.counts()).toEqual({ build: 2, "code-review": 3, "fix-review": 1 });
 
     // The second build was shown what failed, and the first the item's own text.
     const [first, second] = run.calls().filter((c) => c.stage === "build");
@@ -192,11 +195,19 @@ describe("fastlane, end to end", () => {
     // Finished, it keeps what admitted it: the board files it under fastlane's Done.
     expect(state.item("1").labels).toEqual(expect.arrayContaining(["lr:auto", "lr:fast"]));
     expect(state.item("1").labels).not.toContain("lr:working");
+
+    // The next tick, the closed item's retro, once.
+    expect((await run.converge()).trail).toEqual(["retro"]);
+    expect(run.counts()).toEqual({ build: 2, "code-review": 3, "fix-review": 1, retro: 1 });
+    expect(state.item("1")).toMatchObject({ closed: "done" });
+    expect(state.stage("1")).toBe("retro");
   });
 
   it("2. merges a clean review with no CI configured, and never runs the retro", async () => {
     const { state, run, pr } = road();
     const r = await run.converge();
+    // Nor on the closed item, with nothing corrected on the way.
+    expect((await run.converge()).trail).toEqual([]);
 
     expect(run.trail()).toEqual(["build", "publish", "code-review", "ci", "merge", "done"]);
     expect(r.result.settled).toBe("terminal");
@@ -347,8 +358,8 @@ describe("fastlane, end to end", () => {
    * A person's answer to stuck: do more. That build is the fourth, past the
    * three CI fixes may take — the edge a person's reply takes is uncapped,
    * since each one waits for someone to write — and the item then goes the
-   * rest of the way: its review, green CI, the retro its corrections earn,
-   * and the merge.
+   * rest of the way: its review, green CI and the merge. The retro its
+   * corrections earn runs on the closed item, the next tick (#158).
    */
   it("6. builds a fourth time when a person at stuck asks for rework, and goes on to the merge", async () => {
     let fixed = false;
@@ -364,13 +375,14 @@ describe("fastlane, end to end", () => {
     state.say("1", "The test expects semicolons: use ';' as the separator.");
     const r = await run.converge();
 
-    expect(r.trail).toEqual(["triage", "build", "publish", "code-review", "ci", "retro", "code-review", "ci", "merge", "done"]);
+    expect(r.trail).toEqual(["triage", "build", "publish", "code-review", "ci", "merge", "done"]);
     expect(r.result.settled).toBe("terminal");
-    expect(run.counts()).toEqual({ build: 4, "code-review": 5, triage: 1, retro: 1 });
+    expect(run.counts()).toEqual({ build: 4, "code-review": 4, triage: 1 });
     const fourth = run.calls().filter((c) => c.stage === "build")[3];
     expect(fourth?.prompt).toContain("The test expects semicolons");
     expect(pr()).toMatchObject({ merged: true });
     expect(state.item("1").closed).toBe("done");
+    expect((await run.converge()).trail).toEqual(["retro"]);
   });
 
   it("7. leaves the item stuck once six reviews have each left a finding", async () => {
@@ -397,9 +409,9 @@ describe("fastlane, end to end", () => {
   /*
    * #71, as #56 went, at #154's caps: five reviews each found behaviour to
    * fix, and a sixth found only wording in `docs/`, flagged so. That goes
-   * round once more instead of to `stuck`; the retro the fix rounds earn is
-   * reviewed in round 8, clean, and Landrace merges — no person anywhere on
-   * the road.
+   * round once more instead of to `stuck`; round 7 is clean, and Landrace
+   * merges — no person anywhere on the road. The retro the fix rounds earn
+   * runs after the merge (#158).
    */
   const CHANGED = [
     { path: "src/export.ts", status: "modified", additions: 20, deletions: 0 },
@@ -435,10 +447,10 @@ describe("fastlane, end to end", () => {
     expect(run.trail()).toEqual([
       "build", "publish", "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
       "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
-      "code-review", "ci", "retro", "code-review", "ci", "merge", "done",
+      "code-review", "ci", "merge", "done",
     ]);
     expect(r.result.settled).toBe("terminal");
-    expect(run.counts()).toEqual({ build: 1, "code-review": 8, "fix-review": 6, retro: 1 });
+    expect(run.counts()).toEqual({ build: 1, "code-review": 7, "fix-review": 6 });
     expect(merges()).toBe(1);
     expect(pr()).toMatchObject({ merged: true, closed: "done", openThreads: 0, awaitingFix: 0 });
     expect(state.item("1").closed).toBe("done");
@@ -512,38 +524,6 @@ describe("fastlane, end to end", () => {
     expect(run.counts()).toEqual({ build: 1, "code-review": 8, "fix-review": 7 });
     expect(state.item("1").labels).toContain("lr:awaiting");
     expect(pr()).toMatchObject({ merged: false, awaitingFix: 1, awaitingWordingFix: 1 });
-  });
-
-  /*
-   * #154: the retro's commit gets a review round the loop's budget does not
-   * pay for. Four reviews found behaviour, the fifth none; the retro's
-   * commit, reviewed in round 6, holds a behaviour finding of its own. At the
-   * plain cap of six that round would leave the item stuck; after the retro
-   * it goes to the fixer, round 7 is clean, and Landrace merges.
-   */
-  it("7f. gives the retro's commit a review round of its own, past the behaviour cap", async () => {
-    const { state, run, merges } = road({ maxPasses: 60,
-      answers: {
-        "code-review": reviewer({
-          1: behaviour(1), 2: behaviour(2), 3: behaviour(3), 4: behaviour(4), 5: { resolved: ["T4"] }, 6: behaviour(6), 7: { resolved: ["T6"] },
-        }),
-        "fix-review": fixer,
-        retro: json({ kind: "nothing", reason: "Each finding was this item's own." }),
-      },
-      during: ({ stage, round }, pull) => {
-        if (stage === "code-review" && round === 1) Object.assign(pull(), { files: CHANGED });
-      },
-    });
-    const r = await run.converge();
-
-    expect(run.trail()).toEqual([
-      "build", "publish", "code-review", "fix-review", "code-review", "fix-review", "code-review", "fix-review",
-      "code-review", "fix-review", "code-review", "ci", "retro", "code-review", "fix-review", "code-review", "ci", "merge", "done",
-    ]);
-    expect(r.result.settled).toBe("terminal");
-    expect(run.counts()).toEqual({ build: 1, "code-review": 7, "fix-review": 5, retro: 1 });
-    expect(merges()).toBe(1);
-    expect(state.item("1").closed).toBe("done");
   });
 
   /*
@@ -647,29 +627,24 @@ describe("fastlane, end to end", () => {
   });
 
   /*
-   * And the retro's own lessons: every file one goes in — a step prompt,
-   * `.agsync/`, the instructions it regenerates — is protected, so an item
-   * whose retro committed a lesson waits for a person to merge it.
+   * And the retro's own lessons (#158): learned after the merge, on the
+   * closed item, they are a pull request of their own from
+   * landrace/{item}-retro, which nothing here reviews or merges — a
+   * person's, every file a lesson goes in being one only a person merges.
    */
-  it("15b. leaves an item whose retro committed a lesson for a person to merge", async () => {
-    const { state, run, pr } = road({
+  it("15b. leaves the pull request the retro opens for a person to merge, and the item closed", async () => {
+    const { state, run, merges } = road({
       during: ({ stage, round }, pull) => {
         if (stage === "code-review" && round === 1) Object.assign(pull(), { awaitingFix: 1, openThreads: 1 });
-        if (stage === "fix-review") Object.assign(pull(), { awaitingFix: 0, openThreads: 0, headSha: "sha-fixed" });
-        if (stage === "retro") {
-          Object.assign(pull(), { headSha: "sha-lessons" });
-          pull().files = [{ path: ".landrace/workflows/full-cycle/steps/build.md", status: "modified", additions: 1, deletions: 1 }];
-        }
+        if (stage === "fix-review") Object.assign(pull(), { awaitingFix: 0, openThreads: 0 });
       },
     });
-    const r = await run.converge();
-
-    expect(run.trail()).toEqual([
-      "build", "publish", "code-review", "fix-review", "code-review", "ci", "retro", "code-review", "ci", "merge", "ci", "blocked",
-    ]);
-    expect(r.result.settled).toBe("wait");
-    expect(pr()).toMatchObject({ merged: false, closed: null, headSha: "sha-lessons" });
-    expect(state.comments("1").at(-1)).toContain("it changes .landrace/workflows/full-cycle/steps/build.md, which this workflow protects");
+    await run.converge();
+    expect(state.pull("pr-1")).toMatchObject({ merged: true });
+    expect((await run.converge()).trail).toEqual(["retro"]);
+    expect(merges()).toBe(1);
+    expect(state.pull("pr-2")).toMatchObject({ branch: "landrace/1-retro", merged: false, closed: null });
+    expect(state.item("1").closed).toBe("done");
   });
 
   /*
@@ -743,28 +718,133 @@ describe("fastlane, end to end", () => {
   });
 
   /*
-   * The fixer's and the retro's commits move the head too, and each is
-   * reviewed before it can merge: both go back through a review round, which
-   * records the head it read, so the head that merges is always one a review
-   * round started at.
+   * The fixer's commits move the head too, and are reviewed before they can
+   * merge: they go back through a review round, which records the head it
+   * read, so the head that merges is always one a review round started at.
    */
-  it("15. reviews the fixer's and the retro's commits at the heads they made, and merges the last one", async () => {
+  it("15. reviews the fixer's commits at the head they made, and merges it", async () => {
     const { state, run, pr } = road({
       during: ({ stage, round }, pull) => {
         if (stage === "code-review" && round === 1) Object.assign(pull(), { awaitingFix: 1, openThreads: 1 });
         if (stage === "fix-review") Object.assign(pull(), { awaitingFix: 0, openThreads: 0, headSha: "sha-fixed" });
-        if (stage === "retro") Object.assign(pull(), { headSha: "sha-lessons" });
       },
     });
     const r = await run.converge();
 
-    expect(run.trail()).toEqual([
-      "build", "publish", "code-review", "fix-review", "code-review", "ci", "retro", "code-review", "ci", "merge", "done",
-    ]);
+    expect(run.trail()).toEqual(["build", "publish", "code-review", "fix-review", "code-review", "ci", "merge", "done"]);
     expect(r.result.settled).toBe("terminal");
     const reviews = state.entriesOf("1").filter((e) => e.kind === "output" && e.stage === "code-review");
-    expect(reviews.map((e) => e.head)).toEqual(["sha-1", "sha-fixed", "sha-lessons"]);
-    expect(pr()).toMatchObject({ merged: true, headSha: "sha-lessons" });
+    expect(reviews.map((e) => e.head)).toEqual(["sha-1", "sha-fixed"]);
+    expect(pr()).toMatchObject({ merged: true, headSha: "sha-fixed" });
+  });
+
+  /*
+   * #158: the retro runs after the merge, on the closed item. Merged after a
+   * fix round, the item closes at `done`; the next tick runs the retro once,
+   * on landrace/1-retro, which its `learned` answer pushes and opens one pull
+   * request from, `1: retro lessons`. Later ticks run nothing: the item rests
+   * at `retro`, closed. The item's own pull request answers nothing for it.
+   */
+  const fixRound: During = ({ stage, round }, pull) => {
+    if (stage === "code-review" && round === 1) Object.assign(pull(), { awaitingFix: 1, openThreads: 1 });
+    if (stage === "fix-review") Object.assign(pull(), { awaitingFix: 0, openThreads: 0 });
+  };
+
+  it("16. runs the retro once on the closed item, pushing landrace/1-retro and opening one pull request from it", async () => {
+    const { state, run } = road({ during: fixRound });
+    const merged = await run.converge();
+    expect(merged.trail.slice(-2)).toEqual(["merge", "done"]);
+    expect(state.pushes()).not.toContain("landrace/1-retro");
+
+    const retro = await run.converge();
+    expect(retro.trail).toEqual(["retro"]);
+    expect(run.counts().retro).toBe(1);
+    expect(state.pushes().filter((b) => b === "landrace/1-retro")).toEqual(["landrace/1-retro"]);
+    const opened = [...["pr-2", "pr-3"]].flatMap((id) => { try { return [state.pull(id)]; } catch { return []; } });
+    expect(opened).toEqual([expect.objectContaining({ branch: "landrace/1-retro", item: "1", opened: { title: "1: retro lessons", description: undefined } })]);
+    // The step ran on its own branch: a variant of the item's, never the merged one.
+    expect(run.calls().filter((c) => c.stage === "retro")).toHaveLength(1);
+    expect(state.item("1")).toMatchObject({ closed: "done" });
+    expect(state.stage("1")).toBe("retro");
+    // Its summary is on the item, beside the record of the round.
+    expect(state.comments("1").some((c) => c.includes("the build skipped the test run CI then failed"))).toBe(true);
+
+    const pushed = state.pushes().length;
+    for (let tick = 0; tick < 2; tick++) expect((await run.converge()).trail).toEqual([]);
+    expect(run.counts().retro).toBe(1);
+    expect(state.pushes()).toHaveLength(pushed);
+    expect(() => state.pull("pr-3")).toThrow();
+  });
+
+  it("16b. publishes nothing when the retro answers nothing", async () => {
+    const { state, run } = road({ during: fixRound, answers: { retro: json({ kind: "nothing", reason: "The finding was this item's own." }) } });
+    await run.converge();
+    expect((await run.converge()).trail).toEqual(["retro"]);
+    expect(state.pushes()).not.toContain("landrace/1-retro");
+    expect(() => state.pull("pr-2")).toThrow();
+    expect(state.stage("1")).toBe("retro");
+    expect((await run.converge()).trail).toEqual([]);
+  });
+
+  /*
+   * The failure #158 was filed for: a person merges the pull request first,
+   * after friction, before Landrace's merge. The item goes to `done` all the
+   * same, and the retro still runs on it.
+   */
+  it("16c. runs the retro after a person merged the pull request by hand", async () => {
+    const { state, run, merges } = road({
+      during: (at, pull) => {
+        fixRound(at, pull);
+        if (at.stage === "code-review" && at.round === 2) Object.assign(pull(), { merged: true, closed: "done" });
+      },
+    });
+    const merged = await run.converge();
+    expect(merged.trail).toEqual(["build", "publish", "code-review", "fix-review", "code-review", "done"]);
+    expect(merges()).toBe(0);
+    expect((await run.converge()).trail).toEqual(["retro"]);
+    expect(state.pull("pr-2")).toMatchObject({ branch: "landrace/1-retro", opened: { title: "1: retro lessons", description: undefined } });
+  });
+
+  /*
+   * Reopened at the retro, the item has nothing left to run there: it is a
+   * person's, at `stuck`, and stays there: its pull request merged before
+   * the retro, which is no person merging it at stuck.
+   */
+  it.each([["learned", ANSWERS.retro], ["nothing", json({ kind: "nothing", reason: "The finding was this item's own." })]])(
+    "16d. leaves an item reopened at the retro, which answered %s, stuck for a person",
+    async (_, retro) => {
+      const { state, run } = road({ during: fixRound, ...(retro === undefined ? {} : { answers: { retro } }) });
+      await run.converge();
+      await run.converge();
+      expect(state.stage("1")).toBe("retro");
+      state.item("1").closed = null;
+      expect((await run.converge()).trail).toEqual(["stuck"]);
+      expect((await run.converge()).trail).toEqual([]);
+      expect(state.item("1").closed).toBeNull();
+      expect(run.counts().retro).toBe(1);
+    },
+  );
+
+  /*
+   * The retro's pull request is the item's, but not its implementation: the
+   * gates that read the item's pull request never count it. Reopened and sent
+   * back to review with it still open — red, threads on it — the item's own
+   * merged pull request is all review reads, and it is done. Counted, the
+   * merge read "head moved" for ever, a paid review each time, up to stuck.
+   */
+  it("16e. sends an item reopened at the retro, its retro pull request open, from review to done", async () => {
+    const { state, run, goto } = road({ during: fixRound });
+    await run.converge();
+    await run.converge();
+    Object.assign(state.pull("pr-2"), { checks: "failure", failed: [RED], openThreads: 1, awaitingFix: 1, conflicts: true });
+    state.item("1").closed = null;
+    expect((await run.converge()).trail).toEqual(["stuck"]);
+    expect(await goto("code-review")).toEqual({ to: "code-review" });
+    expect((await run.converge()).trail).toEqual(["code-review", "done"]);
+    expect(run.counts()).toMatchObject({ "code-review": 3, retro: 1 });
+    expect(state.pull("pr-2")).toMatchObject({ branch: "landrace/1-retro", merged: false, closed: null });
+    expect(state.item("1").closed).toBe("done");
+    expect((await run.converge()).trail).toEqual([]);
   });
 
   /*

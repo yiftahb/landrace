@@ -162,6 +162,23 @@ describe("buildWorkspaceRuntime", () => {
   });
 
   /*
+   * #158: a stage on a variant of the item branch is sound only by the
+   * configuration's branchVariants, which start hands validate as the CLI
+   * does: refused without it, and past validation — to the missing source
+   * hook — with it.
+   */
+  it("holds a stage's branch to the item branch and the variants landrace.yaml names", async () => {
+    const onVariant = async (extra: string): Promise<string> => {
+      const dir = await fixture({ extra });
+      const yaml = join(workflowIn(dir), "workflow.yaml");
+      await writeFile(yaml, (await readFile(yaml, "utf8")).replace("    step: steps/spec.md\n", '    step: steps/spec.md\n    branch: "landrace/{item}-retro"\n'));
+      return dir;
+    };
+    await expect(buildWorkspaceRuntime(await onVariant(""), {})).rejects.toThrow(/does not validate[\s\S]*branch: stage "spec" works on branch "landrace\/\{item\}-retro"/);
+    await expect(buildWorkspaceRuntime(await onVariant("branchVariants: [retro]\n"), {})).rejects.toThrow(/no source hook/);
+  });
+
+  /*
    * Every workflow is proved sound before any hook is imported, and the one
    * that is not is named by its folder: two workflows are run together now,
    * so "the workflow" no longer says which file to open.

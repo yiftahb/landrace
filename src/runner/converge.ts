@@ -496,14 +496,29 @@ async function converging(
       // names: one step file serving two stages under `spec:{round}` would
       // otherwise read the first stage's record as the second's, and never
       // settle it.
+      //
+      // Against the item as it is now, not as it was before the step: the
+      // step can make what its route publishes. The retro's worktree cuts
+      // `landrace/{item}-retro` (#158), so the snapshot read before it has no
+      // head for that branch, and `branch.push` reads a branch with no head as
+      // nothing to push — every first retro failed to publish. Unreadable is
+      // an outage, not an answer refused: the round runs again.
+      let after: Snapshot;
+      try {
+        after = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, workflow: deps.workflow, ctx: deps.ctx });
+      } catch (e) {
+        const reason = messageOf(e);
+        deps.log("snapshot.failed", { item, reason });
+        return { passes: pass, settled: "halt", why: reason };
+      }
       const settles = (e: Effect): boolean => e.type === RECORD_EFFECT && e.kind === OUTPUT_KIND;
-      const stepReconciled = reconcileLogged(result.effects.filter((e) => !settles(e)), item, snapshot, deps);
+      const stepReconciled = reconcileLogged(result.effects.filter((e) => !settles(e)), item, after, deps);
       if (!stepReconciled.ok) {
         deps.log("effect.failed", { item, reason: stepReconciled.reason });
         return { passes: pass, settled: "halt", why: stepReconciled.reason };
       }
       const surviving = new Set(stepReconciled.surviving);
-      const applied = await tryApply(result.effects.filter((e) => settles(e) || surviving.has(e)), item, snapshot, deps);
+      const applied = await tryApply(result.effects.filter((e) => settles(e) || surviving.has(e)), item, after, deps);
       if (!applied.ok) {
         deps.log("effect.failed", { item, reason: applied.reason, refused: applied.refused });
         // An answer the forge or the tracker refuses to take is this round
@@ -514,7 +529,7 @@ async function converging(
         if (applied.refused) {
           const posted = await tryApply(
             [{ ...malformedEffect(stage.id, round, applied.reason, scrub, MALFORMED_KIND, `Could not record ${stage.id}'s answer`), ...started }],
-            item, snapshot, deps,
+            item, after, deps,
           );
           if (!posted.ok) deps.log("effect.failed", { item, reason: posted.reason });
           else continue;

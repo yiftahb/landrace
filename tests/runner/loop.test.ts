@@ -614,9 +614,11 @@ describe("an item goes all the way round §10", () => {
    * nothing at all for the steps that have no use for the threads. Every
    * invocation of a step that did not declare items:create re-reads the
    * item once afterwards, to be sure it made no children — none of this
-   * workflow's steps declares it.
+   * workflow's steps declares it — and every answer is checked against the
+   * item read once more after its step, which may have made what the answer
+   * publishes (#158).
    */
-  it("costs one read per pass and one per invocation, plus a briefing per step that asks to see the threads or the diff", async () => {
+  it("costs one read per pass and two per invocation, plus a briefing per step that asks to see the threads or the diff", async () => {
     const gh = world(["lr:auto", "lr:stage:build"]);
     const r = await run(gh);
 
@@ -624,7 +626,7 @@ describe("an item goes all the way round §10", () => {
     // can resolve its own and see the change without a shell.
     const briefed = r.invocations.filter((i) => i.stage === "fix-review" || i.stage === "code-review").length;
     expect(briefed).toBeGreaterThan(0);
-    const reads = r.result.passes + r.invocations.length;
+    const reads = r.result.passes + 2 * r.invocations.length;
     // Each read walks the item's subtree, which is the item alone.
     expect(queriesOf(gh, "LandraceSubIssues")).toBe(reads);
     // Only the keys a prompt names are read, and each finds the item's pull

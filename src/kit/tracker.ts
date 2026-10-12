@@ -63,7 +63,7 @@ export const BRIEF_ITEM_CHARS = 16_000;
 export const BRIEF_RELATED_CHARS = 8_000;
 
 /** The relationships `{brief.project.related}` leaves out: the tree and the artifacts, which other briefings and the prompt's own text cover. */
-const UNBRIEFED: ReadonlySet<string> = new Set([RELATIONS.childOf, RELATIONS.implements, RELATIONS.documents]);
+const UNBRIEFED: ReadonlySet<string> = new Set([RELATIONS.childOf, RELATIONS.implements, RELATIONS.followsUp, RELATIONS.documents]);
 
 /** A title on one line, unable to carry a marker: whoever wrote it is not us. */
 const briefTitle = (title: string): string => neutraliseMarkers(title.replace(/\s+/g, " ").trim());

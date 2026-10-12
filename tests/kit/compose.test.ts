@@ -280,6 +280,60 @@ describe("the graph compose reads", () => {
     expect(edges(await state.source.list(ctx))).toEqual(["pr-2"]);
   });
 
+  /*
+   * A branch variant (#158): landrace/7-retro is 7's, as landrace/7 is, in a
+   * read and a list — and the board, which nests a pull request under the
+   * item it implements, lists it there. It follows the item up, and does not
+   * implement it: the gates reading `rel.implements` read the item's own work.
+   */
+  const variants = { ...ctx, config: { ...ctx.config, branchVariants: ["retro"] } };
+  const tied = (g: Graph) => g.relationships.filter((r) => r.from.startsWith("pr-")).map((r) => [r.from, r.to, r.type]);
+
+  it("ties a pull request on a variant of the item branch to the item, by the variants the context configures", async () => {
+    const state = createExternalState({ items: [{ id: "7", closed: "done" }] });
+    const own = state.openPull("7", { branch: "landrace/7" });
+    const retro = state.openPull("7", { branch: "landrace/7-retro" });
+    expect(tied(await state.source.read("7", variants))).toEqual([[own, "7", "implements"], [retro, "7", "follows-up"]]);
+    expect(tied(await state.source.list(variants))).toEqual([[own, "7", "implements"], [retro, "7", "follows-up"]]);
+    // With no variant configured, landrace/7-retro is nobody's, as before.
+    expect(tied(await state.source.read("7", ctx))).toEqual([[own, "7", "implements"]]);
+  });
+
+  // An item whose id ends in a variant's name: its own branch is still its implementation.
+  it("reads the item branch of an item called 7-retro as implementing it, with no 7 beside it", async () => {
+    const state = createExternalState({ items: [{ id: "7-retro" }] });
+    const own = state.openPull("7-retro", { branch: "landrace/7-retro" });
+    expect(tied(await state.source.read("7-retro", variants))).toEqual([[own, "7-retro", "implements"]]);
+    expect(tied(await state.source.list(variants))).toEqual([[own, "7-retro", "implements"]]);
+  });
+
+  /*
+   * A review or a fix round is briefed on the item's own work: the retro's
+   * pull request, its threads and its red checks, are not it.
+   */
+  it("leaves a pull request that follows the item up out of its threads, diff and ci briefings", async () => {
+    const state = createExternalState({ items: [{ id: "7" }] });
+    const own = state.openPull("7", { branch: "landrace/7" });
+    const retro = state.openPull("7", { branch: "landrace/7-retro" });
+    Object.assign(state.pull(own), { checks: "failure", failed: [{ name: "own-check", log: "own failed" }] });
+    Object.assign(state.pull(retro), { checks: "failure", failed: [{ name: "retro-check", log: "retro failed" }] });
+    const graph = await state.source.read("7", variants);
+    const brief = await state.source.brief?.({ ...variants, item: "7", snapshot: { graph, node: graph.nodes.find((n) => n.id === "7") } });
+    const { ci = "", diff = "" } = brief ?? {};
+    expect(ci).toContain("own-check");
+    expect(ci).not.toContain("retro-check");
+    expect(diff).toContain(`## ${own} `);
+    expect(diff).not.toContain(`## ${retro} `);
+  });
+
+  it("halts a read, and leaves the pull request out of a list, when its head reads as two items there are", async () => {
+    const state = createExternalState({ items: [{ id: "7" }, { id: "7-retro" }] });
+    state.openPull("7", { branch: "landrace/7-retro" });
+    await expect(state.source.read("7", variants)).rejects.toThrow("pull request #1 is tied to #7 and #7-retro");
+    await expect(state.source.read("7-retro", variants)).rejects.toThrow(/pull request #1 is tied to #7-retro and #7|#7 and #7-retro/);
+    expect(tied(await state.source.list(variants))).toEqual([]);
+  });
+
   // A landrace/{item}-api head names no item there is, so the pull request is
   // only the one a forge that ties by text says it names — seeded here.
   it("reads a landrace/ head that is no item's as naming nothing", async () => {
@@ -295,7 +349,7 @@ describe("the graph compose reads", () => {
     const hooks = compose({ tracker: seeded(), forge: new MemoryForge(), docs });
     await docs.publish("2", "# Spec");
 
-    expect(hooks.source.relations.map((r) => r.type)).toEqual(["child-of", "blocked-by", "implements", "documents"]);
+    expect(hooks.source.relations.map((r) => r.type)).toEqual(["child-of", "blocked-by", "implements", "follows-up", "documents"]);
     expect((await hooks.source.read("2", ctx)).relationships).toContainEqual({ from: "spec-2", to: "2", type: "documents" });
     expect((await hooks.source.read("1", ctx)).nodes.map((n) => n.id)).not.toContain("spec-2");
     expect((await hooks.source.list(ctx)).relationships).toContainEqual({ from: "spec-2", to: "2", type: "documents" });

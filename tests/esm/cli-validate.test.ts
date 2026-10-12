@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runValidate } from "#cli/validate.js";
@@ -43,6 +43,21 @@ describe("landrace validate, against the hooks the workflow loads", () => {
     const machine = (p: Problem): boolean =>
       p.rule === "secret" || (p.rule === "executor" && missingMcpJson.test(p.message));
     expect(r.problems.filter((p) => !machine(p))).toEqual([]);
+  });
+
+  /*
+   * #158: fastlane's retro works on landrace/{item}-retro, which only the
+   * configuration's branchVariants makes an item's branch. Without it,
+   * `landrace validate` refuses the workflow, naming the branch.
+   */
+  it("fails the shipped workflow on branch, naming landrace/{item}-retro, without branchVariants", async () => {
+    const dir = join(await mkdtemp(join(tmpdir(), "lr-variants-")), ".landrace");
+    await cp(".landrace", dir, { recursive: true });
+    const config = await readFile(join(dir, "landrace.yaml"), "utf8");
+    expect(config).toMatch(/^branchVariants: \[retro\]$/m);
+    await writeFile(join(dir, "landrace.yaml"), config.replace(/^branchVariants: \[retro\]$/m, ""));
+    const r = await runValidate(dir);
+    expect(r.problems).toContainEqual({ rule: "branch", message: expect.stringMatching(/stage "retro" works on branch "landrace\/\{item\}-retro"/) });
   });
 
   /*

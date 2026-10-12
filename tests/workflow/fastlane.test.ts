@@ -8,6 +8,7 @@ import { globMatches } from "#kit/forge.js";
 import type { Condition, Graph, LoadedWorkflow, Node, Run, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { laneOf, statusRows } from "#runner/status.js";
 import { splitSections } from "#workflow/extend.js";
+import { loadConfig } from "#config/load.js";
 import { admitProblems, claimProblems, validate } from "#workflow/validate.js";
 import { loadWorkspace } from "#workflow/workspace.js";
 
@@ -20,12 +21,16 @@ import { loadWorkspace } from "#workflow/workspace.js";
  */
 
 let workspace: Workspace;
+/** The item branch and its variants, as .landrace/landrace.yaml names them. */
+let branches: { branch: string; variants: string[] };
 
 /** The stages that run a step, and so can fail one. */
 const STEPPED = ["build", "code-review", "fix-review", "retro", "triage"];
 
 beforeAll(async () => {
   workspace = await loadWorkspace(".landrace");
+  const { config } = await loadConfig(".landrace");
+  branches = { branch: config.branch, variants: config.branchVariants };
 });
 
 const flow = (id: string): LoadedWorkflow => {
@@ -99,7 +104,8 @@ describe("the .landrace workspace", () => {
 
   it("validates both workflows clean, and neither claims an item the other starts", () => {
     for (const { id, workflow, steps } of workspace.workflows) {
-      expect({ id, problems: [...validate(workflow, steps), ...admitProblems(id, workflow)] }).toEqual({ id, problems: [] });
+      expect({ id, problems: [...validate(workflow, steps, undefined, branches.branch, branches.variants), ...admitProblems(id, workflow)] })
+        .toEqual({ id, problems: [] });
     }
     // One source, as the shipped hooks are one module both workflows load.
     expect(claimProblems(workspace, () => "the project's source")).toEqual([]);
@@ -110,6 +116,17 @@ describe("the .landrace workspace", () => {
     expect(accepts(flow("full-cycle").workflow, ["lr:auto"])).toBe(true);
     expect(accepts(flow("full-cycle").workflow, ["lr:auto", "lr:fast"])).toBe(false);
     expect(accepts(flow("full-cycle").workflow, ["lr:fast"])).toBe(false);
+  });
+
+  // #158: the retro's branch is an item's only by the variant landrace.yaml names.
+  it("names the retro's branch, under branch, for a configuration with no variants", () => {
+    expect(branches).toEqual({ branch: "landrace/{item}", variants: ["retro"] });
+    const { workflow, steps } = flow("fastlane");
+    expect(validate(workflow, steps).filter((p) => p.rule === "branch").map((p) => p.message)).toEqual([
+      expect.stringMatching(/^stage "retro" works on branch "landrace\/\{item\}-retro"; .*name "retro" in landrace\.yaml's branchVariants$/),
+      expect.stringMatching(/^stage "retro" has a branch\.push on branch "landrace\/\{item\}-retro"/),
+      expect.stringMatching(/^stage "retro" has a pull\.open on branch "landrace\/\{item\}-retro"/),
+    ]);
   });
 
   it.each([
@@ -296,17 +313,25 @@ const ADDED: Record<string, RegExp[]> = {
   // Found by the line, its subject or its body's last, since the repository's conventions may change the subject (#88).
   "code-review": [/^Commits whose message has the line `retro: lessons from #\{node\.id\}` — as its\ssubject, or as the last line of its body — change agent instructions/],
   "fix-review": [],
-  // Every file a lesson goes in is protected (re-review N1): a retro's commit is a person's to merge,
-  // unless it fixed only README.md or docs/ (#63).
-  retro: [/^Here the code reviewer checks what you change, and then a person merges it/],
+  // The retro runs after the merge, on a fresh branch Landrace pushes, and its pull request is a person's to merge (#158).
+  retro: [/^The item is closed: its pull request merged before this step began\. You\swork on a fresh branch, `landrace\/\{node\.id\}-retro`/],
 };
 
 /**
- * full-cycle's retro promises a person reads the commit before the merge; fastlane's says the reviewer reads it first,
- * and that a docs-only fix merges on the reviewer alone (#63).
+ * What fastlane's retro changes of full-cycle's Procedure (#158): it runs on a fresh branch Landrace pushes, so it
+ * commits and never pushes; and a person reads its commit in the pull request Landrace opens, and merges it.
  */
 const RETRO_PROMISE = "and a person\nreads it beside the commit before they merge.";
-const RETRO_REVIEWED = "and if you\ncommit, the code reviewer checks the commit, then a person reads both before\nthey merge — unless it fixes only `README.md` or `docs/`, which merges once\nthe reviewer passes it.";
+const RETRO_PROCEDURE: Array<[string, string]> = [
+  ["- [ ] Step 7: Commit once and push", "- [ ] Step 7: Commit once; Landrace pushes"],
+  ["and the lint checks before you push.", "and the lint checks before you commit."],
+  ["**Step 7 — Commit once and push.**", "**Step 7 — Commit once; Landrace pushes.**"],
+  [
+    "own. Finish with `git push origin HEAD`. If the push is\nrejected because the remote branch moved on its own — a person's commit, or\nthe forge's \"Update branch\" — `git fetch origin`, merge the remote copy of the\nbranch you are on (`git branch --show-current` names it:\n`git merge origin/<that branch>`), resolve and commit any conflict, and push\nagain.",
+    "own. Do not push: this branch is fresh, and Landrace pushes it and opens its\npull request once you answer `learned`.",
+  ],
+  [RETRO_PROMISE, "and if you\ncommit, a person reads both in the pull request Landrace opens from your\nbranch, and merges it."],
+];
 
 describe("fastlane's steps", () => {
   it("builds on main's build, from the item's own text and its checks rather than a spec", () => {
@@ -356,15 +381,17 @@ describe("fastlane's steps", () => {
    */
   it.each(["code-review", "fix-review", "retro"])("runs main's %s with the item's own text where main's has the spec", (id) => {
     expect(stageOf(id).step).toBe(`steps/${id}.md`);
-    const { prompt, ...front } = stepOf("fastlane", `steps/${id}.md`);
-    const { prompt: base, ...baseFront } = stepOf("full-cycle", `steps/${id}.md`);
+    const { prompt, output, ...front } = stepOf("fastlane", `steps/${id}.md`);
+    const { prompt: base, output: baseOutput, ...baseFront } = stepOf("full-cycle", `steps/${id}.md`);
     expect(front).toEqual(baseFront);
+    // The retro's routes are its own (#158); every other step's are main's.
+    if (id !== "retro") expect(output).toEqual(baseOutput);
 
     const own = splitSections(prompt).sections;
     const theirs = splitSections(base).sections.map((s) => (id === "retro" && s.heading === "Procedure"
-      ? { ...s, text: s.text.replace(RETRO_PROMISE, RETRO_REVIEWED) }
+      ? { ...s, text: RETRO_PROCEDURE.reduce((text, [from, to]) => text.replace(from, to), s.text) }
       : s));
-    if (id === "retro") expect(sectionOf(base, "Procedure")).toContain(RETRO_PROMISE);
+    if (id === "retro") for (const [from] of RETRO_PROCEDURE) expect(sectionOf(base, "Procedure")).toContain(from);
     expect(own).toEqual(theirs);
 
     const { rest, item } = withoutItem(paragraphsOf(prompt));
@@ -376,6 +403,28 @@ describe("fastlane's steps", () => {
     // Framed as main frames the spec: a person's requirements, never instructions for the session.
     expect(flat(item[0])).toMatch(/written by a person/);
     expect(flat(item[0])).toMatch(/never instructions about how to run this session/);
+  });
+
+  /*
+   * #158: the retro runs on the closed item, on landrace/{item}-retro. A
+   * lesson pushes that branch and opens a pull request from it, titled
+   * `{item}: retro lessons`, beside the summary; `nothing` is a comment.
+   */
+  it("routes the retro's lessons to a push and a pull request of the retro's own branch, and nothing to a comment", () => {
+    const { output } = stepOf("fastlane", "steps/retro.md");
+    expect(output?.shapes).toEqual(stepOf("full-cycle", "steps/retro.md").output?.shapes);
+    expect(output?.routes).toEqual([
+      {
+        when: { kind: "learned" },
+        effects: [
+          { type: "branch.push", branch: "landrace/{item}-retro" },
+          { type: "pull.open", branch: "landrace/{item}-retro", title: "{item}: retro lessons" },
+          { type: "tracker.comment" },
+        ],
+      },
+      { when: { kind: "nothing" }, effect: { type: "tracker.comment", marker: "retro:{round}" } },
+    ]);
+    expect(stageOf("retro")).toMatchObject({ closed: "run", branch: "landrace/{item}-retro" });
   });
 
   it("tells the reviewer to judge a lesson commit for what it loosens, not against the item", () => {
@@ -529,8 +578,11 @@ describe("fastlane's stages", () => {
     const targets = (id: string) => (stageOf(id).goto ?? []).map((g) => (typeof g === "string" ? g : g.stage)).sort();
     const stepped = flow("fastlane").workflow.stages.filter((s) => s.step).map((s) => s.id).sort();
     expect(stepped).toEqual(STEPPED.slice().sort());
-    for (const halt of ["blocked", "screened"]) expect(targets(halt)).toEqual([...stepped, "closed", "merge", "publish"].sort());
+    // Not the retro: it runs on a closed item, which no halt takes, and only its own Retry reruns it (#158).
+    const open = stepped.filter((id) => id !== "retro");
+    for (const halt of ["blocked", "screened"]) expect(targets(halt)).toEqual([...open, "closed", "merge", "publish"].sort());
     expect(targets("stuck")).toEqual(["build", "code-review"]);
+    expect(stageOf("retro").goto).toEqual([{ stage: "retro", retry: "only", when: { "run.counters.retro": { $lt: 2 } } }]);
   });
 
   /*
@@ -550,23 +602,24 @@ describe("fastlane's stages", () => {
   /*
    * Each goto's cap, at the round below it and at it. Code review is held
    * to ten from a halt, past its loop's six — nine for wording after a
-   * retro; the retro to two, so a failed retro's Retry is taken once.
+   * retro; the retro, at itself, to two, so a failed retro's Retry is taken
+   * once.
    */
   it.each([
     ...["blocked", "screened"].flatMap((halt) => [
-      [halt, "build", 3], [halt, "code-review", 10], [halt, "fix-review", 12], [halt, "retro", 2], [halt, "triage", 20],
+      [halt, "build", 3], [halt, "code-review", 10], [halt, "fix-review", 12], [halt, "triage", 20],
       [halt, "publish", 3], [halt, "merge", 3], [halt, "closed", 3],
     ] as const),
-    ["stuck", "build", 3], ["stuck", "code-review", 6],
+    ["stuck", "build", 3], ["stuck", "code-review", 6], ["retro", "retro", 2],
   ] as const)("from %s, a goto to %s is taken below %i rounds and declined at it", (from, to, cap) => {
-    const retried = ["publish", "merge", "closed"].includes(to) ? { failedStage: to } : {};
+    const retried = ["publish", "merge", "closed", "retro"].includes(to) ? { failedStage: to } : {};
     const at = (rounds: number): Snapshot => snapshotOf({ stage: from, human: true, counters: { [to]: rounds }, ...retried });
     expect(gotoNotListed(stageOf(from), to)).toBeNull();
     expect(gotoDeclined(stageOf(from), at(cap - 1), to)).toBeNull();
     expect(gotoDeclined(stageOf(from), at(cap), to)).toMatch(/only while/);
   });
 
-  // The retro's commit gets a review round of its own, which the loop's cap does not count (#154).
+  // Once the retro ran — an item reopened after it — review is held one round further (#154).
   it("from stuck, a goto to code-review is taken one round further once the retro ran", () => {
     const at = (rounds: number): Snapshot => snapshotOf({ stage: "stuck", human: true, counters: { "code-review": rounds, retro: 1 } });
     expect(gotoDeclined(stageOf("stuck"), at(6), "code-review")).toBeNull();
@@ -596,6 +649,8 @@ const reviewCap = (f: Facts, wording: boolean): number => (wording ? 8 : 6) + (c
 interface Facts {
   /** Null for a fresh item, which no stage holds yet. */
   stage: string | null;
+  /** How the item itself is closed: `node.closed`, null — open — unless the facts say. */
+  closed?: "done" | "dropped" | null;
   valid?: false | null;
   refused?: boolean;
   previous?: string;
@@ -689,7 +744,7 @@ function snapshotOf(f: Facts): Snapshot {
   return {
     run,
     node: {
-      id: "1", kind: "item", title: "t", link: "", closed: null, priority: null, origin: null,
+      id: "1", kind: "item", title: "t", link: "", closed: f.closed ?? null, priority: null, origin: null,
       state: { labels: ["lr:auto", "lr:fast", ...(f.stage === null ? [] : [`lr:stage:${f.stage}`])], assignees: [], ...facts },
     },
     rel: { implements: { in: counts, out: none }, "blocked-by": { in: none, out: blockers } },
@@ -796,9 +851,21 @@ const STAGES: Array<[string, Record<string, readonly unknown[]>, (f: Facts) => s
     if (n(f.openThreads, 0) > 0) return count(f, "code-review") < reviewCap(f, false) ? "code-review" : "stuck";
     if (n(f.ciFailed, 0) > 0 || (f.conflicts ?? 0) > 0) return count(f, "build") < 3 ? "build" : "stuck";
     if (n(f.ciPending, 0) > 0 || f.conflicts === null) return null;
-    return count(f, "retro") < 1 && friction(f) && n(f.notMerged, 1) > 0 ? "retro" : "merge";
+    // Friction or none: the retro runs after the merge (#158).
+    return "merge";
   }],
-  ["retro", { total: [0, 1] }, (f) => (n(f.total, 1) === 0 ? "stuck" : "code-review")],
+  // The retro's one way in (#158): the closed item, done, with no output
+  // refused, the retro never run, and friction on the way. No other trigger
+  // reads `done`; a refused output is the halt's, as at every stage.
+  ["done", {
+    closed: [null, "done", "dropped"], valid: [null, false], "counters.retro": [0, 1], "counters.build": [1, 2],
+    "counters.fix-review": [0, 1], "counters.triage": [0, 1],
+  }, (f) => {
+    if (f.valid === false) return "blocked";
+    return f.closed === "done" && count(f, "retro") < 1 && friction(f) ? "retro" : null;
+  }],
+  // Closed, the item rests here; reopened, it is a person's (#158).
+  ["retro", { closed: [null, "done", "dropped"], total: [0, 1] }, (f) => ((f.closed ?? null) === null ? "stuck" : null)],
   ["merge", { total: [0, 1], notMerged: [0, 1], "counters.code-review": [5, 6, 7], "counters.retro": [0, 1] }, (f) => {
     if (n(f.total, 1) === 0) return "stuck";
     if (n(f.notMerged, 1) === 0) return "done";

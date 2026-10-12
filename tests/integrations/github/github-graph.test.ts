@@ -158,6 +158,18 @@ describe("the GitHub source", () => {
     expect(operations(gh, "LandraceItem").map((q) => q.variables.head)).toEqual(["lr-7"]);
   });
 
+  // #158: a variant of the item branch ties too, each head asked of GitHub by name.
+  it("ties a pull request on a variant of the item branch the config names to its item, one query per head", async () => {
+    const gh = createFakeTracker([{ number: 7 }]);
+    gh.openPull({ number: 20, head: "landrace/7", headSha: "a", merged: false, threads: [] });
+    gh.openPull({ number: 21, head: "landrace/7-retro", headSha: "b", merged: false, threads: [] });
+    const variants = { ...ctx(gh), config: { ...ctx(gh).config, branchVariants: ["retro"] } };
+    for (const g of [await sourceOf(gh).read("7", variants), await sourceOf(gh).list(variants)]) {
+      expect(g.relationships.filter((r) => r.to === "7").map((r) => [r.from, r.type]).sort()).toEqual([["pr-20", "implements"], ["pr-21", "follows-up"]]);
+    }
+    expect(operations(gh, "LandraceItem").map((q) => q.variables.head)).toEqual(["landrace/7", "landrace/7-retro"]);
+  });
+
   it("stamps an issue and a pull request with when GitHub says each was opened, in every query that reads one", async () => {
     const gh = createFakeTracker([{ number: 7, createdAt: "2026-09-20T10:00:00Z" }]);
     gh.openPull({ number: 20, head: "landrace/7", headSha: "a", merged: false, threads: [], createdAt: "2026-09-21T12:30:00Z" });

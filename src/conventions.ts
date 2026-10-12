@@ -168,7 +168,17 @@ export const DOCUMENT_KIND = "document";
  * One item waits on another only where a workflow routes on its
  * `rel.blocked-by.*` counts, and says so in a stage's `note`.
  */
-export const RELATIONS = { childOf: "child-of", implements: "implements", documents: "documents", blockedBy: "blocked-by" } as const;
+/*
+ * `followsUp` is a pull request from a variant of the item branch —
+ * `landrace/{item}-retro` — to its item: the item's, and not its
+ * implementation. Counted under `implements`, an item reopened with its
+ * retro's pull request open read that one as unmerged, red and threaded in
+ * every gate that reads the item's own, and looped through paid reviews to
+ * `stuck` (#158).
+ */
+export const RELATIONS = {
+  childOf: "child-of", implements: "implements", documents: "documents", blockedBy: "blocked-by", followsUp: "follows-up",
+} as const;
 
 /**
  * Which way an edge points from `id`, or null when it does not touch it: a
@@ -544,16 +554,17 @@ export const CLOSE_EFFECT = "tracker.close";
  * same way or a workflow does not carry over. Which branch is always the
  * effect's own `branch` field, which the workflow writes — and `validate`
  * holds it, and every stage's `branch`, to the item branch landrace.yaml
- * configures, `ITEM_BRANCH` unless it sets another.
+ * configures, `ITEM_BRANCH` unless it sets another, or a variant of it.
  */
 export const BRANCH_PUSH_EFFECT = "branch.push";
 
 /**
- * The one branch an item's work is on, as a workflow writes it, unless
+ * The branch an item's work is on, as a workflow writes it, unless
  * landrace.yaml's `branch` sets another — the default it reads. A forge ties
- * a pull request to an item by this head alone — a branch named any other
- * way is anybody's to name after any item — so a stage or a publishing
- * effect on another would open a pull request nothing ties back to the item.
+ * a pull request to an item by this head, and its variants', alone — a
+ * branch named any other way is anybody's to name after any item — so a
+ * stage or a publishing effect on another would open a pull request nothing
+ * ties back to the item.
  */
 export const ITEM_BRANCH = "landrace/{item}";
 export const PULL_OPEN_EFFECT = "pull.open";
@@ -624,15 +635,17 @@ export function hasPullFrom(graph: Graph | undefined, item: string | undefined, 
 }
 
 /**
- * The pull requests from this branch implementing this item, open or merged,
- * in the graph the engine read — what `pull.open` asks whether there is one
- * of, `pull.merge` merges the open one of, and `pull.close` closes the open
- * ones of. `type` is the effect asking, named when there is no graph to ask.
+ * The pull requests from this branch implementing this item, or following it
+ * up from a variant of its branch, open or merged, in the graph the engine
+ * read — what `pull.open` asks whether there is one of, `pull.merge` merges
+ * the open one of, and `pull.close` closes the open ones of. The branch alone
+ * tells them apart. `type` is the effect asking, named when there is no graph
+ * to ask.
  */
 export function pullsFrom(graph: Graph | undefined, item: string | undefined, branch: string, type: string): Node[] {
   if (!graph) throw new Error(`a ${type} effect cannot be checked: the snapshot has no graph`);
   const implementing = new Set(graph.relationships
-    .filter((r) => r.type === RELATIONS.implements && r.to === item)
+    .filter((r) => (r.type === RELATIONS.implements || r.type === RELATIONS.followsUp) && r.to === item)
     .map((r) => r.from));
   return graph.nodes.filter((n) =>
     implementing.has(n.id) && n.kind === PULL_REQUEST_KIND && n.state.branch === branch && n.closed !== "dropped");
@@ -685,6 +698,42 @@ export function branchTemplateProblem(template: string): string | null {
   if (other !== undefined) return bad(`it names ${other}, and {item} is the only placeholder a branch is filled with`);
   const filled = branchNameProblem(template.replace("{item}", "PROJ-7"));
   return filled === null ? null : bad(`filled with an id, ${filled}`);
+}
+
+/**
+ * A variant of the item branch: the template with `-<name>` after it —
+ * `landrace/{item}-retro` — so every variant is still derived from the item
+ * branch, and a forge reads the item back out of it the same way. A stage
+ * works on one when its work must not land on the item's own branch: a
+ * retro after that branch has merged.
+ */
+export const variantBranch = (template: string, name: string): string => `${template}-${name}`;
+
+/**
+ * Why each of landrace.yaml's `branchVariants` cannot be one: a name is
+ * lower-case letters and digits, so it can never spell a path or another
+ * template; it is named once; and its filled template is a template. A
+ * template that is no template is the branch's own problem, said once.
+ */
+export function branchVariantProblem(template: string, names: readonly string[]): string[] {
+  if (branchTemplateProblem(template) !== null) return [];
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    const shown = JSON.stringify(name.slice(0, 80));
+    if (!/^[a-z0-9]+$/.test(name)) {
+      problems.push(`branch variant ${shown} must match [a-z0-9]+: lower-case letters and digits, nothing else`);
+      continue;
+    }
+    if (seen.has(name)) {
+      problems.push(`branch variant ${shown} is named twice in branchVariants`);
+      continue;
+    }
+    seen.add(name);
+    const filled = branchTemplateProblem(variantBranch(template, name));
+    if (filled !== null) problems.push(`branch variant ${shown}: ${filled}`);
+  }
+  return problems;
 }
 
 /**

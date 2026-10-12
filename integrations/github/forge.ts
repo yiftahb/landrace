@@ -11,7 +11,7 @@
 import type { HookContext, RuntimeContext } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, isEffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
-  httpReason, itemBranchOf, ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
+  httpReason, itemBranchesOf, itemBranchOf, ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
   type BranchHeads, type ChangedFiles, type CheckState, type FailedCheck, type ForgeOptions, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
@@ -531,19 +531,31 @@ export class GitHubForge extends BaseForge {
 
   /**
    * One item's pull requests: every one on its branch — `landrace/{item}`,
-   * or the one landrace.yaml names — as its head in this repository. A fork's on a head of that name is not this item's —
-   * the name is in somebody else's repository — and nor is one that only
-   * says it closes the item.
+   * or the one landrace.yaml names — or on a variant of it its
+   * `branchVariants` names, as its head in this repository: one query per
+   * head, since GitHub takes one head name at a time. A fork's on a head of
+   * that name is not this item's — the name is in somebody else's
+   * repository — and nor is one that only says it closes the item.
+   */
+  async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
+    const all: PullRecord[] = [];
+    for (const template of itemBranchesOf(ctx.config)) all.push(...await this.pullsOn(prBranch(item, template), item, ctx));
+    return all;
+  }
+
+  /**
+   * The pull requests with one head in this repository.
    *
    * Forks are left out page by page, before anything is counted: counted
    * first, anybody's 51 forks on a branch named `landrace/7` halted #7
    * (re-review N9). The item's own past one page is still a number known to
    * be short, and so is a list the page bound cut — the item's own pull
-   * request may be past the cut — so either halts the item, saying so.
+   * request may be past the cut — so either halts the item, saying so. Each
+   * head is bounded on its own: the item branch's own is never cut short
+   * by a variant's.
    */
-  async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
+  private async pullsOn(head: string, item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
     const gh = this.gh(ctx);
-    const head = prBranch(item, itemBranchOf(ctx.config));
     const own: PullNode[] = [];
     let cursor: string | null = null;
     for (let page = 0; ; page++) {
@@ -559,7 +571,7 @@ export class GitHubForge extends BaseForge {
       const { pullRequests } = data.repository;
       own.push(...pullRequests.nodes.filter((p) => !p.isCrossRepository));
       if (own.length > ITEM_PAGE) {
-        throw new Error(`#${item} has more than ${ITEM_PAGE} pull requests on its branch, more than one read carries`);
+        throw new Error(`#${item} has more than ${ITEM_PAGE} pull requests on its branch ${head}, more than one read carries`);
       }
       if (!pullRequests.pageInfo.hasNextPage) return own.map(recordOf);
       cursor = pullRequests.pageInfo.endCursor;
@@ -612,8 +624,11 @@ export class GitHubForge extends BaseForge {
     { item, branch, title, description }: { item: string; branch: string; title: string; description?: string }, ctx: RuntimeContext,
   ): Promise<void> {
     const gh = this.gh(ctx);
-    // So the merge closes the issue. It ties nothing: see the class.
-    const body = [description, this.closingRefs ? `Closes #${issueNumber(item)}` : undefined].filter((t) => t !== undefined).join("\n\n");
+    // So the merge closes the issue. It ties nothing: see the class. Only the
+    // item branch's own: a variant's follows the item up, and its merge would
+    // close the item again after a person reopened it.
+    const closes = this.closingRefs && branch === prBranch(item, itemBranchOf(ctx.config));
+    const body = [description, closes ? `Closes #${issueNumber(item)}` : undefined].filter((t) => t !== undefined).join("\n\n");
     try {
       await gh.openPull({
         head: branch,

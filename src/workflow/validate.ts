@@ -10,6 +10,7 @@ import {
   LABELS,
   STATUS_EFFECT,
   TRACKER_CREATE_EFFECT,
+  variantBranch,
   mayCreateItems,
   NODES_CLOSE_EFFECT,
   OUTPUT_KIND,
@@ -37,8 +38,13 @@ import type { Condition, Effect, EligibilityRule, GotoTarget, LoadedWorkflow, Po
 import { messageOf } from "#runner/errors.js";
 import { routeEffects } from "#runner/step.js";
 
-/** `branch` is the item branch landrace.yaml configures; `ITEM_BRANCH` when there is none to read. */
-export function validateStructure(w: Workflow, steps: Map<string, Step> = new Map(), branch = ITEM_BRANCH): Problem[] {
+/**
+ * `branch` is the item branch landrace.yaml configures, `ITEM_BRANCH` when
+ * there is none to read; `variants` the names its `branchVariants` gives.
+ */
+export function validateStructure(
+  w: Workflow, steps: Map<string, Step> = new Map(), branch = ITEM_BRANCH, variants: readonly string[] = [],
+): Problem[] {
   const problems: Problem[] = [];
 
   const entries = w.stages.filter((s) => s.entry);
@@ -352,12 +358,12 @@ export function validateStructure(w: Workflow, steps: Map<string, Step> = new Ma
   problems.push(...pullTextProblems(w, steps));
   problems.push(...haltLabelProblems(w));
   problems.push(...entryFirstProblems(w));
-  problems.push(...itemBranchProblems(w, steps, branch));
+  problems.push(...itemBranchProblems(w, steps, branch, variants));
   problems.push(...mergePlacementProblems(w, steps));
   problems.push(...effectFieldProblems(w, steps));
   problems.push(...routeFromProblems(w, steps));
   problems.push(...createShapeProblems(w, steps));
-  problems.push(...closedRunProblems(w, steps));
+  problems.push(...closedRunProblems(w, steps, branch));
 
   return dedupe(problems);
 }
@@ -491,24 +497,46 @@ const isCondition = (v: unknown): v is Condition => v !== null && typeof v === "
 
 /**
  * `closed-run`: a stage a closed item enters and runs its step at. The item's
- * work is over, so it works on no branch and touches no forge — a closed
- * item's pull request is merged or dropped already — and only a closed item
- * reaches it, so every trigger into it reads `node.closed` and no goto names it.
+ * work is over — its pull request on the item branch is merged or dropped
+ * already — so the stage never works on that branch. It may work on a variant
+ * of it (#158), cut fresh, and publish only there: push it and open a pull
+ * request from it, never merge, review or close one. Only a closed item
+ * reaches it, so every trigger into it reads `node.closed` and no goto names
+ * it. Which variants there are is `itemBranchProblems`'s to hold.
  */
-function closedRunProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
+function closedRunProblems(w: Workflow, steps: Map<string, Step>, branch: string): Problem[] {
   const problems: Problem[] = [];
   for (const stage of w.stages) {
     if (stage.closed !== "run") continue;
-    if (stage.branch !== undefined) {
-      problems.push({ rule: "closed-run", message: `stage "${stage.id}" runs on a closed item, so it works on no branch; drop its branch` });
+    if (stage.branch === branch) {
+      problems.push({
+        rule: "closed-run",
+        message: `stage "${stage.id}" runs on a closed item, whose item branch ${branch} is merged or dropped already: ` +
+          "it may work only on a variant of it, one of landrace.yaml's branchVariants",
+      });
     }
     const step = stage.step ? steps.get(stage.step) : undefined;
     const effects = [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).flatMap(routeEffects)];
-    for (const type of new Set(effects.map((e) => e.type).filter((t) => BRANCHED_EFFECTS.has(t)))) {
+    for (const type of new Set(effects.map((e) => e.type).filter((t) => BRANCHED_EFFECTS.has(t) && !CLOSED_PUBLISHING.has(t)))) {
       problems.push({
         rule: "closed-run",
         message: `stage "${stage.id}" runs on a closed item and plans ${type}; a closed item's work is merged or dropped already`,
       });
+    }
+    for (const effect of effects) {
+      if (!CLOSED_PUBLISHING.has(effect.type)) continue;
+      if (stage.branch === undefined) {
+        problems.push({
+          rule: "closed-run",
+          message: `stage "${stage.id}" runs on a closed item and plans ${effect.type}, but works on no branch: name a variant as its branch`,
+        });
+      } else if (effect.branch !== stage.branch) {
+        problems.push({
+          rule: "closed-run",
+          message: `stage "${stage.id}" runs on a closed item and plans ${effect.type} on ${String(effect.branch)}; ` +
+            `it may publish only its own branch, ${stage.branch}`,
+        });
+      }
     }
     // A sole entry stage is entered by every new open item, its triggers unread.
     if (stage.entry) {
@@ -558,6 +586,9 @@ function closedRunProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
   }
   return problems;
 }
+
+/** What a `closed: run` stage may publish, on its own branch: the branch, and a pull request from it. */
+const CLOSED_PUBLISHING: ReadonlySet<string> = new Set([BRANCH_PUSH_EFFECT, PULL_OPEN_EFFECT]);
 
 /** A `closed: run` stage's `retry: only` entry naming itself: a closed item's Retry where it rests. */
 const closedRetry = (stage: Stage, g: GotoTarget): boolean => stage.closed === "run" && g.retryOnly && g.stage === stage.id;
@@ -745,25 +776,36 @@ const BRANCHED_EFFECTS: ReadonlySet<string> = new Set([
 /**
  * `branch`: every stage's `branch`, and the branch every publishing effect
  * names, is the item's own — `landrace/{item}`, or the template landrace.yaml
- * sets as `branch`. A forge finds an item's pull requests by that head alone,
- * so one opened from another is nobody's: `pull.open` is never satisfied, and
- * `pull.merge` and `pull.close` cannot see it. The in-memory forge relates by
- * the same head, so a test would catch it too — but only once it ran.
+ * sets as `branch` — or one of its variants, `<branch>-<name>` for each name
+ * in `branchVariants`. A forge finds an item's pull requests by those heads
+ * alone, so one opened from another is nobody's: `pull.open` is never
+ * satisfied, and `pull.merge` and `pull.close` cannot see it. The in-memory
+ * forge relates by the same heads, so a test would catch it too — but only
+ * once it ran.
  */
-function itemBranchProblems(w: Workflow, steps: Map<string, Step>, branch: string): Problem[] {
+function itemBranchProblems(w: Workflow, steps: Map<string, Step>, branch: string, variants: readonly string[]): Problem[] {
   const problems: Problem[] = [];
-  const must = branch === ITEM_BRANCH ? branch : `${branch}, the branch landrace.yaml names`;
-  const why = `a forge ties a pull request to an item only by its ${branch} head`;
+  const allowed = new Set([branch, ...variants.map((v) => variantBranch(branch, v))]);
+  const named = branch === ITEM_BRANCH ? branch : `${branch}, the branch landrace.yaml names`;
+  const must = variants.length === 0
+    ? named
+    : `${named}, or a variant of it landrace.yaml's branchVariants names (${[...allowed].slice(1).join(", ")})`;
+  const why = `a forge ties a pull request to an item only by its ${branch} head${variants.length === 0 ? "" : " or a variant's"}`;
+  // A name that reads as a variant nobody declared says how to make it one.
+  const hint = (name: unknown): string => {
+    const suffix = typeof name === "string" && name.startsWith(`${branch}-`) ? name.slice(branch.length + 1) : "";
+    return /^[a-z0-9]+$/.test(suffix) ? `; or name "${suffix}" in landrace.yaml's branchVariants` : "";
+  };
   for (const stage of w.stages) {
-    if (stage.branch !== undefined && stage.branch !== branch) {
-      problems.push({ rule: "branch", message: `stage "${stage.id}" works on branch "${stage.branch}"; it must be ${must}: ${why}` });
+    if (stage.branch !== undefined && !allowed.has(stage.branch)) {
+      problems.push({ rule: "branch", message: `stage "${stage.id}" works on branch "${stage.branch}"; it must be ${must}: ${why}${hint(stage.branch)}` });
     }
     const step = stage.step ? steps.get(stage.step) : undefined;
     for (const effect of [...(stage.on_enter ?? []), ...(step?.output?.routes ?? []).flatMap(routeEffects)]) {
-      if (!BRANCHED_EFFECTS.has(effect.type) || effect.branch === branch) continue;
+      if (!BRANCHED_EFFECTS.has(effect.type) || (typeof effect.branch === "string" && allowed.has(effect.branch))) continue;
       problems.push({
         rule: "branch",
-        message: `stage "${stage.id}" has a ${effect.type} on branch ${JSON.stringify(effect.branch)}; it must be ${must}: ${why}`,
+        message: `stage "${stage.id}" has a ${effect.type} on branch ${JSON.stringify(effect.branch)}; it must be ${must}: ${why}${hint(effect.branch)}`,
       });
     }
   }
@@ -1984,6 +2026,8 @@ export function admitProblems(id: string, w: Workflow): Problem[] {
   }))];
 }
 
-export function validate(w: Workflow, steps: Map<string, Step>, provided?: string[], branch = ITEM_BRANCH): Problem[] {
-  return dedupe([...validateStructure(w, steps, branch), ...validateSemantics(w, steps, provided)]);
+export function validate(
+  w: Workflow, steps: Map<string, Step>, provided?: string[], branch = ITEM_BRANCH, variants: readonly string[] = [],
+): Problem[] {
+  return dedupe([...validateStructure(w, steps, branch, variants), ...validateSemantics(w, steps, provided)]);
 }

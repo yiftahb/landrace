@@ -50,6 +50,14 @@ export const runtimeConfigSchema = z.object({
    * a template is `branchTemplateProblem`, reported by `configProblems`.
    */
   branch: z.string().default(ITEM_BRANCH),
+  /**
+   * The names of the item branch's variants: `<branch>-<name>`, a branch a
+   * stage may work on beside the item's own, and that a forge ties back to
+   * the item as it does the item branch (`variantBranch`). Here for the same
+   * reason `branch` is. What makes one usable is `branchVariantProblem`,
+   * reported by `configProblems`.
+   */
+  branchVariants: z.array(z.string()).default([]),
   tick: z.object({ interval: z.string().default("60s"), concurrency: z.number().int().positive().default(3) }).default({}),
   /**
    * `adapter` names the executor that screens, by the same lookup as
