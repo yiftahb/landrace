@@ -11,7 +11,7 @@
 import type { HookContext, RuntimeContext } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, isEffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
-  httpReason, itemBranchesOf, ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
+  httpReason, itemBranchesOf, itemBranchOf, ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
   type BranchHeads, type ChangedFiles, type CheckState, type FailedCheck, type ForgeOptions, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
@@ -624,8 +624,11 @@ export class GitHubForge extends BaseForge {
     { item, branch, title, description }: { item: string; branch: string; title: string; description?: string }, ctx: RuntimeContext,
   ): Promise<void> {
     const gh = this.gh(ctx);
-    // So the merge closes the issue. It ties nothing: see the class.
-    const body = [description, this.closingRefs ? `Closes #${issueNumber(item)}` : undefined].filter((t) => t !== undefined).join("\n\n");
+    // So the merge closes the issue. It ties nothing: see the class. Only the
+    // item branch's own: a variant's follows the item up, and its merge would
+    // close the item again after a person reopened it.
+    const closes = this.closingRefs && branch === prBranch(item, itemBranchOf(ctx.config));
+    const body = [description, closes ? `Closes #${issueNumber(item)}` : undefined].filter((t) => t !== undefined).join("\n\n");
     try {
       await gh.openPull({
         head: branch,
