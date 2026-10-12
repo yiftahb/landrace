@@ -11,7 +11,7 @@
 import type { HookContext, RuntimeContext } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, isEffectRefused, ISSUE_PAGE, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, nothingCommitted, originPushUrl,
-  itemBranchOf, ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
+  httpReason, itemBranchOf, ownGit, prBranch, pushBranch, repositoryOf, THREAD_PAGE, ITEM_PAGE,
   type BranchHeads, type ChangedFiles, type CheckState, type FailedCheck, type ForgeOptions, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
@@ -405,16 +405,11 @@ function noHead(pull: PullRecord): void {
   if (!pull.headSha) throw new Error(`pr-${pull.number} has no head commit to read checks on`);
 }
 
-/** What GitHub said, out of the JSON body of a refusal: its `message`, or the body as it came. */
+/** What GitHub said, out of the body of a refusal: its `message`, or the body cut short and stripped of markup. */
 function refusalMessage(e: unknown): string {
   const body = (e as { body?: unknown } | null)?.body;
-  if (typeof body !== "string") return e instanceof Error ? e.message : String(e);
-  try {
-    const message = (JSON.parse(body) as { message?: unknown }).message;
-    return typeof message === "string" ? message : body;
-  } catch {
-    return body;
-  }
+  const reason = typeof body === "string" ? httpReason(body) : "";
+  return reason !== "" ? reason : e instanceof Error ? e.message : String(e);
 }
 
 /**
@@ -628,7 +623,7 @@ export class GitHubForge extends BaseForge {
       });
     } catch (e) {
       // GitHub's own way of saying what the push check says.
-      if ((e as { status?: unknown } | null)?.status === 422 && /No commits between/i.test(String(e))) {
+      if ((e as { status?: unknown } | null)?.status === 422 && /No commits between/i.test(String((e as { body?: unknown }).body))) {
         throw nothingCommitted(branch, item);
       }
       throw e;
