@@ -7,7 +7,7 @@
 import { type HookContext, parseMarker, type RuntimeContext, sameLogin } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
-  itemBranchOf, repositoryOf, ITEM_PAGE,
+  httpReason, itemBranchOf, repositoryOf, ITEM_PAGE,
   type BranchHeads, type ChangedFile, type ChangedFiles, type CheckState, type FailedCheck, type ForgeOptions, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
@@ -71,17 +71,11 @@ const PIPELINE_STATES: Record<string, CheckState> = {
   skipped: "none",
 };
 
-/** What GitLab said, out of the JSON body of a refusal: its `message`, or the body as it came. */
+/** What GitLab said, out of the body of a refusal: its `message` or `error`, or the body cut short and stripped of markup. */
 function refusalMessage(e: unknown): string {
   const body = (e as { body?: unknown } | null)?.body;
-  if (typeof body !== "string") return e instanceof Error ? e.message : String(e);
-  try {
-    const parsed = JSON.parse(body) as { message?: unknown; error?: unknown };
-    const said = parsed.message ?? parsed.error;
-    return typeof said === "string" ? said : Array.isArray(said) ? said.join("; ") : body;
-  } catch {
-    return body;
-  }
+  const reason = typeof body === "string" ? httpReason(body) : "";
+  return reason !== "" ? reason : e instanceof Error ? e.message : String(e);
 }
 
 /** One note of a discussion. `system` is GitLab's own ("added 1 commit"), never anybody's word. */
@@ -446,7 +440,7 @@ export class GitLab extends BaseForge {
       // "Another open merge request already exists for this source branch":
       // the effect landed, most likely on an attempt a crash cut off before
       // the next read could see it.
-      if (statusOf(e) === 409 && /already exists/i.test(String(e))) return;
+      if (statusOf(e) === 409 && /already exists/i.test(String((e as { body?: unknown }).body))) return;
       throw e;
     }
   }

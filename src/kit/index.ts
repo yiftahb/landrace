@@ -15,6 +15,7 @@ export * from "#kit/compose.js";
 export * from "#kit/docs.js";
 export * from "#kit/forge.js";
 export * from "#kit/git.js";
+export * from "#kit/http.js";
 export * from "#kit/tracker.js";
 // What an integration throws for an effect it refuses on purpose. The engine
 // reads its mark, which is why it lives in the shared vocabulary.

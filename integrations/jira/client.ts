@@ -6,6 +6,7 @@
  * goes out until the account it is written as is known.
  */
 import type { RuntimeContext } from "landrace/hooks";
+import { httpError } from "landrace/kit";
 
 export interface ClientOptions {
   baseUrl: string;
@@ -58,14 +59,13 @@ export function createClient(opts: ClientOptions) {
     });
     const text = await res.text();
     // The status rides on the error, so "is this a 404?" is never a search of the message.
-    if (!res.ok) {
+    if (res.status === 401) {
       throw Object.assign(
-        new Error(res.status === 401
-          ? "Jira rejected jiraEmail and jiraToken (401): check both, and that the token has not expired"
-          : `${method} ${path} → ${res.status} ${text}`),
+        new Error("Jira rejected jiraEmail and jiraToken (401): check both, and that the token has not expired"),
         { status: res.status, body: text },
       );
     }
+    if (!res.ok) throw httpError(method, path, res.status, text);
     // 204 for an edit or a transition: nothing to read.
     return (text === "" ? null : JSON.parse(text)) as T;
   }
