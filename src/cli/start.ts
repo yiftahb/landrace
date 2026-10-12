@@ -885,13 +885,17 @@ export function createSchedule(opts: {
 /**
  * The page's Retry, Clear and "Go to step…", each sent through the goto of
  * the workflow `ownerOf` gives the item — never through whichever comes
- * first. Undefined when no workflow can write a record.
+ * first. Undefined when no workflow can write a record. A Retry or a Go to
+ * reaches a closed item through the `closed: run` workflow that claims it,
+ * where `sendTo` takes only a Retry of the round that failed; a Clear never.
  */
-export function gotoByClaim(ownerOf: (item: string) => Ownership, paths: ReadonlyMap<string, GotoPath | undefined>): GotoPath | undefined {
+export function gotoByClaim(
+  ownerOf: (item: string, opts?: { closed?: boolean }) => Ownership, paths: ReadonlyMap<string, GotoPath | undefined>,
+): GotoPath | undefined {
   if (![...paths.values()].some((p) => p !== undefined)) return undefined;
   return {
     send: async (item, target, opts) => {
-      const owner = ownerOf(item);
+      const owner = ownerOf(item, { closed: opts?.clear !== true });
       if ("refused" in owner) return owner;
       const path = paths.get(owner.workflow);
       return path
@@ -1093,8 +1097,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
 
   // A write by the fresh listing alone; its refusal quotes a source's
   // failure, which can carry what the log would redact.
-  const writeOwner = (item: string): Ownership => {
-    const owner = writeOwnerOf(last.fresh, item);
+  const writeOwner = (item: string, opts: { closed?: boolean } = {}): Ownership => {
+    const owner = writeOwnerOf(last.fresh, item, opts);
     return "refused" in owner ? { refused: rt.log.scrub(owner.refused) } : owner;
   };
   const { activity } = rt;

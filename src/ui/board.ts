@@ -605,9 +605,9 @@ export function createBoard(opts: {
       for (const id of paired.keys()) if (!ids.has(id)) paired.delete(id);
       for (const [id, released] of stepped) if (released) stepped.delete(id);
     },
-    ownerOf(item): Ownership {
+    ownerOf(item, ownerOpts = {}): Ownership {
       if (!listing) return unlisted(item);
-      return writeRoute(listing, item) ?? { refused: `#${item} is not an item the last tick listed` };
+      return writeRoute(listing, item, ownerOpts) ?? { refused: `#${item} is not an item the last tick listed` };
     },
     readerOf(item): ReadRoute {
       if (!listing) return unlisted(item);

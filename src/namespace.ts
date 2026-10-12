@@ -3054,8 +3054,11 @@ export interface Board {
   observe(e: LandraceEvent): void;
   /** What the page is shown of a listing: every source's graph, which workflows read each, and who owns what in them. */
   list(listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">): void;
-  /** For a write, by the last listing: never a guess at an item two workflows claim, two sources report, or none claims. */
-  ownerOf(item: string): Ownership;
+  /**
+   * For a write, by the last listing: never a guess at an item two workflows claim, two sources report, or none claims.
+   * `closed` for a goto: a closed item goes to the one `closed: run` workflow that claims it.
+   */
+  ownerOf(item: string, opts?: { closed?: boolean }): Ownership;
   /**
    * For a read, by the last listing: an owned item through its owner, any
    * other item through the one source that lists it, and an id no listing

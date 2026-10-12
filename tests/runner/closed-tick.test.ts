@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createExternalState } from "#testing/index.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
+import { sendTo } from "#runner/goto.js";
 import { tick } from "#tests/support/tick.js";
 import type { Executor, HookContext, LandraceEvent, RunningItem, Step, Workflow } from "#namespace.js";
 
@@ -47,7 +48,7 @@ async function until(predicate: () => boolean, what: string, ms = 2000): Promise
   }
 }
 
-async function world(item: { labels: string[]; closed?: "done" | "dropped" }, held = false) {
+async function world(item: { labels: string[]; closed?: "done" | "dropped" }, held = false, w: Workflow = workflow, broken = 0) {
   const root = await mkdtemp(join(tmpdir(), "lr-closed-"));
   const state = createExternalState({ items: [{ id: "1", ...item }] });
   let open!: () => void;
@@ -66,6 +67,10 @@ async function world(item: { labels: string[]; closed?: "done" | "dropped" }, he
         await Promise.race([stopped, finish]);
       }
       run.stopped = signal.aborted;
+      if (broken > 0) {
+        broken -= 1;
+        return { text: "no json here", sessionId: null };
+      }
       return { text: `\`\`\`json\n{"kind":"${prompt}"}\n\`\`\``, sessionId: null };
     },
   };
@@ -74,13 +79,17 @@ async function world(item: { labels: string[]; closed?: "done" | "dropped" }, he
   const once = () => tick({
     source: state.source, running, lock: { root },
     deps: {
-      workflow, steps, pre: [state.pre], dispatcher: createDispatcher([state.post]), executor,
+      workflow: w, steps, pre: [state.pre], dispatcher: createDispatcher([state.post]), executor,
       ctx: { config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
       log: createLogger({ sink: (e) => events.push(e) }),
     },
   });
   const aborted = () => events.filter((e) => e.name === "item.aborted");
-  return { state, runs, once, open, aborted };
+  const goto = (target: string | null) => sendTo({
+    source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), workflow: w, lock: { root },
+    ctx: { config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
+  }, "1", target);
+  return { state, runs, once, open, aborted, goto };
 }
 
 describe("a closed item, through the tick", () => {
@@ -129,5 +138,75 @@ describe("a closed item, through the tick", () => {
     w.open();
     expect((await first)[0]?.outcome).toMatch(/rests at "retro"/);
     expect(w.runs).toEqual([{ stage: "retro", stopped: false }]);
+  });
+});
+
+/*
+ * A retro whose step failed, retried by a person: retro lists itself
+ * `retry: only`, and Retry — `landrace_goto` naming retro, or the board's,
+ * naming nothing — reruns it once while the item stays closed and at retro.
+ */
+describe("a closed item's Retry at retro", () => {
+  const retrying: Workflow = {
+    ...workflow,
+    stages: workflow.stages.map((s) => (s.id === "retro" ? { ...s, goto: [{ stage: "retro", retry: "only" as const }] } : s)),
+  };
+  const CLOSED_AT_DONE = { labels: ["lr:auto", "lr:stage:done"], closed: "done" as const };
+
+  it.each([["the board's Retry", null], ["landrace_goto naming retro", "retro"]])("reruns the failed step once, by %s", async (_how, target) => {
+    const w = await world(CLOSED_AT_DONE, false, retrying, 1);
+    await w.once();
+    expect(w.runs.map((r) => r.stage)).toEqual(["retro"]);
+    await w.once();
+    expect(w.runs).toHaveLength(1);
+
+    expect(await w.goto(target)).toEqual({ to: "retro" });
+    await w.once();
+    expect(w.runs.map((r) => r.stage)).toEqual(["retro", "retro"]);
+    expect(w.state.stage("1")).toBe("retro");
+    expect(w.state.item("1").closed).toBe("done");
+
+    await w.once();
+    expect(w.runs).toHaveLength(2);
+  });
+
+  it("retries again after a second failure", async () => {
+    const w = await world(CLOSED_AT_DONE, false, retrying, 2);
+    await w.once();
+    expect(await w.goto(null)).toEqual({ to: "retro" });
+    await w.once();
+    expect(await w.goto(null)).toEqual({ to: "retro" });
+    await w.once();
+    expect(w.runs).toHaveLength(3);
+    await w.once();
+    expect(w.runs).toHaveLength(3);
+  });
+
+  it("is refused where the round did not fail, saying nothing failed there", async () => {
+    const w = await world(CLOSED_AT_DONE, false, retrying);
+    await w.once();
+    expect(w.runs).toHaveLength(1);
+    for (const target of [null, "retro"]) {
+      expect(await w.goto(target)).toEqual({ refused: expect.stringMatching(/#1 is closed and rests at "retro", where nothing failed/) });
+    }
+  });
+
+  it("is refused where retro does not list itself retry: only, saying so", async () => {
+    const w = await world(CLOSED_AT_DONE, false, workflow, 1);
+    await w.once();
+    expect(await w.goto(null)).toEqual({ refused: expect.stringMatching(/"retro" does not list itself with retry: only/) });
+  });
+
+  it("refuses a goto to any other stage, naming the one it may retry", async () => {
+    const w = await world(CLOSED_AT_DONE, false, retrying, 1);
+    await w.once();
+    expect(await w.goto("spec")).toEqual({ refused: expect.stringMatching(/#1 is closed, so it is retried only at "retro".*not sent to "spec"/) });
+  });
+
+  it("refuses goto and Retry on a closed item at an ordinary stage, saying so", async () => {
+    const w = await world({ labels: ["lr:auto", "lr:stage:done"], closed: "dropped" }, false, retrying);
+    for (const target of [null, "retro", "spec"]) {
+      expect(await w.goto(target)).toEqual({ refused: expect.stringMatching(/#1 is closed at "done", which runs nothing on a closed item, so there is nothing to send back/) });
+    }
   });
 });

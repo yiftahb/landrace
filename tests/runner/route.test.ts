@@ -70,6 +70,42 @@ describe("writeOwnerOf: whose an item is for a write from the page", () => {
   });
 });
 
+/*
+ * A closed item is written to by a goto alone — a Retry of a failed retro —
+ * and only through the one workflow with a `closed: run` stage that claims
+ * it; every other write to it is refused as before.
+ */
+describe("writeRoute, for a closed item", () => {
+  const retro: Workflow = {
+    version: 1, name: "retro", description: "test",
+    eligible: [{ when: { "node.state.labels": { $in: ["lr:auto"] } }, else: "no lr:auto label" }],
+    stages: [{ id: "spec", entry: true, terminal: true }, { id: "retro", step: "retro", closed: "run", triggers: [{ when: { "node.closed": "done" } }] }],
+  };
+  const closed = (id: string, labels: string[]): Node => ({ ...item(id, labels), closed: "done" });
+  const fresh = (closedRun: boolean): WorkspaceListing => {
+    const graphs = [graph(closed("7", ["lr:auto"]), closed("8", ["lr:fast"])), graph()];
+    return {
+      graphs, sourceOf, failed: new Map(),
+      claims: claimItems([
+        { id: "main", workflow: retro, source: 0, closedRun },
+        { id: "fast", workflow: flow("lr:fast"), source: 0 },
+        { id: "gl", workflow: flow("lr:lab"), source: 1 },
+      ], graphs),
+    };
+  };
+
+  it("goes, for a goto, to the closed: run workflow that claims it", () => {
+    expect(writeOwnerOf(fresh(true), "7", { closed: true })).toEqual({ workflow: "main" });
+    expect(writeRoute(fresh(true), "7", { closed: true })).toEqual({ workflow: "main" });
+  });
+
+  it("is refused for any other write, and where no closed: run workflow claims it", () => {
+    expect(writeOwnerOf(fresh(true), "7")).toEqual({ refused: "#7 is closed, so nothing is written to it" });
+    expect(writeOwnerOf(fresh(true), "8", { closed: true })).toEqual({ refused: "#8 is closed, so nothing is written to it" });
+    expect(writeOwnerOf(fresh(false), "7", { closed: true })).toEqual({ refused: "#7 is closed, so nothing is written to it" });
+  });
+});
+
 // A placeholder is only the other end of a relationship: no source lists
 // the item by it, so it routes nothing, and beside a source's own item it is
 // no second source reporting the id.
