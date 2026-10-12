@@ -490,6 +490,40 @@ describe("boardView: where a row may send its item back to", () => {
     expect(row?.retry).not.toBeNull();
   });
 
+  /*
+   * A closed item at a `closed: run` stage that lists itself `retry: only` is
+   * offered Retry, and only Retry: the board has only labels, so it cannot
+   * tell a failed retro from one that ran, and `sendTo` refuses the second.
+   */
+  const closedRow = (goto: Stage["goto"], labels: string[] = ["lr:stage:retro"], closedRun = true) => {
+    const resting: Workflow = {
+      ...workflow,
+      stages: [
+        ...workflow.stages,
+        { id: "retro", step: "retro", closed: "run", ...(goto ? { goto } : {}), triggers: [{ when: { "node.closed": "done" } }] },
+      ],
+    };
+    const g = graph([item("7", { closed: "done" }, ["go", ...labels])]);
+    return view(g, {
+      workflows: [{ id: "t", workflow: resting }],
+      listing: { graphs: [g], sourceOf: new Map([["t", 0]]), claims: claimItems([{ id: "t", workflow: resting, source: 0, closedRun }], [g]) },
+    }).rows[0];
+  };
+
+  it("offers a closed item resting at a closed: run stage that lists itself retry: only its Retry, and no Go to", () => {
+    const row = closedRow([{ stage: "retro", retry: "only" }, "spec"]);
+    expect(row).toMatchObject({ badge: "discharged", retry: "/items/7/retry", goto: [] });
+  });
+
+  it.each([
+    ["the stage lists itself without retry: only", ["retro"], ["lr:stage:retro"], true],
+    ["the stage does not list itself", ["spec"], ["lr:stage:retro"], true],
+    ["it rests at an ordinary stage", [{ stage: "retro", retry: "only" }], ["lr:stage:done"], true],
+    ["no closed: run workflow claims it", [{ stage: "retro", retry: "only" }], ["lr:stage:retro"], false],
+  ] as const)("offers a closed item no Retry where %s", (_what, goto, labels, closedRun) => {
+    expect(closedRow([...goto], [...labels], closedRun)).toMatchObject({ badge: "discharged", retry: null, goto: [] });
+  });
+
   it("offers a target not declared Retry's alone, whatever its when", () => {
     expect(retryingRow({ stage: "merge", when: { "run.counters.merge": { $lt: 3 } } })?.goto).toEqual([
       { stage: "spec", path: "/items/7/goto/spec" }, { stage: "merge", path: "/items/7/goto/merge" },
