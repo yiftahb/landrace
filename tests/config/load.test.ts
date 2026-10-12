@@ -213,4 +213,18 @@ describe("the item branch", () => {
     ]);
     expect(() => assertConfigUsable(dir, loaded)).toThrow(/branch: .*fixed text/);
   });
+
+  it("has no variants when none is set, and takes the ones set", async () => {
+    expect((await loadConfig(await fixture(""))).config.branchVariants).toEqual([]);
+    expect((await loadConfig(await fixture("", "branchVariants: [retro]\n"))).config.branchVariants).toEqual(["retro"]);
+  });
+
+  it.each([
+    ["[Retro]", /"Retro"/],
+    ["[a/b]", /"a\/b"/],
+    ["[retro, retro]", /"retro" is named twice/],
+  ])("is a configuration problem under branch when branchVariants is %s", async (list, why) => {
+    const dir = await fixture("GITHUB_TOKEN=ghp_xxxxxxxxxxxx", `branchVariants: ${list}\n`);
+    expect(configProblems(dir, await loadConfig(dir))).toEqual([{ rule: "branch", message: expect.stringMatching(why) }]);
+  });
 });

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
 import { expand, parseEnvFile } from "#config/env.js";
-import { branchTemplateProblem } from "#conventions.js";
+import { branchTemplateProblem, branchVariantProblem } from "#conventions.js";
 import { MIN_SECRET_LENGTH } from "#runner/events.js";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { TELEMETRY_KEYS } from "#telemetry/otel.js";
@@ -71,6 +71,7 @@ export function configProblems(dir: string, loaded: LoadedConfig): Problem[] {
   const branch = branchTemplateProblem(loaded.config.branch);
   return [
     ...(branch === null ? [] : [{ rule: "branch", message: branch }]),
+    ...branchVariantProblem(loaded.config.branch, loaded.config.branchVariants).map((message) => ({ rule: "branch", message })),
     ...loaded.missing.map((name) => ({
       rule: "secret",
       message: `secret "${name}" does not resolve; set it in ${env}`,

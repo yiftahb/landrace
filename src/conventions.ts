@@ -688,6 +688,42 @@ export function branchTemplateProblem(template: string): string | null {
 }
 
 /**
+ * A variant of the item branch: the template with `-<name>` after it —
+ * `landrace/{item}-retro` — so every variant is still derived from the item
+ * branch, and a forge reads the item back out of it the same way. A stage
+ * works on one when its work must not land on the item's own branch: a
+ * retro after that branch has merged.
+ */
+export const variantBranch = (template: string, name: string): string => `${template}-${name}`;
+
+/**
+ * Why each of landrace.yaml's `branchVariants` cannot be one: a name is
+ * lower-case letters and digits, so it can never spell a path or another
+ * template; it is named once; and its filled template is a template. A
+ * template that is no template is the branch's own problem, said once.
+ */
+export function branchVariantProblem(template: string, names: readonly string[]): string[] {
+  if (branchTemplateProblem(template) !== null) return [];
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    const shown = JSON.stringify(name.slice(0, 80));
+    if (!/^[a-z0-9]+$/.test(name)) {
+      problems.push(`branch variant ${shown} must match [a-z0-9]+: lower-case letters and digits, nothing else`);
+      continue;
+    }
+    if (seen.has(name)) {
+      problems.push(`branch variant ${shown} is named twice in branchVariants`);
+      continue;
+    }
+    seen.add(name);
+    const filled = branchTemplateProblem(variantBranch(template, name));
+    if (filled !== null) problems.push(`branch variant ${shown}: ${filled}`);
+  }
+  return problems;
+}
+
+/**
  * How big one item's neighbourhood may be. `read` returns the whole
  * descendant subtree, because a cascade close must see every node it closes,
  * and it runs on every converge pass. Past this, the honest answer is a halt

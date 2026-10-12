@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { branchNameProblem, branchTemplateProblem, effectBranch } from "#conventions.js";
+import { branchNameProblem, branchTemplateProblem, branchVariantProblem, effectBranch, variantBranch } from "#conventions.js";
 
 const exec = promisify(execFile);
 
@@ -105,5 +105,34 @@ describe("an item branch template", () => {
     ["-{item}", /not a usable branch name.*"-"/],
   ])("refuses %j, saying which rule", (template, why) => {
     expect(branchTemplateProblem(template)).toMatch(why);
+  });
+});
+
+/*
+ * A branch variant (#158): the item branch with "-<name>" after it, so every
+ * variant is still derived from the item branch and a forge reads the item
+ * back out of it the same way.
+ */
+describe("a branch variant", () => {
+  it("is the item branch template with -<name> after it", () => {
+    expect(variantBranch("landrace/{item}", "retro")).toBe("landrace/{item}-retro");
+    expect(variantBranch("lr/{item}-x", "retro")).toBe("lr/{item}-x-retro");
+  });
+
+  it("takes lower-case letters and digits, each name once", () => {
+    expect(branchVariantProblem("landrace/{item}", ["retro", "r2"])).toEqual([]);
+  });
+
+  it.each([
+    [["Retro"], /"Retro".*\[a-z0-9\]\+/],
+    [["a/b"], /"a\/b".*\[a-z0-9\]\+/],
+    [[""], /"".*\[a-z0-9\]\+/],
+    [["retro", "retro"], /"retro" is named twice/],
+  ])("refuses %j, saying which rule", (names, why) => {
+    expect(branchVariantProblem("landrace/{item}", names)).toEqual([expect.stringMatching(why)]);
+  });
+
+  it("says nothing of its own about a template that is no template: the branch's own problem says so", () => {
+    expect(branchVariantProblem("{item}", ["retro"])).toEqual([]);
   });
 });
