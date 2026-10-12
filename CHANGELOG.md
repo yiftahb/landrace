@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Retry a failed step at a `closed: run` stage.** A `closed: run` stage, such as a retro, may list itself with `retry: only`: `{ stage: retro, retry: only }`. A round that failed there can then be retried with the board's Retry, or with `landrace_goto` naming the stage. The step runs once more on the next tick, and the item stays closed and at the stage. Before, a failed retro could never run again. `validate`'s `closed-run` rule accepts that one entry. It still refuses a plain goto or a route `goto` into the stage, and a `retry: only` entry naming it from another stage. `cycle-bound` does not ask that entry for a cap. On a closed item, every other goto, a Retry where nothing failed, and Clear & retry are refused, each saying which condition failed. The board offers this Retry on every closed item at such a stage, because its labels cannot show whether the round failed, and "Go to step…" never offers the stage. See [Sending an item back](docs/workflows.md#sending-an-item-back-goto-and-retry).
+
 ## [1.6.0] - 2026-10-11
 
 ### Added
