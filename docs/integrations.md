@@ -232,6 +232,7 @@ new GitLab({ project: "group/app", pull: { title: "{item}: {title}", description
 - Text from the item is escaped as everywhere else, so it cannot carry Landrace's markers.
 - The title and description are set when the pull request opens, and never rewritten: a person's later edits stay.
 - Another placeholder in either is refused: in `title` when the hook file loads, in the template by `landrace start`, which also refuses a template it cannot read or one a link takes outside `.landrace/`.
+- A `pull.open` effect, in a stage's `on_enter` or a step's route, can set its own `title` and `description` over these for the one pull request it opens, such as a retro's beside the feature's — see [Effects](workflows.md#effects).
 
 ## Jira
 
