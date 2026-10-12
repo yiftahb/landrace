@@ -287,7 +287,6 @@ describe("the graph compose reads", () => {
    * implement it: the gates reading `rel.implements` read the item's own work.
    */
   const variants = { ...ctx, config: { ...ctx.config, branchVariants: ["retro"] } };
-  const implementing = (g: Graph) => g.relationships.filter((r) => r.type === "implements").map((r) => [r.from, r.to]);
   const tied = (g: Graph) => g.relationships.filter((r) => r.from.startsWith("pr-")).map((r) => [r.from, r.to, r.type]);
 
   it("ties a pull request on a variant of the item branch to the item, by the variants the context configures", async () => {
@@ -332,7 +331,7 @@ describe("the graph compose reads", () => {
     state.openPull("7", { branch: "landrace/7-retro" });
     await expect(state.source.read("7", variants)).rejects.toThrow("pull request #1 is tied to #7 and #7-retro");
     await expect(state.source.read("7-retro", variants)).rejects.toThrow(/pull request #1 is tied to #7-retro and #7|#7 and #7-retro/);
-    expect(implementing(await state.source.list(variants))).toEqual([]);
+    expect(tied(await state.source.list(variants))).toEqual([]);
   });
 
   // A landrace/{item}-api head names no item there is, so the pull request is
