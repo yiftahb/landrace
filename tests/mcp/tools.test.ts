@@ -421,6 +421,27 @@ describe("landrace_goto", () => {
     }
   });
 
+  // A closed item's one goto: the Retry of a retro that failed where it rests.
+  it("retries a closed item's failed round at a closed: run stage listing itself retry: only, and nothing else", async () => {
+    const ENTER = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
+    const retro: Workflow = { ...workflow, stages: [...workflow.stages, {
+      id: "retro", step: "retro", closed: "run", goto: [{ stage: "retro", retry: "only" }], on_enter: [ENTER],
+      triggers: [{ when: { "node.closed": "done" } }],
+    }] };
+    const tracker = createFakeTracker([{ number: 4, state: "closed", stateReason: "COMPLETED", labels: ["lr:auto", "lr:stage:retro"] }]);
+    tracker.say(4, `entered${renderMarker({ stage: "retro", kind: "enter", round: 1 })}`);
+    tracker.say(4, `broken${renderMarker({ stage: "retro", kind: "malformed", round: 1 })}`);
+    const tools = createTools([hooked(tracker.registry, loaded(retro))], tracker.ctx, { lock: { root: lockRoot } });
+
+    await expect(tools.goto("4", "spec")).rejects.toThrow(/#4 is closed, so it is retried only at "retro"/);
+    await expect(tools.clear("4")).rejects.toThrow(/#4 is closed, so nothing is written to it/);
+    await expect(tools.reply("4", "hi")).rejects.toThrow(/#4 is closed, so nothing is written to it/);
+    expect(await tools.goto("4", "retro")).toEqual({ item: "4", to: "retro", posted: true });
+    const snapshot = await buildSnapshot({
+      item: "4", source: tracker.registry.source as Source, hooks: tracker.registry.pre, workflow: retro, ctx: { ...tracker.ctx, item: "4" },
+    });
+    expect(snapshot.run?.goto).toBe("retro");
+  });
 });
 
 /*

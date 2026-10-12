@@ -77,6 +77,55 @@ describe("decide, on a closed item", () => {
   });
 });
 
+/*
+ * A person's Retry of a retro that failed: retro lists itself `retry: only`,
+ * and the item, still closed, enters it again for a new round. Its own
+ * failure is what it reruns — never `run.failedStage`, which names only a
+ * stage the item has left.
+ */
+describe("decide, on a closed item's Retry where it rests", () => {
+  const retrying: Stage = { ...RETRO, goto: [{ stage: "retro", retry: "only" }] };
+  const w: Workflow = { ...sweep, stages: stages.map((s) => (s.id === "retro" ? retrying : s)) };
+  const failed = { failedStages: ["retro"], lastOutputValid: false, counters: { retro: 1 }, rounds: { retro: { entered: 1, output: 0 } } };
+
+  it("enters retro again, for the next round, when its round failed", () => {
+    expect(decide(w, at("retro", "done", { ...failed, goto: "retro" })))
+      .toMatchObject({ action: "transition", to: { id: "retro" }, round: 2 });
+  });
+
+  it("rests there with no Retry asked for", () => {
+    expect(decide(w, at("retro", "done", failed))).toMatchObject({ action: "skip", why: expect.stringMatching(/rests at "retro"/) });
+  });
+
+  it("is not taken when nothing failed there, even with another stage's failure on the run", () => {
+    expect(decide(w, at("retro", "done", { ...ran, goto: "retro" }))).toMatchObject({ action: "skip" });
+    expect(decide(w, at("retro", "done", { ...ran, goto: "retro", failedStage: "retro" }))).toMatchObject({ action: "skip" });
+  });
+
+  it("is not taken where retro does not list itself retry: only", () => {
+    expect(decide(sweep, at("retro", "done", { ...failed, goto: "retro" }))).toMatchObject({ action: "skip" });
+    const plain: Workflow = { ...sweep, stages: stages.map((s) => (s.id === "retro" ? { ...RETRO, goto: ["retro"] } : s)) };
+    expect(decide(plain, at("retro", "done", { ...failed, goto: "retro" }))).toMatchObject({ action: "skip" });
+  });
+
+  it("asks its when, a cap", () => {
+    const capped: Workflow = {
+      ...sweep,
+      stages: stages.map((s) => (s.id === "retro" ? { ...RETRO, goto: [{ stage: "retro", retry: "only" as const, when: { "run.counters.retro": { $lt: 1 } } }] } : s)),
+    };
+    expect(decide(capped, at("retro", "done", { ...failed, goto: "retro" }))).toMatchObject({ action: "skip" });
+  });
+
+  // Reopened, the item is an open one: its own stage's failure never named
+  // what failed, so an open item is not sent into a closed: run stage.
+  it("is not taken once the item is reopened", () => {
+    const blocked: Workflow = {
+      ...w, stages: [...w.stages, { id: "blocked", goto: [{ stage: "retro", retry: "only" }], triggers: [{ name: "x", when: { "run.lastOutputValid": false } }] }],
+    };
+    expect(decide(blocked, at("retro", null, { ...failed, goto: "retro" }))).toMatchObject({ action: "transition", to: { id: "blocked" } });
+  });
+});
+
 const node = (id: string, labels: string[], closed: Closed = null): Node => ({
   id, kind: "item", title: id, link: "", closed, priority: null, origin: null, state: { labels },
 });

@@ -1,5 +1,5 @@
 import { CLEAR_KIND, GOTO_KIND, LABELS, RECORD_EFFECT } from "#conventions.js";
-import { assess, checkEligible, compile, gotoDeclined, gotoNotListed, locate, nextRound } from "#core/index.js";
+import { assess, checkEligible, compile, gotoDeclined, gotoNotListed, gotoTargetsOf, locate, nextRound, retriedStage } from "#core/index.js";
 import type { GotoDeps, GotoResult, Node, Snapshot, Stage, Workflow } from "#namespace.js";
 import { withLock } from "#runner/lock.js";
 import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
@@ -66,11 +66,16 @@ export async function sendTo(
  * everything `sendTo` asks before it looks at the target. Shared with a
  * pairing, which enters a stage by the same rule a goto does: a pairing
  * started on a goto target, and a hand-in finished again after a refusal.
+ *
+ * A closed item is refused, but for a goto's own `closedRun`: one at a
+ * `closed: run` stage, where a Retry may rerun its failed round.
  */
-export function gotoOrigin(workflow: Workflow, snapshot: Snapshot, item: string): { from: Stage } | { refused: string } {
+export function gotoOrigin(
+  workflow: Workflow, snapshot: Snapshot, item: string, opts: { closedRun?: boolean } = {},
+): { from: Stage } | { refused: string } {
   const node = snapshot.node as Node | undefined;
   if (!node) return { refused: `#${item} was not found` };
-  if (node.closed !== null) return { refused: `#${item} is closed, so there is nothing to send back` };
+  if (node.closed !== null && opts.closedRun !== true) return { refused: `#${item} is closed, so there is nothing to send back` };
   // decide() turns an ineligible item away before it reads anything else,
   // so a goto written on one would sit unread for as long as it stays so.
   const eligibility = checkEligible(workflow, snapshot);
@@ -84,6 +89,9 @@ export function gotoOrigin(workflow: Workflow, snapshot: Snapshot, item: string)
   }
   if (where.kind === "none") return { refused: `#${item} cannot be placed at any stage of this workflow` };
   const from = where.stage;
+  if (node.closed !== null && from.closed !== "run") {
+    return { refused: `#${item} is closed at "${from.id}", which runs nothing on a closed item, so there is nothing to send back` };
+  }
 
   // `deriveRun` reads a goto record back only against `run.stage`: the
   // stage label's stage, or, where the item has no label, the stage an
@@ -115,9 +123,29 @@ export function gotoOrigin(workflow: Workflow, snapshot: Snapshot, item: string)
   return { from };
 }
 
+/**
+ * Why a closed item at a `closed: run` stage is not retried there, or null:
+ * the one goto a closed item takes is a Retry of the round that failed where
+ * it rests, which that stage lists itself as `retry: only`. Each refusal
+ * names the condition that failed.
+ */
+function closedRetryRefused(from: Stage, snapshot: Snapshot, item: string, target: string | null): string | null {
+  if (target !== null && target !== from.id) {
+    return `#${item} is closed, so it is retried only at "${from.id}", where it rests, and is not sent to "${target}"`;
+  }
+  if (!gotoTargetsOf(from).some((g) => g.stage === from.id && g.retryOnly)) {
+    return `#${item} is closed at "${from.id}", and "${from.id}" does not list itself with retry: only, so it is not retried there`;
+  }
+  if (retriedStage(from, snapshot) === null) {
+    return `#${item} is closed and rests at "${from.id}", where nothing failed, so there is nothing to retry`;
+  }
+  return null;
+}
+
 async function sendAt(deps: GotoDeps, item: string, target: string | null, clear: boolean): Promise<GotoResult> {
   const snapshot = await buildSnapshot({ item, source: deps.source, hooks: deps.pre, workflow: deps.workflow, ctx: { ...deps.ctx, item } });
-  const origin = gotoOrigin(deps.workflow, snapshot, item);
+  // A clearance waives a screener no closed item's Retry is stopped by here.
+  const origin = gotoOrigin(deps.workflow, snapshot, item, { closedRun: !clear });
   if ("refused" in origin) return origin;
   const { from } = origin;
 
@@ -142,7 +170,12 @@ async function sendAt(deps: GotoDeps, item: string, target: string | null, clear
     return { refused: `#${item} was not stopped by a security check, so there is nothing to clear` };
   }
 
-  const to = target ?? snapshot.run?.failedStage ?? null;
+  if ((snapshot.node as Node).closed !== null) {
+    const refused = closedRetryRefused(from, snapshot, item, target);
+    if (refused) return { refused };
+  }
+
+  const to = target ?? retriedStage(from, snapshot);
   if (to === null) return { refused: `nothing has failed on #${item}, so there is nothing to retry` };
   const refused = gotoNotListed(from, to) ?? gotoDeclined(from, snapshot, to);
   if (refused) return { refused: `#${item}: ${refused}` };

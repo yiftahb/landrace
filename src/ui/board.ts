@@ -1,14 +1,14 @@
 import {
   compareIds, compareWork, edgeDirection, GOTO_TRIGGER, isOpenItem, isItemId, ITEM_KIND, labelsOf, RELATED_FACT_WORDS, RELATED_FACTS, RELATIONS, stageFromLabels,
 } from "#conventions.js";
-import { claimItems, eligibilityOfNode, gotoTargetsOf, writesNothing } from "#core/index.js";
+import { claimItems, eligibilityOfNode, gotoTargetsOf, locateNode, writesNothing } from "#core/index.js";
 import { BLOCKED_NOTE, engineNoteOf, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { admitRoute, haltOf, readRoute, writeRoute } from "#runner/route.js";
 import { turnedAway } from "#runner/tick.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
-  Board, BoardPlace, BoardRelated, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, Ownership, Pairing,
+  Board, BoardPlace, BoardRelated, BoardRow, BoardView, ConversationLine, Entry, Graph, Held, LandraceEvent, Lane, Node, NodeLocation, Ownership, Pairing,
   PanelPaths, ReadRoute, Relationship, Running, Stage, StatusRow, Workflow, WorkspaceListing,
 } from "#namespace.js";
 
@@ -323,6 +323,28 @@ export function boardView(input: {
       return "labels" in route ? [{ workflow: w.id, name: w.workflow.name, path: admitPath(id, w.id), labels: route.labels }] : [];
     });
 
+  /*
+   * A closed item's one write: the Retry of a round that failed where it
+   * rests, offered where the `closed: run` workflow claiming it places it at a
+   * `closed: run` stage that lists itself `retry: only`. The board has only
+   * labels, so it cannot tell a failed round from one that ran: `sendTo`
+   * re-reads the item, and refuses a Retry where nothing failed.
+   */
+  const closedRetry = (node: Node): string | null => {
+    const owner = claims.closed.get(node.id);
+    const workflow = owner === undefined ? undefined : workflows.get(owner);
+    if (!workflow || writesNothing(workflow)) return null;
+    let where: NodeLocation;
+    try {
+      where = locateNode(workflow, node);
+    } catch {
+      return null;
+    }
+    if (where.kind !== "at" || where.stage.closed !== "run") return null;
+    const { id } = where.stage;
+    return gotoTargetsOf(where.stage).some((g) => g.stage === id && g.retryOnly) ? retryPath(node.id) : null;
+  };
+
   const rowOf = (node: Node): BoardRow => {
     const link = safeUrl(node.link);
     const base: BoardRow = {
@@ -354,7 +376,9 @@ export function boardView(input: {
     // stale event claims: it never asks for you, and never opens a parent —
     // and its note says it is closed, not "blocked: needs a human" from a
     // label nobody took off.
-    if (node.closed !== null) return { ...item, badge: "discharged", note: node.closed === "done" ? "closed" : "dropped" };
+    if (node.closed !== null) {
+      return { ...item, badge: "discharged", note: node.closed === "done" ? "closed" : "dropped", retry: closedRetry(node) };
+    }
 
     // Two workflows claiming it, or two trackers reporting its id, is the
     // news, said over whatever it is doing: the tick stops a run for exactly
@@ -521,8 +545,9 @@ const unlisted = (item: string): Ownership => ({ refused: `#${item} has not been
  * whose an item is was settled by the claims that listing came with. Only
  * some of what the page routes by it is judged again where it lands: a
  * Retry, a Clear or a Go to, and a pairing's start and hand-in, re-read the
- * item through `gotoOrigin`, which refuses one closed, turned away by the
- * workflow it was routed to, or unplaceable. A reply, an Ask, a Resolve and
+ * item through `gotoOrigin`, which refuses one closed — but for a Retry of a
+ * round that failed where it rests at a `closed: run` stage — turned away by
+ * the workflow it was routed to, or unplaceable. A reply, an Ask, a Resolve and
  * a release go to that workflow on the listing's word alone.
  */
 export function createBoard(opts: {
@@ -602,9 +627,9 @@ export function createBoard(opts: {
       for (const id of paired.keys()) if (!ids.has(id)) paired.delete(id);
       for (const [id, released] of stepped) if (released) stepped.delete(id);
     },
-    ownerOf(item): Ownership {
+    ownerOf(item, ownerOpts = {}): Ownership {
       if (!listing) return unlisted(item);
-      return writeRoute(listing, item) ?? { refused: `#${item} is not an item the last tick listed` };
+      return writeRoute(listing, item, ownerOpts) ?? { refused: `#${item} is not an item the last tick listed` };
     },
     readerOf(item): ReadRoute {
       if (!listing) return unlisted(item);

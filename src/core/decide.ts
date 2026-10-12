@@ -2,7 +2,7 @@ import { GOTO_TRIGGER } from "#conventions.js";
 import { assess } from "#core/assess.js";
 import { checkEligible } from "#core/eligible.js";
 import { nextRound as roundOf } from "#core/derive.js";
-import { gotoDeclined, gotoNotListed } from "#core/goto.js";
+import { gotoDeclined, gotoNotListed, gotoTargetsOf } from "#core/goto.js";
 import { CLOSED_WHY } from "#core/closed.js";
 import { cannotPlace, locate, UNPLACED } from "#core/locate.js";
 import { compile } from "#core/predicate.js";
@@ -149,6 +149,13 @@ export function decide(w: Workflow, s: Snapshot): Decision {
   const subState = assess(s, stage);
 
   if (closed && stage.closed === "run" && subState !== "pending") {
+    // But for a person's Retry of the round that failed here, which the stage
+    // lists itself as `retry: only`: entered again, still closed, for a new
+    // round. No other goto moves a closed item, and none is read here.
+    const retry = gotoTargetsOf(stage).some((g) => g.stage === stage.id && g.retryOnly);
+    if (retry && run.goto === stage.id && gotoDeclined(stage, s, stage.id) === null) {
+      return { action: "transition", stage, subState, to: stage, trigger: GOTO_TRIGGER, round: nextRound(stage.id) };
+    }
     return { action: "skip", stage, subState, why: `${CLOSED_WHY}, and rests at "${stage.id}"` };
   }
   if (closed && stage.closed !== "run") {

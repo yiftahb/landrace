@@ -307,7 +307,9 @@ export interface Trigger {
 /** An entry in a stage's `goto`: a stage it may always send an item to, or one it may while `when` holds. */
 /**
  * `retry: only` declares a target Retry's alone: taken only while it is what
- * failed, `run.failedStage`, and never offered under "Go to step…".
+ * failed, and never offered under "Go to step…". What failed is
+ * `run.failedStage` on an open item; on a closed one, the `closed: run` stage
+ * it rests at, when that stage's own round failed (`retriedStage`).
  */
 export type GotoEntry = string | { stage: string; when?: Condition | undefined; retry?: "only" | undefined };
 
@@ -2836,7 +2838,8 @@ export interface BoardRow {
   stale: boolean;
   /**
    * Where the page's Retry posts, for an item that is blocked or screened
-   * right now; null everywhere else. Built by the server from a checked id,
+   * right now, or a closed item resting at a `closed: run` stage that lists
+   * itself `retry: only`; null everywhere else. Built by the server from a checked id,
    * so the page never puts a URL together itself. A Retry is now a goto with
    * no step named — the stage that last failed.
    */
@@ -3054,8 +3057,11 @@ export interface Board {
   observe(e: LandraceEvent): void;
   /** What the page is shown of a listing: every source's graph, which workflows read each, and who owns what in them. */
   list(listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">): void;
-  /** For a write, by the last listing: never a guess at an item two workflows claim, two sources report, or none claims. */
-  ownerOf(item: string): Ownership;
+  /**
+   * For a write, by the last listing: never a guess at an item two workflows claim, two sources report, or none claims.
+   * `closed` for a goto: a closed item goes to the one `closed: run` workflow that claims it.
+   */
+  ownerOf(item: string, opts?: { closed?: boolean }): Ownership;
   /**
    * For a read, by the last listing: an owned item through its owner, any
    * other item through the one source that lists it, and an id no listing

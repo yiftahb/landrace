@@ -860,3 +860,22 @@ describeLoopback("the page's routes follow the item's workflow", () => {
     expect(calls).toEqual([]);
   });
 });
+
+// A closed item's Retry or Go to is routed to its `closed: run` workflow, for
+// `sendTo` to judge; a Clear never reaches a closed item.
+describe("gotoByClaim, for a closed item", () => {
+  it("asks for its owner as a goto's for a Retry or a Go to, and never for a Clear", async () => {
+    const asked: unknown[] = [];
+    const sent: unknown[] = [];
+    const goto = gotoByClaim(
+      (item, opts) => { asked.push([item, opts?.closed === true]); return opts?.closed === true ? { workflow: "main" } : { refused: `#${item} is closed` }; },
+      new Map([["main", { send: async (item, target) => { sent.push([item, target]); return { to: "retro" }; } }]]),
+    );
+    if (!goto) throw new Error("main can write a record");
+    expect(await goto.send("7", null)).toEqual({ to: "retro" });
+    expect(await goto.send("7", "retro")).toEqual({ to: "retro" });
+    expect(await goto.send("7", null, { clear: true })).toEqual({ refused: "#7 is closed" });
+    expect(asked).toEqual([["7", true], ["7", true], ["7", false]]);
+    expect(sent).toEqual([["7", null], ["7", "retro"]]);
+  });
+});

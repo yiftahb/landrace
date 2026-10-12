@@ -62,9 +62,16 @@ const readingAny = (sourceOf: ReadonlyMap<string, number>, indices: readonly num
  * to it. Null when the listing does not show it at all, which each caller
  * words by what its listing was.
  */
-export function writeRoute(listing: Pick<WorkspaceListing, "graphs" | "claims">, item: string): Ownership | null {
+export function writeRoute(
+  listing: Pick<WorkspaceListing, "graphs" | "claims">, item: string, opts: { closed?: boolean } = {},
+): Ownership | null {
   const open = ownership(listing.claims, item);
   if (open) return open;
+  // A goto alone may reach a closed item, and only through the one `closed:
+  // run` workflow that claims it: `sendTo` then takes nothing but a Retry of
+  // a round that failed where the item rests.
+  const closedOwner = opts.closed === true ? listing.claims.closed.get(item) : undefined;
+  if (closedOwner !== undefined) return { workflow: closedOwner };
   return listedIn(listing.graphs, item).length ? { refused: `#${item} is closed, so nothing is written to it` } : null;
 }
 
@@ -214,9 +221,9 @@ export function displayOf(workflows: readonly ListedWorkflow[]): (listing: Works
  * and while any source could not list: an item the others list as one
  * workflow's may be a clash the missing source would report.
  */
-export function writeOwnerOf(fresh: WorkspaceListing | undefined, item: string): Ownership {
+export function writeOwnerOf(fresh: WorkspaceListing | undefined, item: string, opts: { closed?: boolean } = {}): Ownership {
   if (!fresh) return { refused: `#${item} has not been listed yet; act on it after the first tick` };
   const failures = listingFailures(fresh);
   if (failures.length) return { refused: `#${item} is not written to until every source lists again: ${failures.join("; ")}` };
-  return writeRoute(fresh, item) ?? { refused: `#${item} is not an item the last tick listed` };
+  return writeRoute(fresh, item, opts) ?? { refused: `#${item} is not an item the last tick listed` };
 }

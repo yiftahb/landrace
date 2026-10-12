@@ -11,7 +11,7 @@ export { expandEffectFields, fillTemplate, planEffects, stageBranch } from "#cor
 export { planNodesClose, staleClosure } from "#core/children.js";
 export { reconcile } from "#core/reconcile.js";
 export { deriveRel } from "#core/rel.js";
-export { gotoDeclined, gotoNotListed, gotoTargetsOf } from "#core/goto.js";
+export { gotoDeclined, gotoNotListed, gotoTargetsOf, retriedStage } from "#core/goto.js";
 export { claimItems } from "#core/claims.js";
 export { CLOSED_WHY, closedIdle } from "#core/closed.js";
 export { isNoteField, noteFields, renderNote } from "#core/note.js";

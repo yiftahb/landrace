@@ -248,9 +248,12 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
 
   const unlisted = (item: string): string => `#${item} is not an item any source lists`;
 
-  /** For a write to its workflow state: the hands of the one workflow that claims `item`, judged while every source lists. */
-  const owner = async (item: string): Promise<ToolHands> => {
-    const route = writeRoute(whole(await about(item)), item) ?? { refused: unlisted(item) };
+  /**
+   * For a write to its workflow state: the hands of the one workflow that claims `item`, judged while every source lists.
+   * `closed` for a goto, which reaches a closed item through the `closed: run` workflow that claims it.
+   */
+  const owner = async (item: string, ownerOpts: { closed?: boolean } = {}): Promise<ToolHands> => {
+    const route = writeRoute(whole(await about(item)), item, ownerOpts) ?? { refused: unlisted(item) };
     if ("refused" in route) throw new Refusal(route.refused);
     return ours(item, route.workflow);
   };
@@ -581,7 +584,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       // The claiming workflow is what says where a stage may send an item,
       // and its deps carry the lock this process was told the tick takes, as
       // the conversation's do: a goto has to wait on the tick that would take it.
-      const r = await sendTo((await owner(item)).deps, item, stage);
+      const r = await sendTo((await owner(item, { closed: true })).deps, item, stage);
       if ("refused" in r) throw new Error(r.refused);
       wakeLoop();
       return { item, to: r.to, posted: true };

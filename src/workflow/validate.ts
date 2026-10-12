@@ -33,7 +33,7 @@ import { gotoTargetsOf } from "#core/goto.js";
 import { fillTemplate, isNoteField, noteFields, pathsNoNodeCarries } from "#core/index.js";
 import { identityOf, placedByState } from "#core/locate.js";
 import { assertAllowedOperators, compile, pathsIn } from "#core/predicate.js";
-import type { Condition, Effect, EligibilityRule, LoadedWorkflow, PostHook, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
+import type { Condition, Effect, EligibilityRule, GotoTarget, LoadedWorkflow, PostHook, Problem, Snapshot, Stage, Step, Workflow, Workspace } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { routeEffects } from "#runner/step.js";
 
@@ -526,10 +526,20 @@ function closedRunProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
   }
   // A goto takes no trigger, so it would send an open item there, to run the
   // step and rest with no way out: dead-end and shape-edge are waived here.
+  // Bar one: the stage's own Retry, which reruns a closed item's failed round
+  // where it rests, and is never taken on an open item (`retriedStage`).
   const closing = new Set(w.stages.filter((s) => s.closed === "run").map((s) => s.id));
   for (const stage of w.stages) {
     for (const g of gotoTargetsOf(stage)) {
-      if (!closing.has(g.stage)) continue;
+      if (!closing.has(g.stage) || closedRetry(stage, g)) continue;
+      if (g.retryOnly) {
+        problems.push({
+          rule: "closed-run",
+          message: `stage "${stage.id}" lists "${g.stage}" with retry: only, but only "${g.stage}" itself may: ` +
+            `a closed item is retried only where it rests, and from "${stage.id}" a Retry would send an open item there`,
+        });
+        continue;
+      }
       problems.push({
         rule: "closed-run",
         message: `stage "${stage.id}" lists "${g.stage}" in its goto, but "${g.stage}" runs on a closed item, ` +
@@ -548,6 +558,9 @@ function closedRunProblems(w: Workflow, steps: Map<string, Step>): Problem[] {
   }
   return problems;
 }
+
+/** A `closed: run` stage's `retry: only` entry naming itself: a closed item's Retry where it rests. */
+const closedRetry = (stage: Stage, g: GotoTarget): boolean => stage.closed === "run" && g.retryOnly && g.stage === stage.id;
 
 /**
  * `merge-placement`: a `pull.merge` is planned by a stage's own `on_enter`
@@ -1187,6 +1200,9 @@ function unboundedAdjacencyOf(w: Workflow): Map<string, string[]> {
     // A goto is an edge like a trigger's, and its cap is its `when`.
     for (const g of gotoTargetsOf(stage)) {
       if (g.when !== null && boundsACounter(g.when)) continue;
+      // A closed item's Retry where it rests: only a person writes it, once
+      // per failed round, and nothing the engine routes on can (closed-run).
+      if (closedRetry(stage, g)) continue;
       adjacency.set(stage.id, [...(adjacency.get(stage.id) ?? []), g.stage]);
     }
   }

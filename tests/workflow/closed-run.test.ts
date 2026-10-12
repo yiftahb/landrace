@@ -114,6 +114,35 @@ describe("closed-run", () => {
     ]);
   });
 
+  // Retry on a closed item reruns the round that failed where it rests, so
+  // only the stage itself may list itself, and only as Retry's.
+  it("passes a retry: only entry on the stage naming itself, and still refuses it without retry: only", () => {
+    expect(validate(flow(retro({ goto: [{ stage: "retro", retry: "only" }] })).w, flow(retro()).steps)).toEqual([]);
+    const capped = retro({ goto: [{ stage: "retro", retry: "only", when: { "run.counters.retro": { $lt: 3 } } }] });
+    expect(validate(flow(capped).w, flow(capped).steps)).toEqual([]);
+    expect(closedRun(flow(retro({ goto: [{ stage: "retro" }] })))).toEqual([
+      expect.stringMatching(/stage "retro" lists "retro" in its goto, but "retro" runs on a closed item, which only a trigger reading node.closed may send there/),
+    ]);
+    expect(closedRun(flow(retro({ goto: ["retro"] })))).toEqual([expect.stringMatching(/stage "retro" lists "retro" in its goto/)]);
+  });
+
+  it("refuses a retry: only entry naming it from another stage, which an open item could take", () => {
+    const sent = flow(retro());
+    const work = sent.w.stages[0];
+    if (!work) throw new Error("no work stage");
+    work.goto = [{ stage: "retro", retry: "only" }];
+    expect(closedRun(sent)).toEqual([
+      expect.stringMatching(/stage "work" lists "retro" with retry: only, but only "retro" itself may: .*an open item/),
+    ]);
+  });
+
+  it("refuses a route goto into it from its own step", () => {
+    const self = flow(retro({ goto: [{ stage: "retro", retry: "only" }] }), {
+      output: { discriminator: "kind", shapes: { learned: {} }, routes: [{ when: { kind: "learned" }, goto: "retro" }] },
+    });
+    expect(closedRun(self)).toEqual([expect.stringMatching(/step retro's route for \{"kind":"learned"\} sends items to "retro", but "retro" runs on a closed item/)]);
+  });
+
   it("leaves a stage without the key alone", () => {
     const plain = retro({ closed: undefined });
     expect(rules(flow(plain))).not.toContain("closed-run");
