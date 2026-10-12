@@ -165,7 +165,7 @@ describe("the GitHub source", () => {
     gh.openPull({ number: 21, head: "landrace/7-retro", headSha: "b", merged: false, threads: [] });
     const variants = { ...ctx(gh), config: { ...ctx(gh).config, branchVariants: ["retro"] } };
     for (const g of [await sourceOf(gh).read("7", variants), await sourceOf(gh).list(variants)]) {
-      expect(g.relationships.filter((r) => r.type === "implements").map((r) => r.from).sort()).toEqual(["pr-20", "pr-21"]);
+      expect(g.relationships.filter((r) => r.to === "7").map((r) => [r.from, r.type]).sort()).toEqual([["pr-20", "implements"], ["pr-21", "follows-up"]]);
     }
     expect(operations(gh, "LandraceItem").map((q) => q.variables.head)).toEqual(["landrace/7", "landrace/7-retro"]);
   });

@@ -1693,13 +1693,15 @@ describe("a Not admitted row's Start work", () => {
 /*
  * #158: a retro's pull request is opened from a variant of the item branch,
  * landrace/7-retro. The forge ties it to 7 by the variants the configuration
- * names, and the board, nesting by `implements`, lists it under 7.
+ * names, as `follows-up`, and the board, nesting by every relationship the
+ * source declares singular as `start` hands it, lists it under 7.
  */
 describe("boardView: a pull request on a variant of the item branch", () => {
   it("is listed under its item", async () => {
     const state = createExternalState({ items: [{ id: "7", labels: ["go"] }] });
     const retro = state.openPull("7", { branch: "landrace/7-retro" });
     const ctx = { config: { branchVariants: ["retro"] }, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
-    expect(shape(view(await state.source.list(ctx)).rows)).toEqual([["7", [retro]]]);
+    const nest = new Set(state.source.relations.filter((r) => r.singular).map((r) => r.type));
+    expect(shape(view(await state.source.list(ctx), { nest }).rows)).toEqual([["7", [retro]]]);
   });
 });

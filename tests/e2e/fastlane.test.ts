@@ -807,16 +807,44 @@ describe("fastlane, end to end", () => {
 
   /*
    * Reopened at the retro, the item has nothing left to run there: it is a
-   * person's, at `stuck`.
+   * person's, at `stuck`, and stays there: its pull request merged before
+   * the retro, which is no person merging it at stuck.
    */
-  it("16d. leaves an item reopened at the retro stuck for a person", async () => {
-    const { state, run } = road({ during: fixRound });
+  it.each([["learned", ANSWERS.retro], ["nothing", json({ kind: "nothing", reason: "The finding was this item's own." })]])(
+    "16d. leaves an item reopened at the retro, which answered %s, stuck for a person",
+    async (_, retro) => {
+      const { state, run } = road({ during: fixRound, ...(retro === undefined ? {} : { answers: { retro } }) });
+      await run.converge();
+      await run.converge();
+      expect(state.stage("1")).toBe("retro");
+      state.item("1").closed = null;
+      expect((await run.converge()).trail).toEqual(["stuck"]);
+      expect((await run.converge()).trail).toEqual([]);
+      expect(state.item("1").closed).toBeNull();
+      expect(run.counts().retro).toBe(1);
+    },
+  );
+
+  /*
+   * The retro's pull request is the item's, but not its implementation: the
+   * gates that read the item's pull request never count it. Reopened and sent
+   * back to review with it still open — red, threads on it — the item's own
+   * merged pull request is all review reads, and it is done. Counted, the
+   * merge read "head moved" for ever, a paid review each time, up to stuck.
+   */
+  it("16e. sends an item reopened at the retro, its retro pull request open, from review to done", async () => {
+    const { state, run, goto } = road({ during: fixRound });
     await run.converge();
     await run.converge();
-    expect(state.stage("1")).toBe("retro");
+    Object.assign(state.pull("pr-2"), { checks: "failure", failed: [RED], openThreads: 1, awaitingFix: 1, conflicts: true });
     state.item("1").closed = null;
     expect((await run.converge()).trail).toEqual(["stuck"]);
-    expect(run.counts().retro).toBe(1);
+    expect(await goto("code-review")).toEqual({ to: "code-review" });
+    expect((await run.converge()).trail).toEqual(["code-review", "done"]);
+    expect(run.counts()).toMatchObject({ "code-review": 3, retro: 1 });
+    expect(state.pull("pr-2")).toMatchObject({ branch: "landrace/1-retro", merged: false, closed: null });
+    expect(state.item("1").closed).toBe("done");
+    expect((await run.converge()).trail).toEqual([]);
   });
 
   /*

@@ -69,6 +69,7 @@ const RELATION_WORDS: ReadonlyMap<string, Readonly<Record<"in" | "out", string>>
   [RELATIONS.blockedBy, { out: "blocked by", in: "blocks" }],
   [RELATIONS.childOf, { out: "child of", in: "parent of" }],
   [RELATIONS.implements, { out: "implements", in: "implemented by" }],
+  [RELATIONS.followsUp, { out: "follows up", in: "followed up by" }],
   [RELATIONS.documents, { out: "documents", in: "documented by" }],
 ]);
 

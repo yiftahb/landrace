@@ -577,6 +577,18 @@ export function itemsNamedBy(pull: Pick<PullRecord, "branch" | "items">, known: 
   return named;
 }
 
+/**
+ * How a pull request tied to `item` relates to it: `follows-up` from a
+ * variant of the item branch — `landrace/7-retro`, for 7 — and `implements`
+ * from anything else. A workflow's gates read the item's work as
+ * `rel.implements`, and a retro's pull request, still open on an item
+ * reopened after it, is not that work.
+ */
+const relationTo = (pull: Pick<PullRecord, "branch">, item: string, config: RuntimeContext["config"]): string =>
+  (config.branchVariants ?? []).some((name) => prBranch(item, variantBranch(itemBranchOf(config), name)) === pull.branch)
+    ? RELATIONS.followsUp
+    : RELATIONS.implements;
+
 /** The pull request number a `pr-{n}` node id stands for. */
 const pullNumber = (id: string): number => {
   const n = /^pr-([1-9][0-9]*)$/.exec(id)?.[1];
@@ -910,7 +922,7 @@ export abstract class BaseForge {
   }
 
   relations(): RelationDecl[] {
-    return [{ type: RELATIONS.implements, singular: true }];
+    return [{ type: RELATIONS.implements, singular: true }, { type: RELATIONS.followsUp, singular: true }];
   }
 
   /** Exactly what `observe` puts in the snapshot. */
@@ -942,7 +954,7 @@ export abstract class BaseForge {
       if (only === undefined || more.length > 0 || !items.has(only)) continue;
       const node = this.node(pull);
       nodes.push(node);
-      relationships.push({ from: node.id, to: only, type: RELATIONS.implements });
+      relationships.push({ from: node.id, to: only, type: relationTo(pull, only, ctx.config) });
     }
     return { nodes, relationships };
   }
@@ -984,7 +996,7 @@ export abstract class BaseForge {
         const ci = checkCounts(open ? await this.checks(pull, ctx) : "none");
         const node = this.node(pull, threads, { ...ci, reviewPending: open ? await this.reviewPending(pull, ctx) : 0 });
         nodes.set(pull.number, node);
-        relationships.push({ from: node.id, to: item, type: RELATIONS.implements });
+        relationships.push({ from: node.id, to: item, type: relationTo(pull, item, ctx.config) });
       }
     }
     return { nodes: [...nodes.values()], relationships };
@@ -1216,10 +1228,13 @@ export abstract class BaseForge {
 
   /**
    * `threads`, what is left to address on the item's open pull requests,
-   * `diff`, what they change, and `ci`, their checks and what failed.
+   * `diff`, what they change, and `ci`, their checks and what failed. Not
+   * one that follows the item up from a variant of its branch: a retro's is
+   * not the work a review or a fix round is briefed on.
    */
   briefs(): BriefTable {
-    const open = async (ctx: HookContext): Promise<PullRecord[]> => (await this.pullsNaming(ctx.item, ctx)).filter(isOpen);
+    const open = async (ctx: HookContext): Promise<PullRecord[]> => (await this.pullsNaming(ctx.item, ctx))
+      .filter((pull) => isOpen(pull) && relationTo(pull, ctx.item, ctx.config) === RELATIONS.implements);
     return {
       threads: async (ctx) => {
         const pulls = await open(ctx);

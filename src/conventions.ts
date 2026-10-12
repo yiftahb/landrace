@@ -168,7 +168,17 @@ export const DOCUMENT_KIND = "document";
  * One item waits on another only where a workflow routes on its
  * `rel.blocked-by.*` counts, and says so in a stage's `note`.
  */
-export const RELATIONS = { childOf: "child-of", implements: "implements", documents: "documents", blockedBy: "blocked-by" } as const;
+/*
+ * `followsUp` is a pull request from a variant of the item branch —
+ * `landrace/{item}-retro` — to its item: the item's, and not its
+ * implementation. Counted under `implements`, an item reopened with its
+ * retro's pull request open read that one as unmerged, red and threaded in
+ * every gate that reads the item's own, and looped through paid reviews to
+ * `stuck` (#158).
+ */
+export const RELATIONS = {
+  childOf: "child-of", implements: "implements", documents: "documents", blockedBy: "blocked-by", followsUp: "follows-up",
+} as const;
 
 /**
  * Which way an edge points from `id`, or null when it does not touch it: a
@@ -625,15 +635,17 @@ export function hasPullFrom(graph: Graph | undefined, item: string | undefined, 
 }
 
 /**
- * The pull requests from this branch implementing this item, open or merged,
- * in the graph the engine read — what `pull.open` asks whether there is one
- * of, `pull.merge` merges the open one of, and `pull.close` closes the open
- * ones of. `type` is the effect asking, named when there is no graph to ask.
+ * The pull requests from this branch implementing this item, or following it
+ * up from a variant of its branch, open or merged, in the graph the engine
+ * read — what `pull.open` asks whether there is one of, `pull.merge` merges
+ * the open one of, and `pull.close` closes the open ones of. The branch alone
+ * tells them apart. `type` is the effect asking, named when there is no graph
+ * to ask.
  */
 export function pullsFrom(graph: Graph | undefined, item: string | undefined, branch: string, type: string): Node[] {
   if (!graph) throw new Error(`a ${type} effect cannot be checked: the snapshot has no graph`);
   const implementing = new Set(graph.relationships
-    .filter((r) => r.type === RELATIONS.implements && r.to === item)
+    .filter((r) => (r.type === RELATIONS.implements || r.type === RELATIONS.followsUp) && r.to === item)
     .map((r) => r.from));
   return graph.nodes.filter((n) =>
     implementing.has(n.id) && n.kind === PULL_REQUEST_KIND && n.state.branch === branch && n.closed !== "dropped");

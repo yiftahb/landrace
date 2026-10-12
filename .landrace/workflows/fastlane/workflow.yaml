@@ -399,23 +399,28 @@ stages:
           "rel.implements.in.sum.awaitingFix": 0
           "rel.implements.in.sum.openThreads": 0
       # The natural answer to stuck: a person merges it. Triage's trigger at
-      # stuck is this one's negation.
+      # stuck is this one's negation. Not once the retro ran: its pull request
+      # merged before, and an item reopened after it is held for the person
+      # who reopened it, not closed again on the next tick.
       - name: the pull request was merged while it was stuck
         when:
           "run.stage": stuck
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": 0
+          "run.counters.retro": { $lt: 1 }
       # And to a merge the kit refused: a protected path is a person's to
       # merge, and once they have, nothing is left. Triage's trigger at
       # blocked is this one's negation. No `run.lastOutputValid: null`: at the
       # halt a refusal is already taken, and after a Retry the forge refused
       # again it reads false here, which would hold a merged item for good.
+      # Not once the retro ran, as at stuck.
       - name: the pull request was merged while it was blocked
         when:
           "run.stage": blocked
           "rel.implements.in.total": { $gt: 0 }
           "rel.implements.in.not.merged": 0
+          "run.counters.retro": { $lt: 1 }
     # The close first, as merge merges first: an outage on it leaves the item
     # where it was, and the next tick closes it. After the status, it left an
     # item at done and open, with nothing left to do that would close it.
@@ -641,7 +646,8 @@ stages:
     step: steps/triage.md
     requires: { "run.lastHuman": { $ne: null } }
     triggers:
-      # Not once its pull request merged: done takes that, whoever wrote last.
+      # Not once its pull request merged: done takes that, whoever wrote last
+      # — unless the retro ran, when done does not.
       - name: you replied where it was stuck
         when:
           "run.stage": stuck
@@ -649,6 +655,7 @@ stages:
           $or:
             - { "rel.implements.in.not.merged": { $gt: 0 } }
             - { "rel.implements.in.total": 0 }
+            - { "run.counters.retro": { $gte: 1 } }
       # Not once its pull request merged: done takes that, as at stuck.
       - name: you replied to a halt
         when:
@@ -657,6 +664,7 @@ stages:
           $or:
             - { "rel.implements.in.not.merged": { $gt: 0 } }
             - { "rel.implements.in.total": 0 }
+            - { "run.counters.retro": { $gte: 1 } }
       - name: you replied to a security refusal
         when: { "run.stage": screened, "run.lastEvent.actor": human }
     on_enter:
