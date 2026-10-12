@@ -8,6 +8,7 @@
  * could read differently from how it reads here.
  */
 import type { RuntimeContext } from "landrace/hooks";
+import { httpError } from "landrace/kit";
 
 export const DEFAULT_BASE_URL = "https://gitlab.com";
 
@@ -60,11 +61,8 @@ export function createClient(opts: GitLabClientOptions) {
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    if (!res.ok) {
-      const text = await res.text();
-      // The body rides too, for a caller that wants GitLab's own `message`.
-      throw Object.assign(new Error(`${method} ${path} → ${res.status} ${text}`), { status: res.status, body: text });
-    }
+    // The body rides too, for a caller that wants GitLab's own `message`.
+    if (!res.ok) throw httpError(method, path, res.status, await res.text());
     if (as === "text") return (await res.text()) as T;
     return res.status === 204 ? (null as T) : ((await res.json()) as T);
   }

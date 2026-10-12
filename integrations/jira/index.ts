@@ -13,5 +13,6 @@
  * Configured by the `jiraBaseUrl`, `jiraEmail` and `jiraToken` secrets, and
  * scoped to one developer's issues by the optional `jiraAssignee`.
  */
+export { createClient } from "./client.js";
 export { JiraField, type JiraFieldOptions } from "./field.js";
 export { Jira, type JiraOptions } from "./tracker.js";

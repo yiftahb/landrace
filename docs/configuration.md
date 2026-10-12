@@ -28,7 +28,7 @@ Every key, with its default:
 | `security.model` | none | The model the screening run asks for. Absent, the screening executor's own default decides |
 | `log.redact` | `[]` | Names of secrets whose values are cut from every log line and event. Each must name a declared secret whose value is 8 characters or longer, or `landrace start` refuses. A secret not named here is not redacted from the log |
 | `secrets.*` | `{}` | Values handed to hooks, usually `$VAR` references resolved from [`.env`](#env) |
-| `workflows` | by each workflow's `name`, then folder id | The order the MCP lists workflows in. The board's sidebar is always sorted by name. Display only. When given, it must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
+| `workflows` | by each workflow's `name`, then folder id, by code point | The order the MCP lists workflows in, and the board's sidebar and `/board` tabs show them in. Display only. When given, it must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
 | `vars.*` | `{}` | Values substituted into the workflow files — see [vars](#vars) |
 | `notify.on` | none | The events to tell a person about. There is one: `needs-you` |
 | `notify.via` | none | Notifier ids, each registered by a hook with `defineNotifier`. The shipped one is `slack` |

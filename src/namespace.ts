@@ -2989,7 +2989,7 @@ export interface BoardView {
   folder: string;
   /** The absolute path of the repository checkout landrace is running in. */
   workspace: string;
-  /** The sidebar, by name case-folded, then id. */
+  /** The sidebar, in the workspace's order: landrace.yaml's `workflows`, else by name, then id. */
   workflows: BoardWorkflow[];
   /** Items needing the person, across every workflow, each once — the home page's count, the tab title's. Context rows never count. */
   needsYou: number;

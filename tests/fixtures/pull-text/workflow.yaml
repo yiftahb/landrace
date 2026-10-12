@@ -1,0 +1,26 @@
+version: 1
+name: pull-text
+description: test
+
+# A route that opens its pull request with a title and a description of its
+# own, over the forge's `pull.title` and `pull.description`
+# (tests/testing/harness.test.ts).
+stages:
+  - id: retro
+    entry: true
+    step: steps/retro.md
+    branch: "landrace/{item}"
+    triggers:
+      - name: fresh
+        when: { "run.stage": null }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Retro, round {round}." }
+      - { type: tracker.status, value: retro }
+
+  - id: done
+    terminal: true
+    triggers:
+      - name: proposed
+        when: { "run.stage": retro, "rel.implements.in.total": { $gt: 0 } }
+    on_enter:
+      - { type: tracker.status, value: done }

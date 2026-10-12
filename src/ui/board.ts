@@ -527,12 +527,9 @@ export function boardView(input: {
 
   const needing = (page: string | null): number =>
     rows.filter((r) => r.page === page && r.lane === "needs-you").reduce((n, r) => n + countedIn(r).length, 0);
-  const sidebar = input.workflows
-    .map((w) => ({ id: w.id, name: w.workflow.name, needsYou: needing(w.id) }))
-    .sort((a, b) => {
-      const x = a.name.toLowerCase(), y = b.name.toLowerCase();
-      return x < y ? -1 : x > y ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-    });
+  // Never re-sorted: `loadWorkspace` already ordered these, by `workflows` in
+  // landrace.yaml or by name, and the MCP lists them in that same order.
+  const sidebar = input.workflows.map((w) => ({ id: w.id, name: w.workflow.name, needsYou: needing(w.id) }));
   return {
     generatedAt: input.now, rows, nextTickAt: input.nextTickAt,
     folder: input.folder, workspace: input.workspace, workflows: sidebar, needsYou: needing(null), listed: input.listed,

@@ -6,7 +6,7 @@
  * goes out until this token's own login is known.
  */
 import type { RuntimeContext } from "landrace/hooks";
-import { EffectRefused } from "landrace/kit";
+import { EffectRefused, httpError } from "landrace/kit";
 
 /**
  * The most a GitHub comment body may carry: 65,536 characters, for an issue
@@ -206,10 +206,7 @@ export function createClient(opts: GitHubOptions) {
     // 404?" answered by searching the message finds the *path* on an item
     // numbered 404 — `/contents/specs/404/index.md` — and a caller that reads
     // a broken repository as an absent file republishes it on every tick.
-    if (!res.ok) {
-      const text = await res.text();
-      throw Object.assign(new Error(`${method} ${url} → ${res.status} ${text}`), { status: res.status, body: text });
-    }
+    if (!res.ok) throw httpError(method, url, res.status, await res.text());
     return res.status === 204 ? (null as T) : ((await res.json()) as T);
   }
 
@@ -446,7 +443,7 @@ export function createClient(opts: GitHubOptions) {
       try {
         await named(call("POST", "/pulls", fields), `"Pull requests: Read and write" on ${repo}`);
       } catch (e) {
-        if ((e as { status?: unknown } | null)?.status === 422 && /already exists/i.test(String(e))) return;
+        if ((e as { status?: unknown } | null)?.status === 422 && /already exists/i.test(String((e as { body?: unknown }).body))) return;
         throw e;
       }
     },

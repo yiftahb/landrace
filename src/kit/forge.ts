@@ -16,7 +16,7 @@ import { isAbsolute, join, sep } from "node:path";
 import {
   BRANCH_PUSH_EFFECT, EffectRefused, effectBranch, hasPullFrom, ITEM_BRANCH, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT,
   PULL_MERGE_EFFECT,
-  PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, pullsFrom, RELATIONS, renderMarker, sameLogin, signBody, splitSignature,
+  PULL_DESCRIPTION_FIELDS, PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, PULL_TITLE_FIELDS, pullsFrom, RELATIONS, renderMarker, sameLogin, signBody, splitSignature,
   stripMarker,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
@@ -225,9 +225,7 @@ export const conflictCount = (pull: Pick<PullRecord, "merged" | "closed" | "conf
 export const checkCounts = (checks: CheckState): CheckCounts =>
   ({ checks, ciPending: checks === "pending" ? 1 : 0, ciFailed: checks === "failure" ? 1 : 0 });
 
-/** What `pull.title` may name, and what `pull.description`'s template may. */
-export const PULL_TITLE_FIELDS: readonly string[] = ["item", "title"];
-export const PULL_DESCRIPTION_FIELDS: readonly string[] = ["item", "link", "spec"];
+export { PULL_DESCRIPTION_FIELDS, PULL_TITLE_FIELDS } from "#conventions.js";
 
 const PLACEHOLDER = /\{(\w+)\}/g;
 
@@ -243,6 +241,31 @@ export const fillPlaceholders = (text: string, values: Readonly<Record<string, s
   text.replace(PLACEHOLDER, (whole, name: string) => (Object.hasOwn(values, name) ? (values[name] as string) : whole));
 
 const placeholderList = (names: readonly string[]): string => names.map((n) => `{${n}}`).join(", ");
+
+/**
+ * A `pull.open` effect's own `title` and `description`, each a template over
+ * the fields the forge's `pull.title` and `pull.description` take. `validate`
+ * refuses one that is not a string or names anything else; met here all the
+ * same, it is the workflow's fault, refused rather than opened with braces in.
+ */
+function effectText(effect: Effect, item: string): { title?: string; description?: string } {
+  const own: { title?: string; description?: string } = {};
+  for (const [field, known] of [["title", PULL_TITLE_FIELDS], ["description", PULL_DESCRIPTION_FIELDS]] as const) {
+    const value = effect[field];
+    if (value === undefined) continue;
+    if (typeof value !== "string") {
+      throw new EffectRefused(`cannot open a pull request for #${item}: the ${effect.type} effect's ${field} is ${JSON.stringify(value)}, not a template string`);
+    }
+    const unknown = unknownPlaceholders(value, known);
+    if (unknown.length > 0) {
+      throw new EffectRefused(
+        `cannot open a pull request for #${item}: the ${effect.type} effect's ${field} names ${placeholderList(unknown)}; it may name only ${placeholderList(known)}`,
+      );
+    }
+    own[field] = value;
+  }
+  return own;
+}
 
 /**
  * Whether `path` names a file under the project's `.landrace/`, as written:
@@ -833,26 +856,31 @@ export abstract class BaseForge {
   }
 
   /**
-   * The title and description a pull request for the item opens with. With
-   * no `pull` options, the item's title and no description, as before them.
+   * The title and description a pull request for the item opens with: the
+   * `pull.open` effect's own `title` and `description` where it names them,
+   * each over the same fields, and the forge's `pull` options where it does
+   * not. With neither, the item's title and no description, as before them.
    * Every value from the item is escaped as everywhere else, so its text
    * cannot carry our markers; `{spec}` is the link of the page that
    * documents the item, empty when the snapshot has none.
    */
-  protected async opening(ctx: HookContext): Promise<{ title: string; description: string | undefined }> {
+  protected async opening(ctx: HookContext, effect: Effect): Promise<{ title: string; description: string | undefined }> {
     const graph = ctx.snapshot.graph as Graph | undefined;
     const node = ctx.snapshot.node as Node | undefined;
     const itemTitle = node?.title ?? `#${ctx.item}`;
-    const format = this.pullText.title;
+    const own = effectText(effect, ctx.item);
+    const format = own.title ?? this.pullText.title;
     const title = format === undefined
       ? itemTitle
       : fillPlaceholders(format, { item: neutraliseMarkers(ctx.item), title: neutraliseMarkers(itemTitle) });
-    let template: string | undefined;
-    try {
-      template = await this.template(ctx);
-    } catch (e) {
-      // The same file read again finds the same fault: a person's to fix.
-      throw new EffectRefused(`cannot open a pull request for #${ctx.item}: ${e instanceof Error ? e.message : String(e)}`);
+    let template = own.description;
+    if (template === undefined) {
+      try {
+        template = await this.template(ctx);
+      } catch (e) {
+        // The same file read again finds the same fault: a person's to fix.
+        throw new EffectRefused(`cannot open a pull request for #${ctx.item}: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
     if (template === undefined) return { title, description: undefined };
     const documents = graph?.relationships.find((r) => r.type === RELATIONS.documents && r.to === ctx.item);
@@ -978,7 +1006,7 @@ export abstract class BaseForge {
               "so no step has committed anything to it",
             );
           }
-          const { title, description } = await this.opening(ctx);
+          const { title, description } = await this.opening(ctx, effect);
           await this.openPull({ item: ctx.item, branch, title, ...(description === undefined ? {} : { description }) }, ctx);
         },
       },

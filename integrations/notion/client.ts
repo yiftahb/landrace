@@ -4,6 +4,7 @@
  * calls is `pages.ts`'s.
  */
 import type { RuntimeContext } from "landrace/hooks";
+import { httpError } from "landrace/kit";
 
 export interface NotionOptions {
   /** An internal integration's secret, which the parent page is shared with. */
@@ -64,7 +65,7 @@ export function createClient(opts: NotionOptions) {
       }
       // The status rides on the error, so a 404 is told from the rest by
       // its status rather than by searching text that holds a path.
-      if (!res.ok) throw Object.assign(new Error(`${method} ${path} → ${res.status} ${await res.text()}`), { status: res.status });
+      if (!res.ok) throw httpError(method, path, res.status, await res.text());
       return (await res.json()) as T;
     }
   }

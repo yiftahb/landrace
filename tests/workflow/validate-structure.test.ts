@@ -1,3 +1,4 @@
+import { loadWorkflow } from "#workflow/load.js";
 import { validateStructure } from "#workflow/validate.js";
 import type { Stage, Step, Workflow } from "#namespace.js";
 
@@ -681,6 +682,72 @@ describe("a merge's place", () => {
   it("refuses a route's goto into a stage that merges as it is entered", () => {
     expect(said(review({ effect: comment, goto: "m" })))
       .toEqual([expect.stringMatching(/step review\.md's route for \{"kind":"approved"\} sends items to "m", which merges/)]);
+  });
+});
+
+/*
+ * #159: a `pull.open` effect's own `title` and `description` are templates
+ * over the forge's `pull.title` and `pull.description` fields, and a
+ * placeholder outside them is refused here, not first when the pull request
+ * would open.
+ */
+describe("a pull.open's own title and description", () => {
+  const entering = (fields: Record<string, unknown>): Workflow => wf([
+    { id: "a", entry: true, step: "a.md", branch: "landrace/{item}", triggers: [{ when: { "run.stage": null } }] },
+    { id: "p", triggers: [{ when: { "run.stage": "a" } }], on_enter: [{ type: "pull.open", branch: "landrace/{item}", ...fields }] },
+    { id: "z", terminal: true, triggers: [{ when: { "run.stage": "p" } }] },
+  ]);
+  const routed = (fields: Record<string, unknown>): [Workflow, Map<string, Step>] => [
+    wf([
+      { id: "a", entry: true, step: "a.md", branch: "landrace/{item}", triggers: [{ when: { "run.stage": null } }] },
+      { id: "z", terminal: true, triggers: [{ when: { "run.stage": "a" } }] },
+    ]),
+    new Map([["a.md", {
+      prompt: "x",
+      output: {
+        discriminator: "kind", shapes: { done: {} },
+        routes: [{ when: { kind: "done" }, effects: [{ type: "pull.open", branch: "landrace/{item}", ...fields }] }],
+      },
+    } as unknown as Step]]),
+  ];
+  const said = (w: Workflow, steps?: Map<string, Step>) =>
+    validateStructure(w, steps).filter((p) => p.rule === "pull-text").map((p) => p.message);
+
+  it("accepts each field naming only what the forge's would, in on_enter and in a route", () => {
+    const fields = { title: "{item}: retro lessons for {title}", description: "{item} — {link}\n\n{spec}" };
+    expect(said(entering(fields))).toEqual([]);
+    expect(said(...routed(fields))).toEqual([]);
+    expect(said(entering({}))).toEqual([]);
+  });
+
+  it("refuses {nope} in a stage's title, naming the stage, the placeholder and what it may name", () => {
+    expect(said(entering({ title: "{nope}" })))
+      .toEqual(['stage "p" has a pull.open whose title names {nope}; it may name only {item}, {title}']);
+  });
+
+  it("refuses {nope} in a stage's description, naming what a description may name", () => {
+    expect(said(entering({ description: "See {nope} and {title}." })))
+      .toEqual(['stage "p" has a pull.open whose description names {nope}, {title}; it may name only {item}, {link}, {spec}']);
+  });
+
+  it("refuses {nope} in a route's title and description, naming the step and the route", () => {
+    expect(said(...routed({ title: "{nope}", description: "{nope}" }))).toEqual([
+      'step a.md\'s route for {"kind":"done"} has a pull.open whose title names {nope}; it may name only {item}, {title}',
+      'step a.md\'s route for {"kind":"done"} has a pull.open whose description names {nope}; it may name only {item}, {link}, {spec}',
+    ]);
+  });
+
+  it.each([["{stage}"], ["{round}"], ["{node.title}"], ["{item.body}"]])("refuses %s, which the forge's title never names", (title) => {
+    expect(said(entering({ title }))).toEqual([expect.stringContaining(`title names ${title};`)]);
+  });
+
+  it.each([[7], [null], [["{item}"]]])("refuses a title that is no string: %j", (title) => {
+    expect(said(entering({ title }))).toEqual([`stage "p" has a pull.open whose title is ${JSON.stringify(title)}; it must be a template string`]);
+  });
+
+  it("finds nothing to refuse in the shipped fixture whose route opens a retro's pull request", async () => {
+    const { workflow, steps } = await loadWorkflow("tests/fixtures/pull-text");
+    expect(validateStructure(workflow, steps)).toEqual([]);
   });
 });
 

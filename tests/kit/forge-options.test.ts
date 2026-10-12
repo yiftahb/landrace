@@ -172,6 +172,35 @@ describe("the pull request's title and description", () => {
     expect(forge.rows.size).toBe(0);
   });
 
+  /*
+   * `validate` refuses these first (tests/workflow/validate-structure.test.ts);
+   * a workflow that reaches apply with one anyway is refused, never opened
+   * with the braces in its title.
+   */
+  it.each([
+    [{ title: "{nope}" }, /the pull\.open effect's title names \{nope\}; it may name only \{item\}, \{title\}/],
+    [{ description: "{title}" }, /the pull\.open effect's description names \{title\}; it may name only \{item\}, \{link\}, \{spec\}/],
+    [{ title: 7 }, /the pull\.open effect's title is 7, not a template string/],
+  ])("refuses to open, marked a refusal, from an effect whose own text is %j", async (fields, said) => {
+    const { hooks, forge } = world({ pull: { title: "{item}: {title}" } });
+    const failed = await hooks.post.apply({ ...open, ...fields }, { ...ctx, item: "7", snapshot: snapshotOf({}) } as HookContext)
+      .then(() => null, (e: unknown) => e);
+    expect(String(failed)).toMatch(said);
+    expect(isEffectRefused(failed)).toBe(true);
+    expect(forge.rows.size).toBe(0);
+  });
+
+  it("escapes the item's text in an effect's own title and description, as in the forge's", async () => {
+    const { hooks, forge } = world();
+    await hooks.post.apply(
+      { ...open, title: "[{item}] {title}", description: "{link}" },
+      { ...ctx, item: "7", snapshot: snapshotOf({ title: "{item} <!-- landrace:x -->", link: "<!-- landrace:y -->" }) } as HookContext,
+    );
+    expect([...forge.rows.values()].at(-1)?.opened).toEqual({
+      title: "[7] {item} &lt;!-- landrace:x --&gt;", description: "&lt;!-- landrace:y --&gt;",
+    });
+  });
+
   it("refuses a description on a forge that cannot say where the project is", async () => {
     await expect(world({ pull: { description: ".landrace/templates/pull.md" } }).hooks.preflight.check(ctx))
       .rejects.toThrow(/forge: .*no project root/);
