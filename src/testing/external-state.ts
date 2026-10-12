@@ -584,7 +584,7 @@ export class MemoryForge extends BaseForge {
       // No checkout to ask whether the branch has anything on it.
       [PULL_OPEN_EFFECT]: {
         satisfied: (effects[PULL_OPEN_EFFECT] as EffectHandler).satisfied,
-        apply: async (effect, ctx) => this.openPull({ item: ctx.item, branch: effectBranch(effect), ...(await this.opening(ctx)) }),
+        apply: async (effect, ctx) => this.openPull({ item: ctx.item, branch: effectBranch(effect), ...(await this.opening(ctx, effect)) }),
       },
       [PULL_REVIEW_EFFECT]: {
         satisfied: (effects[PULL_REVIEW_EFFECT] as EffectHandler).satisfied,
@@ -689,12 +689,17 @@ export class MemoryDocs extends BaseDocs {
  * `MemoryDocs`, the same kit bases every integration is built on, so every
  * effect name and every `satisfied()` is the kit's own rather than a copy.
  * `readOnly` makes the tracker refuse every write (see `MemoryTracker`).
+ * `forge` is the forge's `pull` options, and the project root its
+ * `pull.description` is a path from.
  */
 export function createExternalState(
-  seed: { items?: Array<Partial<ExternalItem>>; readOnly?: boolean; createIn?: string[]; config?: Partial<RuntimeConfig> } = {},
+  seed: {
+    items?: Array<Partial<ExternalItem>>; readOnly?: boolean; createIn?: string[]; config?: Partial<RuntimeConfig>;
+    forge?: { pull?: ForgeOptions["pull"]; root?: string };
+  } = {},
 ): ExternalState {
   const tracker = new MemoryTracker(seed);
-  const forge = new MemoryForge({ branch: seed.config?.branch });
+  const forge = new MemoryForge({ ...seed.forge, branch: seed.config?.branch });
   const docs = new MemoryDocs();
 
   return {

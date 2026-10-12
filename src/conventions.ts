@@ -558,6 +558,13 @@ export const BRANCH_PUSH_EFFECT = "branch.push";
 export const ITEM_BRANCH = "landrace/{item}";
 export const PULL_OPEN_EFFECT = "pull.open";
 /**
+ * What a pull request's title may name, and what its description may: the
+ * forge's `pull.title` and `pull.description`, and a `pull.open` effect's own
+ * `title` and `description`, which `validate` holds to the same lists.
+ */
+export const PULL_TITLE_FIELDS: readonly string[] = ["item", "title"];
+export const PULL_DESCRIPTION_FIELDS: readonly string[] = ["item", "link", "spec"];
+/**
  * Put a review step's findings on the pull request from the effect's
  * `branch`: its prose as the review, a thread per finding, and the threads it
  * lists as resolved closed — the route's destination, fed the step's output.

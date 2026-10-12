@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createExternalState, createHarness, scriptedExecutor } from "#testing/index.js";
 import { loadWorkflow } from "#workflow/load.js";
 import type { Harness, PostHook, ScriptedAnswer } from "#namespace.js";
@@ -142,6 +145,70 @@ describe("a configured item branch", () => {
     expect(state.pull(state.openPull("1")).branch).toBe("lr-1");
     const plain = createExternalState({ items: [{ id: "1" }] });
     expect(plain.pull(plain.openPull("1")).branch).toBe("landrace/1");
+  });
+});
+
+/*
+ * #159: a second pull request for one item — a retro's — opened with the
+ * forge's `pull.title` read as the feature's. A `pull.open` effect's own
+ * `title` and `description` replace the forge's for that one pull request,
+ * driven here through the runner: the route effect the step's answer plans,
+ * applied by the in-memory forge.
+ */
+describe("a pull.open with its own title and description", () => {
+  const DONE = '```json\n{"kind":"done"}\n```';
+
+  /** The fixture, with the route's pull.open fields `drop` names taken off it. */
+  const opened = async (drop: Array<"title" | "description">, forge: { root?: string } = {}) => {
+    const root = forge.root;
+    const state = createExternalState({
+      items: [{ id: "1", labels: ["lr:auto"] }],
+      forge: { pull: { title: "{item}: {title}", ...(root === undefined ? {} : { description: ".landrace/templates/pull.md" }) }, ...(root === undefined ? {} : { root }) },
+    });
+    const { workflow, steps } = await loadWorkflow("tests/fixtures/pull-text");
+    const open = steps.get("steps/retro.md")?.output?.routes[0]?.effects?.find((e) => e.type === "pull.open");
+    if (open === undefined) throw new Error("the fixture's route has no pull.open");
+    expect(open.title).toBe("{item}: retro lessons");
+    expect(open.description).toBe("Lessons from {item}, at {link}.");
+    for (const field of drop) delete open[field];
+    const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers: { retro: DONE } });
+    const r = await run.converge();
+    expect(run.trail()).toEqual(["retro", "done"]);
+    expect(r.result.settled).toBe("terminal");
+    return state.pull("pr-1").opened;
+  };
+
+  const project = async (template: string): Promise<string> => {
+    const root = await mkdtemp(join(tmpdir(), "landrace-pull-"));
+    await mkdir(join(root, ".landrace", "templates"), { recursive: true });
+    await writeFile(join(root, ".landrace", "templates", "pull.md"), template);
+    return root;
+  };
+
+  it("opens with the effect's title over the forge's pull.title", async () => {
+    expect((await opened([]))?.title).toBe("1: retro lessons");
+  });
+
+  it("opens with the forge's pull.title when the effect names none", async () => {
+    expect((await opened(["title"]))?.title).toBe("1: item 1");
+  });
+
+  it("opens with the effect's description over the forge's template", async () => {
+    const root = await project("From the forge: {item}.");
+    expect((await opened([], { root }))?.description).toBe("Lessons from 1, at memory://items/1.");
+  });
+
+  it("opens with the effect's description on a forge that sets none", async () => {
+    expect((await opened([]))?.description).toBe("Lessons from 1, at memory://items/1.");
+  });
+
+  it("opens with the forge's template when the effect names no description", async () => {
+    const root = await project("From the forge: {item}.");
+    expect((await opened(["description"], { root }))?.description).toBe("From the forge: 1.");
+  });
+
+  it("opens with no description when neither sets one", async () => {
+    expect((await opened(["title", "description"]))?.description).toBeUndefined();
   });
 });
 
