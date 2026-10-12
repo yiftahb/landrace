@@ -280,6 +280,31 @@ describe("the graph compose reads", () => {
     expect(edges(await state.source.list(ctx))).toEqual(["pr-2"]);
   });
 
+  /*
+   * A branch variant (#158): landrace/7-retro is 7's, as landrace/7 is, in a
+   * read and a list — and the board, which nests a pull request under the
+   * item it implements, lists it there.
+   */
+  const variants = { ...ctx, config: { ...ctx.config, branchVariants: ["retro"] } };
+  const implementing = (g: Graph) => g.relationships.filter((r) => r.type === "implements").map((r) => [r.from, r.to]);
+
+  it("ties a pull request on a variant of the item branch to the item, by the variants the context configures", async () => {
+    const state = createExternalState({ items: [{ id: "7", closed: "done" }] });
+    const retro = state.openPull("7", { branch: "landrace/7-retro" });
+    expect(implementing(await state.source.read("7", variants))).toEqual([[retro, "7"]]);
+    expect(implementing(await state.source.list(variants))).toEqual([[retro, "7"]]);
+    // With no variant configured, landrace/7-retro is nobody's, as before.
+    expect(implementing(await state.source.read("7", ctx))).toEqual([]);
+  });
+
+  it("halts a read, and leaves the pull request out of a list, when its head reads as two items there are", async () => {
+    const state = createExternalState({ items: [{ id: "7" }, { id: "7-retro" }] });
+    state.openPull("7", { branch: "landrace/7-retro" });
+    await expect(state.source.read("7", variants)).rejects.toThrow("pull request #1 is tied to #7 and #7-retro");
+    await expect(state.source.read("7-retro", variants)).rejects.toThrow(/pull request #1 is tied to #7-retro and #7|#7 and #7-retro/);
+    expect(implementing(await state.source.list(variants))).toEqual([]);
+  });
+
   // A landrace/{item}-api head names no item there is, so the pull request is
   // only the one a forge that ties by text says it names — seeded here.
   it("reads a landrace/ head that is no item's as naming nothing", async () => {

@@ -154,6 +154,18 @@ describe("pullsNaming", () => {
     expect(pulls.map((p) => [p.number, p.branch, p.merged])).toEqual([[2, "landrace/7", false], [1, "landrace/7", true]]);
   });
 
+  // #158: a variant of the item branch is the item's too, asked of GitLab by its own source_branch.
+  it("reads every merge request from a variant of the item's branch the config names, and the item branch's", async () => {
+    const gl = createFakeGitLab();
+    gl.open({ source_branch: "landrace/7", state: "merged" });
+    gl.open({ source_branch: "landrace/7-retro" });
+    gl.open({ source_branch: "landrace/7-retro", source_project_id: 99 });
+    const ctx = { ...gl.ctx(), config: { branchVariants: ["retro"] } as ReturnType<typeof gl.ctx>["config"] };
+    const pulls = await forgeOver(gl).pullsNaming("7", ctx);
+    expect(pulls.map((p) => [p.number, p.branch])).toEqual([[1, "landrace/7"], [2, "landrace/7-retro"]]);
+    expect((await forgeOver(gl).pullsNaming("7", gl.ctx())).map((p) => p.branch)).toEqual(["landrace/7"]);
+  });
+
   // Re-review N9, as on GitHub: forks are left out before anything is counted.
   it("leaves forks out before it counts: 150 forks' merge requests from a branch named landrace/7 do not halt #7", async () => {
     const gl = createFakeGitLab();

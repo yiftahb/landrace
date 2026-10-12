@@ -7,7 +7,7 @@
 import { type HookContext, parseMarker, type RuntimeContext, sameLogin } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
-  httpReason, itemBranchOf, repositoryOf, ITEM_PAGE,
+  httpReason, itemBranchesOf, repositoryOf, ITEM_PAGE,
   type BranchHeads, type ChangedFile, type ChangedFiles, type CheckState, type FailedCheck, type ForgeOptions, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
@@ -353,14 +353,22 @@ export class GitLab extends BaseForge {
 
   /**
    * Every merge request from the item's branch — `landrace/{item}`, or the
-   * one landrace.yaml names — merged and closed ones too, and never a
-   * fork's — left out before anything is counted, since GitLab cannot be
-   * asked for one project's source branches alone, and counted first,
-   * anybody's forks on a branch of that name halted the item (re-review N9).
-   * A list the page bound cut may hide the item's own, so it halts the item too.
+   * one landrace.yaml names — or from a variant of it its `branchVariants`
+   * names, one query per source branch, merged and closed ones too, and
+   * never a fork's — left out before anything is counted, since GitLab
+   * cannot be asked for one project's source branches alone, and counted
+   * first, anybody's forks on a branch of that name halted the item
+   * (re-review N9). A list the page bound cut may hide the item's own, so it
+   * halts the item too; each branch is bounded on its own.
    */
   async pullsNaming(item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
-    const branch = prBranch(item, itemBranchOf(ctx.config));
+    const all: PullRecord[] = [];
+    for (const template of itemBranchesOf(ctx.config)) all.push(...await this.requestsFrom(prBranch(item, template), item, ctx));
+    return all;
+  }
+
+  /** The merge requests from one source branch in this project. */
+  private async requestsFrom(branch: string, item: string, ctx: RuntimeContext): Promise<PullRecord[]> {
     const { items: requests, more } = await this.gl(ctx).pages<MergeRequest>(
       // Rechecked, or one GitLab has not looked at since its target moved can
       // stay `unchecked`, and its conflicts unknown, for good.
@@ -371,7 +379,7 @@ export class GitLab extends BaseForge {
       throw tooMany(`more than ${MAX_ISSUE_PAGES * PER_PAGE} merge requests are from a branch named ${branch}, forks' among them`);
     }
     const own = requests.filter((mr) => mr.source_project_id === mr.target_project_id);
-    if (own.length > ITEM_PAGE) throw tooMany(`#${item} has more than ${ITEM_PAGE} merge requests on its branch`);
+    if (own.length > ITEM_PAGE) throw tooMany(`#${item} has more than ${ITEM_PAGE} merge requests on its branch ${branch}`);
     return own.map(recordOf);
   }
 

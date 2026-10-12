@@ -1,11 +1,11 @@
-import { isEffectRefused, renderMarker } from "#conventions.js";
+import { hasPullFrom, isEffectRefused, renderMarker } from "#conventions.js";
 import { deriveRel } from "#core/rel.js";
 import {
   answered, BRIEF_DIFF_CHARS, BRIEF_HISTORY_ITEMS, BRIEF_THREADS, checkCounts, ciBrief, commentableLines, commentLine, cut, diffBrief, FINDING_KIND, FIX_KIND, historyBrief,
-  isFinding, isReply, itemBranchOf, itemsNamedBy, newest, placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadsBrief,
+  isFinding, isReply, itemBranchesOf, itemBranchOf, itemsNamedBy, newest, placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadsBrief,
   threadLine, where,
 } from "#kit/forge.js";
-import type { HistoryItem, ReviewThread, Snapshot, ThreadComment } from "#namespace.js";
+import type { Graph, HistoryItem, ReviewThread, Snapshot, ThreadComment } from "#namespace.js";
 
 const BOT = "landrace-bot";
 
@@ -224,9 +224,46 @@ describe("itemBranchOf", () => {
   });
 });
 
+describe("itemBranchesOf", () => {
+  it("is the item branch, then each variant of it the configuration names", () => {
+    expect(itemBranchesOf({})).toEqual(["landrace/{item}"]);
+    expect(itemBranchesOf({ branch: "lr-{item}", branchVariants: ["retro", "docs"] })).toEqual(["lr-{item}", "lr-{item}-retro", "lr-{item}-docs"]);
+  });
+});
+
+describe("itemsNamedBy, over the item branch and a variant", () => {
+  const templates = ["landrace/{item}", "landrace/{item}-retro"];
+  const named = (branch: string, known: string[]): string[] => [...itemsNamedBy({ branch, items: [] }, new Set(known), templates)];
+
+  it("ties a variant's head to its item, and the item branch's as before", () => {
+    expect(named("landrace/7-retro", ["7"])).toEqual(["7"]);
+    expect(named("landrace/7", ["7"])).toEqual(["7"]);
+    expect(named("landrace/7-docs", ["7"])).toEqual([]);
+  });
+
+  it("ties a head that reads as two known items to both, for a read to halt on", () => {
+    expect(named("landrace/7-retro", ["7", "7-retro"]).sort()).toEqual(["7", "7-retro"]);
+  });
+});
+
+/*
+ * A variant's pull request is the item's, but never the item branch's: the
+ * retro's open pull request must not answer that the item's own is open.
+ */
+describe("pullsFrom", () => {
+  it("matches the branch exactly: a variant's pull request does not satisfy the item branch's pull.open", () => {
+    const graph: Graph = {
+      nodes: [pullNode({ number: 9, title: "7: retro lessons", link: "", merged: false, closed: false, headSha: "a", conflicts: false, branch: "landrace/7-retro", createdAt: undefined })],
+      relationships: [{ from: "pr-9", to: "7", type: "implements" }],
+    };
+    expect(hasPullFrom(graph, "7", "landrace/7")).toBe(false);
+    expect(hasPullFrom(graph, "7", "landrace/7-retro")).toBe(true);
+  });
+});
+
 describe("itemsNamedBy", () => {
   const known = new Set(["KEY-1", "7"]);
-  const named = (branch: string, template: string): string[] => [...itemsNamedBy({ branch, items: [] }, known, template)];
+  const named = (branch: string, template: string): string[] => [...itemsNamedBy({ branch, items: [] }, known, [template])];
 
   it("ties a head on the template to its item, and nothing on another", () => {
     expect(named("lr-KEY-1", "lr-{item}")).toEqual(["KEY-1"]);
