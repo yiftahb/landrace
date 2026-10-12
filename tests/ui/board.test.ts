@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { claimItems } from "#core/index.js";
 import type { Entry, Graph, Held, Node, Relationship, Running, Stage, Workflow } from "#namespace.js";
 import { chatFor } from "#ui/chat.js";
@@ -1461,13 +1464,29 @@ describe("the pages a branch is drawn on", () => {
     expect(v.workflows.find((w) => w.id === "b")?.needsYou).toBe(0);
   });
 
-  it("orders the sidebar by name case-folded, not by code point", () => {
-    const named = (id: string, name: string) => ({ id, workflow: { ...workflow, name } });
-    const v = view(graph([]), {
-      workflows: [named("z", "Zeta"), named("b", "beta"), named("a", "alpha")],
-      listing: { graphs: [graph([])], sourceOf: new Map([["z", 0], ["b", 0], ["a", 0]]), claims: claimItems([], []) },
+  describe("the sidebar keeps the workspace's order", () => {
+    const sidebarOf = async (folders: Record<string, string>, order?: string[]) => {
+      const ws = await mkdtemp(join(tmpdir(), "lr-ws-"));
+      for (const [id, name] of Object.entries(folders)) {
+        await mkdir(join(ws, "workflows", id), { recursive: true });
+        await writeFile(join(ws, "workflows", id, "workflow.yaml"),
+          `version: 1\nname: ${JSON.stringify(name)}\ndescription: "d"\nstages:\n  - { id: a, entry: true, terminal: true }\n`);
+      }
+      const loaded = (await loadWorkspace(ws, new Map(), order)).workflows.map(({ id, workflow }) => ({ id, workflow }));
+      const v = view(graph([]), {
+        workflows: loaded,
+        listing: { graphs: [graph([])], sourceOf: new Map(loaded.map((w) => [w.id, 0])), claims: claimItems([], []) },
+      });
+      return v.workflows.map((w) => w.id);
+    };
+
+    it("in the configured order where it disagrees with the names'", async () => {
+      expect(await sidebarOf({ build: "Build", plan: "Plan" }, ["plan", "build"])).toEqual(["plan", "build"]);
     });
-    expect(v.workflows.map((w) => w.name)).toEqual(["alpha", "beta", "Zeta"]);
+
+    it("by name by code point when none is configured, not case-folded", async () => {
+      expect(await sidebarOf({ a: "alpha", z: "Zeta" })).toEqual(["z", "a"]);
+    });
   });
 
   it("offers no writes on an item a read-only workflow owns", () => {
