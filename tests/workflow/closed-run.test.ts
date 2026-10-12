@@ -3,8 +3,10 @@ import type { Effect, Stage, Step, Workflow } from "#namespace.js";
 
 /*
  * `closed: run`: the one stage a closed item may enter and run its step at —
- * a retro after a ticket is resolved. It works on no branch and touches no
- * forge, since the item's work is over, and only a closed item reaches it.
+ * a retro after a ticket is resolved. Only a closed item reaches it. The
+ * item's own work is over, so it never names the item branch: it works on no
+ * branch, or on a variant (`landrace/{item}-retro`), and plans only
+ * `branch.push` and `pull.open`, both on that variant.
  */
 const ENTER = { type: "tracker.comment", kind: "enter", marker: "enter:{stage}:{round}" };
 
