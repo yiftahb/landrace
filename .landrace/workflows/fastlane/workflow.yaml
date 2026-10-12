@@ -4,9 +4,8 @@ description: "Small changes from the item's own text: build, review, CI, then me
 
 # An item labelled lr:auto and lr:fast is built from its own text — there is no spec —
 # reviewed, put through CI, and merged by Landrace; then the item is closed.
-# A person is needed only at a halt — a change to a protected path, a retro's
-# lessons outside README.md and docs/ among them, is one — or when a cap leaves
-# the item `stuck`.
+# A person is needed only at a halt — a change to a protected path is one — or
+# when a cap leaves the item `stuck`; and to merge a retro's pull request.
 #
 # Nobody reads the change before it reaches the default branch, so the merge
 # is held by the engine, not by a prompt, to three guards (security audit
@@ -30,26 +29,34 @@ description: "Small changes from the item's own text: build, review, CI, then me
 #   refuses its way in, never on a moved head, so a merge ⇄ ci loop could only
 #   be bounded by a counter it never moves; and a head that moved is code
 #   nobody reviewed.
-# - The retro goes back to code review: its commits land in the pull request
-#   before the merge, so they are reviewed and checked like any other.
-# - A retro's lessons go in a step prompt, `.agsync/` or the instructions it
-#   regenerates, and every one of them is protected (re-review N1): an item
-#   whose retro committed a lesson is refused at the merge and waits at
-#   `blocked` for a person to merge it. Only a retro that learned nothing, or
-#   fixed only `README.md` or `docs/` (#63), merges with no person.
-# - Friction — what sends a green pull request to the retro first — is a
-#   second build (a CI fix or a rework), any fix round, or any reply a person
-#   had to write. The retro runs at most once.
+# - The retro runs after the merge, on the closed item (#158): a merge by a
+#   person or by auto-merge cannot get ahead of it and lose its lessons.
+#   `done` closes the item, and the retro's one trigger moves it on from
+#   there. It works on `landrace/{item}-retro` — a variant landrace.yaml's
+#   `branchVariants` names — cut fresh from the default branch, never on the
+#   item's merged branch. A `learned` answer pushes that branch and opens its
+#   own pull request, `{item}: retro lessons`, which nothing here reviews or
+#   merges: it is a person's. `nothing` is a comment, and publishes nothing.
+#   The item rests at `retro`, closed. Reopened there, it is `stuck`.
+# - Friction — what earns the retro — is a second build (a CI fix or a
+#   rework), any fix round, or any reply a person had to write. The retro
+#   runs at most once.
+# - Shipping this (#158): a closed item at `done` from the last 30 days that
+#   had friction and no retro gets one retro, paid for, on the first ticks
+#   after. An open item an older fastlane left at `retro` goes to `stuck`:
+#   its retro commit is on its own pull request, unreviewed, and "Go to
+#   step… code-review" sends it on. A closed `done` item is read on every
+#   tick, since its listing cannot tell whether the retro's trigger holds.
 # - Caps: build 3, CI fixes included; code review 6; fix review 12. At a
 #   cap the item is `stuck`, and waits on a person. Code review's 6 is for
 #   behaviour, which loops; a review whose every thread awaiting a fix is a
 #   wording finding — docs or code comments only, flagged by the reviewer —
 #   goes round twice more, to 8 (#71). A mislabel costs two fix rounds, each
-#   re-reviewed, and the merge's guards are the same. The retro's commit
-#   gets one review round of its own, which neither budget pays for: once
-#   the retro ran, each code review cap is one higher, 7 and 9 (#154).
-#   Conditions have no arithmetic, so each is an `$or` of the plain cap and
-#   the cap plus one beside `run.counters.retro: { $gte: 1 }`.
+#   re-reviewed, and the merge's guards are the same. Once the retro ran —
+#   an item reopened after it, sent back to review — each code review cap is
+#   one higher, 7 and 9 (#154). Conditions have no arithmetic, so each is an
+#   `$or` of the plain cap and the cap plus one beside
+#   `run.counters.retro: { $gte: 1 }`.
 # - The merge needs every thread resolved. A review that leaves threads open
 #   with none awaiting a fix is `stuck` too, since a thread the fixer answered
 #   waits on a person, never on a step; and a thread opened while the checks
@@ -57,8 +64,8 @@ description: "Small changes from the item's own text: build, review, CI, then me
 # - `done` closes the item itself, so it closes where the forge links nothing.
 # - A head the last review did not read — pushed after it, while CI ran, or
 #   while the item was halted — answers as a moved head does, and goes back
-#   to code review. A fix's and the retro's commits each pass through a
-#   review round of their own, which records the head they made.
+#   to code review. A fix's commits pass through a review round of their own,
+#   which records the head they made.
 # - A merge refused — by the forge: conflicts, branch protection, checks gone
 #   red since the read; or by the kit: a protected path, or changed files it
 #   could not read to the end — is merge's rejected round: the item halts at
@@ -212,15 +219,14 @@ stages:
   #
   # full-cycle's reviewer and fixer, shown the item's own text where full-cycle's are
   # shown the spec, and otherwise as they are. Every build is reviewed
-  # through publish, uncapped; every fix within fix review's twelve; the
-  # retro's commit once; and a head that moved under the merge, or a thread
-  # opened while the checks ran, within code review's own six, seven once the
-  # retro ran — loops through
-  # stages with no step, whose counters count only a refused way in.
+  # through publish, uncapped; every fix within fix review's twelve; and a
+  # head that moved under the merge, or a thread opened while the checks
+  # ran, within code review's own six, seven once the retro ran — loops
+  # through stages with no step, whose counters count only a refused way in.
   #
-  # No `requires` here or on the retro: a pull request a person closed while
-  # either ran is their stop, routed to `stuck`, where a failed precondition
-  # would halt the item on every tick where no board shows it.
+  # No `requires` here: a pull request a person closed while it ran is their
+  # stop, routed to `stuck`, where a failed precondition would halt the item
+  # on every tick where no board shows it.
   - id: code-review
     step: steps/code-review.md
     branch: "landrace/{item}"
@@ -233,8 +239,6 @@ stages:
           "run.lastOutputValid": null
           "rel.implements.in.total": { $gt: 0 }
           "run.counters.fix-review": { $lt: 12 }
-      - name: the retro is done
-        when: { "run.stage": retro, "run.lastOutputValid": null, "rel.implements.in.total": { $gt: 0 } }
       - name: the head moved before the merge
         when:
           "run.stage": merge
@@ -257,8 +261,8 @@ stages:
     on_enter:
       # The enter record first, as full-cycle's: a push the forge refuses is code
       # review's rejected round, a halt with the reason. Then the push, before
-      # the status and so before the step: a fix round's or the retro's
-      # commits are on the pull request before the reviewer reads it.
+      # the status and so before the step: a fix round's commits are on the
+      # pull request before the reviewer reads it.
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Reviewing the pull request, round {round}." }
       - { type: branch.push, branch: "landrace/{item}" }
       - { type: tracker.status, value: code-review }
@@ -266,7 +270,7 @@ stages:
 
   # Within code review's six; or within eight when every thread awaiting a
   # fix is the reviewer's wording finding — docs or code comments only (#71).
-  # Each is one higher once the retro ran: its commit's round is free (#154).
+  # Each is one higher once the retro ran (#154).
   # A count the forge did not report is behaviour, and matches only the six.
   - id: fix-review
     step: steps/fix-review.md
@@ -292,11 +296,10 @@ stages:
   # A review that settled with every thread resolved waits here for the
   # checks on the pull request's head. A thread opened meanwhile goes back to
   # review first; then red, or a conflict with the default branch, goes back
-  # to build while builds are left, and green to the retro after friction, or
-  # to the merge. Checks still running match nothing, and the item waits; so
-  # do conflicts the forge has not worked out yet, since the retro and the
-  # merge read `conflicts: 0`, which no pull request reports then. A pull
-  # request a person closed is
+  # to build while builds are left, and green to the merge. Checks still
+  # running match nothing, and the item waits; so do conflicts the forge has
+  # not worked out yet, since the merge reads `conflicts: 0`, which no pull
+  # request reports then. A pull request a person closed is
   # stuck's, not a precondition's: a failed `requires` halts where no board
   # shows it. Nothing is pushed here — the review's own push published the
   # head it read, and a push now could publish one nobody reviewed.
@@ -314,35 +317,9 @@ stages:
       - { type: tracker.status, value: ci }
       - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting"] }
 
-  # Once, on the whole history, when the item was corrected on the way. Not
-  # once the pull request merged — a person can merge it by hand — since
-  # lessons committed then land on a branch nothing will merge again.
-  - id: retro
-    step: steps/retro.md
-    branch: "landrace/{item}"
-    triggers:
-      - name: the checks passed after corrections
-        when:
-          "run.stage": ci
-          "run.lastOutputValid": null
-          "rel.implements.in.sum.openThreads": 0
-          "rel.implements.in.sum.ciPending": 0
-          "rel.implements.in.sum.ciFailed": 0
-          "rel.implements.in.sum.conflicts": 0
-          "rel.implements.in.not.merged": { $gt: 0 }
-          "run.counters.retro": { $lt: 1 }
-          $or:
-            - { "run.counters.build": { $gt: 1 } }
-            - { "run.counters.fix-review": { $gt: 0 } }
-            - { "run.counters.triage": { $gt: 0 } }
-    on_enter:
-      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Learning from this item's corrections, round {round}." }
-      - { type: tracker.status, value: retro }
-      - { type: tracker.label, add: ["lr:working"], remove: ["lr:awaiting", "lr:blocked", "lr:screened"] }
-
-  # The retro's trigger, negated: the two never match together. The merge
-  # comes after the `enter` record and before the status, as publish's push
-  # does. A refusal — conflicts, not mergeable, checks gone red since the
+  # The merge comes after the `enter` record and before the status, as
+  # publish's push does. Whatever the item's corrections: the retro runs after
+  # the merge, from `done` (#158). A refusal — conflicts, not mergeable, checks gone red since the
   # read — is merge's rejected round, read at ci where the item still is: it
   # goes to `blocked`, on the board with the forge's sentence, and nothing
   # asks the forge again until a person's Retry does. A merge that failed on
@@ -359,20 +336,13 @@ stages:
           "rel.implements.in.sum.ciPending": 0
           "rel.implements.in.sum.ciFailed": 0
           "rel.implements.in.sum.conflicts": 0
-          $or:
-            - $and:
-                - { "run.counters.build": { $lt: 2 } }
-                - { "run.counters.fix-review": { $lt: 1 } }
-                - { "run.counters.triage": { $lt: 1 } }
-            - { "run.counters.retro": { $gte: 1 } }
-            - { "rel.implements.in.not.merged": 0 }
     on_enter:
       - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Merging the pull request, round {round}." }
       # Only the head code review read: the runner records the commit each
       # review round started at, and a head that round did not start at —
       # pushed after the review, while CI ran — answers as a moved head does,
-      # and goes back to review. A fix's or the retro's commits are reviewed
-      # the same way, since each goes through a review round of its own.
+      # and goes back to review. A fix's commits are reviewed the same way,
+      # since each goes through a review round of its own.
       #
       # And the paths only a person merges, whatever the review said: the
       # engine's own hooks, imported with this project's secrets, its
@@ -450,10 +420,40 @@ stages:
     # where it was, and the next tick closes it. After the status, it left an
     # item at done and open, with nothing left to do that would close it.
     # lr:auto and lr:fast stay: a finished item is filed under this
-    # workflow by its own eligible rule — claims judge open items only.
+    # workflow by its own eligible rule, and the retro below claims it by them
+    # once it is closed.
     on_enter:
       - { type: tracker.close }
       - { type: tracker.status, value: done }
+      - { type: tracker.label, remove: ["lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
+
+  # Once, on the whole history, when the item was corrected on the way —
+  # after the merge, on the closed item (#158). Its one trigger is the only
+  # one that reads `done`. It runs on a branch of its own, cut fresh from the
+  # default branch: the item's own is merged. Its step's `learned` route
+  # pushes that branch and opens a pull request from it, a person's to
+  # merge; `nothing` publishes nothing. A closed item rests here, and the
+  # step is not run again: Retry, on its own `retry: only` entry, reruns a
+  # failed round, once. Reopened, the item goes to `stuck`.
+  - id: retro
+    step: steps/retro.md
+    closed: run
+    branch: "landrace/{item}-retro"
+    goto: [{ stage: retro, retry: only, when: { "run.counters.retro": { $lt: 2 } } }]
+    triggers:
+      - name: it merged after corrections
+        when:
+          "run.stage": done
+          "node.closed": done
+          "run.lastOutputValid": null
+          "run.counters.retro": { $lt: 1 }
+          $or:
+            - { "run.counters.build": { $gt: 1 } }
+            - { "run.counters.fix-review": { $gt: 0 } }
+            - { "run.counters.triage": { $gt: 0 } }
+    on_enter:
+      - { type: tracker.comment, kind: enter, marker: "enter:{stage}:{round}", body: "Learning from this item's corrections, round {round}." }
+      - { type: tracker.status, value: retro }
       - { type: tracker.label, remove: ["lr:awaiting", "lr:working", "lr:blocked", "lr:screened"] }
 
   # A person asked to drop it: its pull request is closed unmerged, then the
@@ -480,9 +480,9 @@ stages:
 
   # ── a person's turn ──────────────────────────────────────────────────────
   #
-  # Where a cap leaves the item, and blockers a person has to settle. Each
-  # cap's trigger is the exact negation of the way on it caps, and the
-  # blockers' is the gate's third condition. A person may send it back to
+  # Where a cap leaves the item, blockers a person has to settle, and an item
+  # reopened at the retro. Each cap's trigger is the exact negation of the
+  # way on it caps, and the blockers' is the gate's third condition. A person may send it back to
   # build or to review, within those caps, or reply: work, a close, or a
   # question answered here.
   - id: stuck
@@ -589,7 +589,7 @@ stages:
             - { "run.counters.code-review": { $gte: 7 } }
             - { "run.counters.code-review": { $gte: 6 }, "run.counters.retro": { $lt: 1 } }
       # A person closed it unmerged — their way of saying stop — during a
-      # review, a fix, the retro, CI or the merge. With no pull request the
+      # review, a fix, CI or the merge. With no pull request the
       # item has nothing to check or merge, and is theirs. After a build,
       # publish would open another over their close, so the item comes here
       # instead — while nothing is open or merged beside it: a replacement
@@ -606,8 +606,11 @@ stages:
         when: { "run.stage": code-review, "run.lastOutputValid": null, "rel.implements.in.total": 0 }
       - name: the pull request was closed during a fix
         when: { "run.stage": fix-review, "run.lastOutputValid": null, "rel.implements.in.total": 0 }
-      - name: the pull request was closed during the retro
-        when: { "run.stage": retro, "run.lastOutputValid": null, "rel.implements.in.total": 0 }
+      # The retro ran on the closed item; reopened, it has nothing left to
+      # run, and is a person's. Open items an older fastlane left at the
+      # retro come here too, their commit unreviewed (#158).
+      - name: it was reopened at the retro
+        when: { "run.stage": retro, "run.lastOutputValid": null, "node.closed": null }
       - name: the pull request was closed during CI
         when: { "run.stage": ci, "run.lastOutputValid": null, "rel.implements.in.total": 0 }
       - name: the pull request was closed before the merge
@@ -667,7 +670,8 @@ stages:
   # it can run. Code review is held to ten, past its loop's highest cap —
   # nine, for wording once the retro ran: each build adds a review through
   # publish, uncapped, and a moved head another. Fix review to its own twelve.
-  # The retro is held to two — its one round, and one Retry of it. And the
+  # Not the retro: it runs on a closed item, which no halt takes, and its
+  # own Retry is its own. And the
   # three stages with no step whose way in the forge can refuse — publish,
   # merge and closed — three times each, their rounds being only the refused
   # ones, and only as what failed: `retry: only`, Retry's alone. "Go to
@@ -681,11 +685,6 @@ stages:
         when: { "run.counters.code-review": { $lt: 10 }, "rel.implements.in.total": { $gt: 0 } }
       - stage: fix-review
         when: { "run.counters.fix-review": { $lt: 12 }, "rel.implements.in.total": { $gt: 0 } }
-      - stage: retro
-        when:
-          "run.counters.retro": { $lt: 2 }
-          "rel.implements.in.total": { $gt: 0 }
-          "rel.implements.in.not.merged": { $gt: 0 }
       # The merge needs every thread resolved, a Retry's as much as the
       # first, and the head the last review read: a head pushed while the
       # item was halted answers as moved, and goes back to code review.

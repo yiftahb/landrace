@@ -37,6 +37,10 @@ agent:
     hosts: [github.com, registry.npmjs.org]
     deny: [~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc]
 
+# fastlane's retro runs after the merge, on landrace/{item}-retro: a branch of
+# its own, tied back to the item as landrace/{item} is (#158).
+branchVariants: [retro]
+
 # Opaque to the engine, handed to the hooks as it stands. `repo` is here
 # because hooks/github.ts reads it, not because landrace knows what a repo is.
 tracker:
