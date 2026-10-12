@@ -61,12 +61,14 @@ async function isEnvExposed(dir: string): Promise<boolean> {
  * because calling every path in the workflow uncovered would bury the one
  * problem that is real.
  */
-async function coverage(ws: Workspace, { dir, workflow, steps }: LoadedWorkflow, branch: string): Promise<{ problems: Problem[]; registry: Registry | null }> {
+async function coverage(
+  ws: Workspace, { dir, workflow, steps }: LoadedWorkflow, branch: string, variants: readonly string[],
+): Promise<{ problems: Problem[]; registry: Registry | null }> {
   try {
     const registry = await loadHooks({ dir, modules: workflow.hooks ?? [], workspace: ws.dir });
     return {
       problems: [
-        ...validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined, branch),
+        ...validate(workflow, steps, snapshotProvides(registry.pre, registry.source) ?? undefined, branch, variants),
         // Where the loaded tracker files issues: `start` refuses the same.
         ...createProblems(workflow, steps, registry.post),
       ],
@@ -229,10 +231,11 @@ async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: Loade
   // With no landrace.yaml to read — a workflow checked alone, in CI — the
   // branch is the default one, as it is for a landrace.yaml that sets none.
   const branch = loaded?.config.branch ?? ITEM_BRANCH;
-  const graph: Problem[] = validate(workflow, steps, undefined, branch);
+  const variants = loaded?.config.branchVariants ?? [];
+  const graph: Problem[] = validate(workflow, steps, undefined, branch, variants);
   let registry: Registry | null = null;
   if (graph.length === 0) {
-    const result = await coverage(ws, wf, branch);
+    const result = await coverage(ws, wf, branch, variants);
     own.push(...result.problems);
     registry = result.registry;
   } else {
