@@ -290,12 +290,6 @@ branch: "lr-{item}"
 
 The workflows keep naming their branch, so change every `branch` line in them to the same template. `validate` lists each line it still refuses. Item `KEY-1`'s work is then on `lr-KEY-1`.
 
-### Branch variants
-
-A variant is another branch of the item's, named by `branchVariants` in [`landrace.yaml`](configuration.md#landraceyaml): the item branch with `-<name>` after it. With `branchVariants: [retro]`, item 7's variant is `landrace/7-retro`. A stage may name a variant as its `branch`, and its `branch.push` and `pull.*` effects may name it, as fastlane's retro does after the item's own pull request merged. The forges tie a pull request from a variant to its item as `follows-up`, not `implements`, and the board lists it under the item. So a workflow's `rel.implements` counts, and the `threads`, `diff` and `ci` briefings, read the item branch's pull request alone: an item reopened with its retro's pull request still open is not held back by it. It never answers for the item branch: `pull.open` on `landrace/{item}` is not satisfied by an open pull request from `landrace/{item}-retro`, and `pull.merge` and `pull.close` on one never see the other.
-
-A head can read as two items: `landrace/7-retro` is item `7-retro`'s branch, and item `7`'s variant. When both items exist, reading either halts, naming both, and the listing leaves that pull request out.
-
 Change the template only when no item has a pull request open. A pull request is tied to its item by the branch alone, so one open on the old branch is no longer read as the item's: the item's `rel.implements` counts, its briefings and its `pull.*` effects no longer see it. Landrace does not detect this; merge or close those pull requests first.
 
 The step's worktree is checked out on that branch: the branch itself for a step that may write (`repo:write`), so what it commits outlives the worktree; and the branch's commit, detached, for a read-only step, so a reviewer reads the item's code and cannot commit onto it.
@@ -309,6 +303,12 @@ The step's worktree is checked out on that branch: the branch itself for a step 
 - A branch needs `agent.isolation: worktree`.
 - A template git would refuse is refused at load. An item id that makes an invalid name (`a..b`) halts that item before its step runs. A branch already checked out elsewhere — your own checkout, say — halts the item, saying where, and is never taken.
 - A write step's worktree is kept for the item's next write step on the same branch, and removed when the item reaches a terminal stage. Between runs it is detached, so the branch is free for your own checkout while the item waits. On reuse it is reset to the branch's commit, so of what a step did only its commits and what git ignores, such as `node_modules`, carry over. Every other worktree is rebuilt whenever the next step needs it on something else. See [Configuration](configuration.md#a-write-steps-worktree).
+
+### Branch variants
+
+A variant is another branch of the item's, named by `branchVariants` in [`landrace.yaml`](configuration.md#landraceyaml): the item branch with `-<name>` after it. With `branchVariants: [retro]`, item 7's variant is `landrace/7-retro`. A stage may name a variant as its `branch`, and its `branch.push` and `pull.*` effects may name it, as fastlane's retro does after the item's own pull request merged. The forges tie a pull request from a variant to its item as `follows-up`, not `implements`, and the board lists it under the item. So a workflow's `rel.implements` counts, and the `threads`, `diff` and `ci` briefings, read the item branch's pull request alone: an item reopened with its retro's pull request still open is not held back by it. It never answers for the item branch: `pull.open` on `landrace/{item}` is not satisfied by an open pull request from `landrace/{item}-retro`, and `pull.merge` and `pull.close` on one never see the other.
+
+A head can read as two items: `landrace/7-retro` is item `7-retro`'s branch, and item `7`'s variant. When both items exist, reading either halts, naming both, and the listing leaves that pull request out.
 
 ## Effects
 
