@@ -121,7 +121,8 @@ this repository's commit conventions — a commitlint configuration, a
 `commit-msg` hook, a contributing guide — and follow them. The subject is
 `retro: lessons from #{node.id}` unless they say otherwise; when they do, write
 the subject they ask for, and end the message's body with the line
-`retro: lessons from #{node.id}`: it is how the next retro and the code
+`retro: lessons from #{node.id}`, above any trailer such as `Co-Authored-By:`
+so it stays the body's last line: it is how the next retro and the code
 reviewer find the commit. If there is nothing to learn, make no commit of your
 own. Finish with `git push origin HEAD`. If the push is
 rejected because the remote branch moved on its own — a person's commit, or
