@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-28
+
+### Fixed
+
+- **`landrace mcp` connects within a client's timeout.** Before it answers the client, the server lists every distinct tracker once, so a tracker it cannot read stops it before it connects. It listed them one after another, so a workspace of several trackers took their sum, about 34 seconds with four workflows, past Claude Code's default 30-second connect timeout, and no tool loaded. It now lists them all at once, so startup takes as long as the slowest tracker, and any one that fails still stops it. A client that still gives up first can raise its timeout: in Claude Code, `MCP_TIMEOUT` in `~/.claude/settings.json`. See [`landrace mcp`](docs/cli.md#landrace-mcp).
+
 ## [1.7.0] - 2026-10-12
 
 ### Added
@@ -154,7 +160,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Versions and updates.** `landrace version` (and `--version`) prints the version and whether npm has a newer one; `landrace update` updates the project's own dependency with its package manager, or the global install; `landrace start` says when a newer version is out. The check asks npm's registry once, gives up after two seconds, and is off in CI or with `LANDRACE_NO_UPDATE_CHECK=1`.
 - **Notifications and telemetry.** A `notify` block tells a person, through a notifier hook, when an item comes to rest needing them. `--telemetry` exports the engine's events as OpenTelemetry log records.
 
-[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/yiftahb/landrace/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/yiftahb/landrace/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/yiftahb/landrace/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/yiftahb/landrace/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/yiftahb/landrace/compare/v1.4.0...v1.5.0
