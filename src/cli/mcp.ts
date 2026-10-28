@@ -107,8 +107,13 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
    * own sake: a login we cannot resolve makes our own markers read as a
    * stranger's, the engine believes no step has ever run, and every paid step
    * is invoked again on every tick.
+   *
+   * All at once: each probe is a full list, and one after another a workspace
+   * of several trackers took their sum — past a client's connect timeout,
+   * so no tool loaded at all. Concurrent, startup waits on the slowest, and
+   * any one that throws still stops it.
    */
-  for (const source of new Set(hooked.flatMap(({ registry }) => (registry.source ? [registry.source] : [])))) await source.list(ctx);
+  await Promise.all([...new Set(hooked.flatMap(({ registry }) => (registry.source ? [registry.source] : [])))].map((source) => source.list(ctx)));
 
   /*
    * And where a turn runs, resolved exactly as the loop resolves it.

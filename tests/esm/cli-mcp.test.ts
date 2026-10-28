@@ -59,8 +59,20 @@ export const source = brand("source", {
   // comments exactly. This is the one check the MCP plane makes that is not
   // itself the preflight.
   relations: [],
-  list: async (ctx: { config: { tracker: { order: string } } }): Promise<unknown> => {
+  list: async (ctx: { config: { tracker: { order: string; barrier?: number } } }): Promise<unknown> => {
     await appendFile(ctx.config.tracker.order, JSON.stringify({ list: true }) + "\\n");
+    // With a barrier, no list answers until that many have begun: probed one
+    // after another, the first waits for a second that never starts.
+    const { order, barrier } = ctx.config.tracker;
+    if (barrier !== undefined) {
+      const seen = globalThis as Record<string, unknown>;
+      seen[order] = ((seen[order] as number | undefined) ?? 0) + 1;
+      const until = Date.now() + 2000;
+      while ((seen[order] as number) < barrier) {
+        if (Date.now() > until) throw new Error("listed alone: the sources were probed one after another");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
     return { nodes: [itemNode(["lr:auto", "lr:stage:asked"])], relationships: [] };
   },
   read: async (): Promise<unknown> => ({ nodes: [itemNode(["lr:auto", "lr:stage:spec"])], relationships: [] }),
@@ -161,6 +173,10 @@ async function fixture(opts: {
   mcpJson?: unknown;
   /** A second workflow, `fast`, on the same hooks and eligible on `lr:fast`. */
   fast?: boolean;
+  /** `fast` loads its own copy of the hook module, so it has a source of its own. */
+  fastSource?: boolean;
+  /** No source's list answers until this many have begun. */
+  barrier?: number;
   /** What the `spec` step declares, inside its brackets; `repo:read` by default. */
   capabilities?: string;
   /** More of the fake hook module, after everything else in it. */
@@ -227,10 +243,11 @@ stages:
     const fast = join(dir, "workflows", "fast");
     await mkdir(join(fast, "steps"), { recursive: true });
     await copyFile(join(main, "steps", "spec.md"), join(fast, "steps", "spec.md"));
+    if (opts.fastSource) await copyFile(join(dir, "hooks", "fake.ts"), join(dir, "hooks", "fast.ts"));
     await writeFile(join(fast, "workflow.yaml"), `version: 1
 name: fastlane
 description: the fast one
-hooks: [../../hooks/fake.ts, ../../hooks/claude.ts]
+hooks: [../../hooks/${opts.fastSource ? "fast" : "fake"}.ts, ../../hooks/claude.ts]
 admit: [lr:fast]
 eligible:
   - when: { "node.state.labels": { $in: ["lr:fast"] } }
@@ -246,7 +263,7 @@ stages:
     join(dir, "landrace.yaml"),
     `version: 1
 agent: { adapter: ${opts.adapter ?? "fake"}, model: opus, isolation: ${opts.isolation ?? "none"}${opts.agentKeys ? `, ${opts.agentKeys}` : ""} }
-tracker: { record: ${JSON.stringify(record)}, order: ${JSON.stringify(order)} }
+tracker: { record: ${JSON.stringify(record)}, order: ${JSON.stringify(order)}${opts.barrier === undefined ? "" : `, barrier: ${opts.barrier}`} }
 tick: { interval: 30s, concurrency: 2 }
 security: { screen: ${opts.screen}, model: fake-small }
 log: { redact: [githubToken] }
@@ -315,6 +332,22 @@ describe("buildMcpTools and the startup preflight", () => {
     const { dir, order } = await fixture({ screen: false, preflight: "pass" });
     await buildMcpTools(dir);
     expect(await posted(order)).toEqual([{ preflight: true }, { list: true }]);
+  });
+
+  /**
+   * Each source's probe is a full list, so probed one after another a
+   * workspace's startup is their sum — past a client's connect timeout once
+   * the trackers hold enough items. At once, it is the slowest one's.
+   */
+  it("proves every distinct source at once, each once", async () => {
+    const { dir, order } = await fixture({ screen: false, preflight: "pass", fast: true, fastSource: true, barrier: 2 });
+    await buildMcpTools(dir);
+    expect(await posted(order)).toEqual([{ preflight: true }, { preflight: true }, { list: true }, { list: true }]);
+  });
+
+  it("still refuses to assemble when a source cannot list", async () => {
+    const { dir } = await fixture({ screen: false, fast: true, fastSource: true, barrier: 3 });
+    await expect(buildMcpTools(dir)).rejects.toThrow(/listed alone/);
   });
 
   /**
