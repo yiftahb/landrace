@@ -187,6 +187,12 @@ Runs Landrace's **operator server**: an MCP server over stdio, through which an 
 
 Like `start`, it runs each hook's preflight before anything else, reads `.landrace/.env` and the shell for telemetry, and refuses `OTEL_LOGS_EXPORTER=console`, which would write into its protocol.
 
+It answers the client only after it has listed every distinct tracker once, all at the same time, so a tracker it cannot read stops it before it connects. Startup therefore takes as long as the slowest tracker's full list. A client that gives up first shows the server as failed to connect; in Claude Code, raise its timeout, in milliseconds, in `~/.claude/settings.json` and restart Claude Code:
+
+```json
+{ "env": { "MCP_TIMEOUT": "90000" } }
+```
+
 ### Connecting an editor
 
 This repository defines the server in `.agsync/mcp/landrace.yaml`, and [agsync](https://github.com/yiftahb/agsync) writes it out per agent — `.mcp.json` for Claude Code, `.codex/config.toml` for Codex:
