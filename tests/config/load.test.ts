@@ -199,6 +199,48 @@ describe("a var that is really a secret", () => {
   });
 });
 
+/**
+ * #175: `agent.git` per instance. Its values may be `$VAR` or `${VAR}`,
+ * resolved from `.env` over the environment and written back into
+ * `config.agent.git`, so the kit and every hook read the resolved identity.
+ */
+describe("agent.git's references", () => {
+  const withGit = async (git: string, env: string): Promise<string> => {
+    const dir = await fixture(env);
+    await writeFile(join(dir, "landrace.yaml"), CONFIG.replace("agent: { adapter: claude, model: opus }", `agent: { adapter: claude, git: ${git} }`));
+    return dir;
+  };
+
+  it.each([
+    ["$VAR", "{ name: $LR_GIT_NAME, email: $LR_GIT_EMAIL }"],
+    ["${VAR}", '{ name: "${LR_GIT_NAME}", email: "${LR_GIT_EMAIL}" }'],
+  ])("resolves a %s reference from .env into config.agent.git", async (_, git) => {
+    const dir = await withGit(git, "GITHUB_TOKEN=ghp_xxxxxxxxxxxx\nLR_GIT_NAME=Dev One\nLR_GIT_EMAIL=dev1@example.invalid\n");
+    const loaded = await loadConfig(dir);
+    expect(loaded.config.agent.git).toEqual({ name: "Dev One", email: "dev1@example.invalid" });
+    expect(configProblems(dir, loaded)).toEqual([]);
+  });
+
+  it("keeps a literal as written", async () => {
+    const dir = await withGit("{ name: landrace, email: bot@example.invalid }", "GITHUB_TOKEN=ghp_xxxxxxxxxxxx\n");
+    expect((await loadConfig(dir)).config.agent.git).toEqual({ name: "landrace", email: "bot@example.invalid" });
+  });
+
+  it.each([
+    ["unset", "GITHUB_TOKEN=ghp_xxxxxxxxxxxx\nLR_GIT_EMAIL=dev1@example.invalid\n"],
+    ["empty", "GITHUB_TOKEN=ghp_xxxxxxxxxxxx\nLR_GIT_NAME=\nLR_GIT_EMAIL=dev1@example.invalid\n"],
+    ["blank", 'GITHUB_TOKEN=ghp_xxxxxxxxxxxx\nLR_GIT_NAME="  "\nLR_GIT_EMAIL=dev1@example.invalid\n'],
+  ])("refuses a variable that is %s, naming the key and the variable, for validate and start", async (_, env) => {
+    const dir = await withGit("{ name: $LR_GIT_NAME, email: $LR_GIT_EMAIL }", env);
+    const loaded = await loadConfig(dir);
+    expect(configProblems(dir, loaded)).toEqual([{
+      rule: "vars",
+      message: expect.stringMatching(/^agent\.git\.name is \$LR_GIT_NAME, which does not resolve to a usable value; set it in .*\.env/),
+    }]);
+    expect(() => assertConfigUsable(dir, loaded)).toThrow(/vars: agent\.git\.name is \$LR_GIT_NAME/);
+  });
+});
+
 describe("the item branch", () => {
   it("is landrace/{item} when none is set, and takes the one set", async () => {
     expect((await loadConfig(await fixture(""))).config.branch).toBe("landrace/{item}");

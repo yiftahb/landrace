@@ -24,6 +24,7 @@ import type {
   EventReading,
   Executor,
   ExecutorContext,
+  HookContext,
   ExecutorFactory,
   GitIdentity,
   HandoffArg,
@@ -129,13 +130,27 @@ function childEnv(extra: readonly string[], git: GitIdentity | undefined): NodeJ
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
-  if (git !== undefined) {
-    env.GIT_AUTHOR_NAME = git.name;
-    env.GIT_AUTHOR_EMAIL = git.email;
-    env.GIT_COMMITTER_NAME = git.name;
-    env.GIT_COMMITTER_EMAIL = git.email;
-  }
-  return env;
+  return { ...env, ...identityEnv(git) };
+}
+
+/** git's four author and committer variables for an identity, or none without one. */
+function identityEnv(git: GitIdentity | undefined): Record<string, string> {
+  if (git === undefined) return {};
+  return { GIT_AUTHOR_NAME: git.name, GIT_AUTHOR_EMAIL: git.email, GIT_COMMITTER_NAME: git.name, GIT_COMMITTER_EMAIL: git.email };
+}
+
+/**
+ * The environment a hook adds to its own git when it commits onto an item's
+ * branch from the runner process — regenerating derived files before a push,
+ * say — so its commits name `agent.git` as the agent's do, not the operator's
+ * `~/.gitconfig`. Empty when `agent.git` is unset, leaving git to choose as it
+ * would. Startup refuses a malformed `agent.git`, so a running engine never
+ * hands one here; if one arrives anyway, this throws with the same problems.
+ */
+export function gitIdentityEnv(ctx: Pick<HookContext, "config">): Record<string, string> {
+  const { git, problems } = readGit(ctx.config.agent.git, ctx.config.agent.adapter);
+  if (problems.length) throw new Error(problems.join("\n"));
+  return identityEnv(git);
 }
 
 /** 8MB is ample for a real result; a flooding child gets killed, not indulged. */

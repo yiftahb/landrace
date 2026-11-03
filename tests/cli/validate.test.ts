@@ -254,6 +254,23 @@ stages:
       expect.objectContaining({ rule: "vars", message: expect.stringMatching(/"assignee"[\s\S]*secret/) }),
     );
   });
+
+  // #175: agent.git's per-instance references, refused by the same rule.
+  it.each([
+    ["unset", ""],
+    ["empty", "LR_VALIDATE_GIT_EMAIL=\n"],
+  ])("reports an agent.git variable that is %s, naming the key and the variable", async (_, env) => {
+    const dir = await dirFor("vars: { assignee: $LR_VALIDATE_ASSIGNEE }\n");
+    await writeFile(join(dir, "landrace.yaml"),
+      "version: 1\nagent: { adapter: claude, git: { name: landrace, email: $LR_VALIDATE_GIT_EMAIL } }\n" +
+      "vars: { assignee: $LR_VALIDATE_ASSIGNEE }\n");
+    await writeFile(join(dir, ".env"), env);
+    const r = await runValidate(dir);
+    expect(r.problems.filter((p) => p.rule === "vars")).toEqual([{
+      rule: "vars",
+      message: expect.stringMatching(/agent\.git\.email.*\$LR_VALIDATE_GIT_EMAIL.*does not resolve.*set it in .*\.env/),
+    }]);
+  });
 });
 
 /** The notify block, refused here in the words `start` refuses it with. */

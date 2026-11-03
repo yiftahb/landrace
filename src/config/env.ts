@@ -17,6 +17,11 @@ export function parseEnvFile(source: string): Map<string, string> {
 
 const REFERENCE = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/;
 
+/** The variable a `$VAR` / `${VAR}` value names, or undefined for a literal. */
+export function referenceOf(value: string): string | undefined {
+  return REFERENCE.exec(value)?.[1];
+}
+
 /** `$VAR` / `${VAR}` resolve from the env map. Unresolved returns unchanged. */
 export function expand(value: string, env: Map<string, string>): string {
   const m = REFERENCE.exec(value);

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { hookKindOf } from "#hooks/contracts.js";
-import { BaseExecutor } from "#kit/executor.js";
+import { loadConfig } from "#config/load.js";
+import { BaseExecutor, gitIdentityEnv } from "#kit/executor.js";
 import type { EventReading, ExecutorContext, HandoffArg, HandoffPlan, PairingKind, RunPlan, SandboxSettings, Step } from "#namespace.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
 
@@ -404,5 +405,76 @@ describe("agent.git, the identity an agent commits as", () => {
 
   it("commits as HOME's .gitconfig names when agent.git is unset", async () => {
     await expect(commitAs({}, ["repo:write"])).resolves.toBe("Operator <operator@example.com> / Operator <operator@example.com>");
+  });
+
+  /*
+   * #175: values written per instance, as `$VAR` or `${VAR}`, resolved by
+   * `loadConfig` from `.env` — never a config built here, so what the agent
+   * commits as is what a real `landrace.yaml` and `.env` produce.
+   */
+  describe("through loadConfig, from .env", () => {
+    const loadedWith = async (git: string, env: string) => {
+      const dir = tempDir("tiny-cfg-");
+      writeFileSync(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: tiny, git: ${git} }\n`);
+      writeFileSync(join(dir, ".env"), env);
+      return loadConfig(dir);
+    };
+    const commitWith = async (git: string, env: string): Promise<string> => {
+      const { config } = await loadedWith(git, env);
+      const cwd = await bareRepo();
+      const ctx = { ...ctxFor({}), config };
+      const executor = await new Tiny(committingBin()).create(ctx);
+      await executor.run("p", { round: 1, cwd, signal: new AbortController().signal, capabilities: ["repo:write"] });
+      return identities(cwd);
+    };
+    const env = "LANDRACE_GIT_NAME=Dev One\nLANDRACE_GIT_EMAIL=dev1@example.invalid\n";
+
+    it.each([
+      ["$VAR", "{ name: $LANDRACE_GIT_NAME, email: $LANDRACE_GIT_EMAIL }"],
+      ["${VAR}", '{ name: "${LANDRACE_GIT_NAME}", email: "${LANDRACE_GIT_EMAIL}" }'],
+    ])("commits as the values .env gives a %s reference", async (_, git) => {
+      await expect(commitWith(git, env)).resolves.toBe("Dev One <dev1@example.invalid> / Dev One <dev1@example.invalid>");
+    });
+
+    it("commits as a literal identity, which needs no .env", async () => {
+      await expect(commitWith("{ name: landrace, email: bot@example.invalid }", ""))
+        .resolves.toBe("landrace <bot@example.invalid> / landrace <bot@example.invalid>");
+    });
+  });
+});
+
+/**
+ * #175: a hook that commits from the runner process names the configured
+ * identity too, by passing `gitIdentityEnv(ctx)` to its git.
+ */
+describe("gitIdentityEnv, the identity a hook commits as", () => {
+  const exec = promisify(execFile);
+  let home: string;
+  beforeAll(() => {
+    home = tempDir("hook-home-");
+    writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Operator\n\temail = operator@example.com\n");
+  });
+
+  const hookCommit = async (agent: Record<string, unknown>): Promise<string> => {
+    const cwd = tempDir("hook-repo-");
+    const env = { PATH: process.env.PATH ?? "", HOME: home, ...gitIdentityEnv(ctxFor(agent)) };
+    await exec("git", ["init", "-q", "-b", "main"], { cwd, env });
+    await exec("git", ["commit", "-q", "--allow-empty", "-m", "derived"], { cwd, env });
+    return (await exec("git", ["log", "-1", "--format=%an <%ae> / %cn <%ce>"], { cwd, env })).stdout.trim();
+  };
+
+  it("commits as agent.git's name and email, over HOME's .gitconfig", async () => {
+    await expect(hookCommit({ adapter: "tiny", git: { name: "landrace", email: "bot@example.invalid" } }))
+      .resolves.toBe("landrace <bot@example.invalid> / landrace <bot@example.invalid>");
+  });
+
+  it("is empty when agent.git is unset, so HOME's .gitconfig names the commit", async () => {
+    expect(gitIdentityEnv(ctxFor({ adapter: "tiny" }))).toEqual({});
+    await expect(hookCommit({ adapter: "tiny" })).resolves.toBe("Operator <operator@example.com> / Operator <operator@example.com>");
+  });
+
+  it("throws readGit's problems for a malformed agent.git, naming each", () => {
+    expect(() => gitIdentityEnv(ctxFor({ adapter: "tiny", git: { name: "landrace", colour: "red" } })))
+      .toThrow(/agent\.git\.colour is not a setting[\s\S]*agent\.git\.email must be a non-empty string/);
   });
 });

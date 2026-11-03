@@ -9,7 +9,7 @@ landrace validate path/to/ws   # another workspace
 
 It prints `<dir>: valid`, or one line per problem — `  <rule>: <message>` — and a count, and exits 1. With several workflows, a problem in one is prefixed with its id; a problem every workflow shares (the configuration, an executor, a notifier) is said once.
 
-In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's worktree — the declared secrets not resolving and `.mcp.json` missing are expected reports.
+In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's worktree — the declared secrets not resolving, an `agent.git` written as `$VAR` or `${VAR}` not resolving (reported under `vars`), and `.mcp.json` missing are expected reports.
 
 ## The order it checks in
 
@@ -30,7 +30,7 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 | `config` | A `landrace.yaml` that exists but cannot be read or does not match the schema |
 | `branch` | A `branch` in `landrace.yaml` that is no item branch template: `{item}` other than exactly once, no fixed text before `{item}`, any other `{placeholder}`, or a name git would refuse once `{item}` is filled — see [`branch`](configuration.md#landraceyaml); a `branchVariants` name that is not lower-case letters and digits, is named twice, or whose filled branch is no template |
 | `secret` | A secret whose `$VAR` does not resolve; a `.env` that exists and git does not ignore |
-| `vars` | A var that does not resolve or resolves to an empty value; a `{vars.x}` nothing defines; a declared var nothing references; a var holding a secret's value |
+| `vars` | A var that does not resolve or resolves to an empty value; an `agent.git` `$VAR` that does not resolve or resolves to an empty value; a `{vars.x}` nothing defines; a declared var nothing references; a var holding a secret's value |
 | `layout` | A workspace that is not one: the old single `workflow.yaml` at its root, no workflows, a workflow id that is not usable (lowercase letters, digits and `-`, starting with a letter or digit), a `workflows` folder or a workflow folder that is a symbolic link, a `workflows:` list in `landrace.yaml` that does not name exactly the folders |
 | `schema` | A `workflow.yaml` or step front matter that does not match its strict schema — an unknown key included; an `extends` that is empty; a step in an `extends` chain with one `## ` heading twice (a step that extends nothing and that nothing extends is read whole, repeats and all) |
 | `duplicate-id` | Two stages with one id |
