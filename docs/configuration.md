@@ -45,7 +45,7 @@ Both shipped executors, Claude Code and Codex, read these `agent.*` keys and ref
 | `agent.mcp` | `[]` | The MCP servers a step or turn may use. Each entry is a server name, or `{ name, tools }` to allow only some of its tools. A step's own `mcp` narrows it — see [Workflows](workflows.md#step-files) |
 | `agent.sandbox.hosts` | `[]` | The only hosts a write step's commands may reach |
 | `agent.sandbox.deny` | `[~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc]` | Paths under your home that a write step may not read. A list you write replaces the default |
-| `agent.git` | none | `{ name, email }`: who every commit an agent makes names as author and committer, in place of the `user.name` and `user.email` your `~/.gitconfig` or the repository's config gives. Both keys are required, as non-empty text written literally; any other key or shape is refused at startup. It sets `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` for every step and turn, which git ranks above every config file. A commit's signing key still comes from your own git config. Unset, git picks the identity as it would for you |
+| `agent.git` | none | `{ name, email }`: who every commit an agent makes names as author and committer, in place of the `user.name` and `user.email` your `~/.gitconfig` or the repository's config gives. Both keys are required, as non-empty text, written literally or as a `$VAR` or `${VAR}` reference — see [Who commits](#who-commits); any other key or shape is refused at startup. It sets `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` for every step and turn, which git ranks above every config file. A commit's signing key still comes from your own git config. A hook that commits names it only by passing `gitIdentityEnv(ctx)` to its own git — see [Hooks](hooks.md#the-kits-functions). Unset, git picks the identity as it would for you |
 | `agent.plugins` | `[]` | Claude Code only: the plugins a step runs with, unless it lists its own `plugins`. No step loads the plugins you enabled for yourself. Codex refuses it |
 
 What these keys do to a run — which servers a step gets, what the sandbox allows and refuses — is in [Security](security.md#mcp-servers-a-step-may-hold) and [Security](security.md#a-write-steps-sandbox); how each executor applies them is in [Integrations](integrations.md#claude-code).
@@ -61,6 +61,31 @@ agent:
 ```
 
 `landrace start` and `landrace mcp` refuse to start — and `landrace validate` reports the same — when `agent.mcp` names a server but the repository root has no `.mcp.json`, when a name is not in it (the refusal lists the names it does define), or when a name is Landrace's own operator server. `landrace status` runs no step and needs no `.mcp.json`.
+
+### Who commits
+
+`agent.git` names who an agent's commits are by. Written literally, it is the same for everyone who runs Landrace on the repository, since `landrace.yaml` is committed:
+
+```yaml
+agent:
+  git: { name: landrace, email: landrace@example.com }
+```
+
+The identity usually goes with the forge token, and each developer's instance has its own token. Write `$VAR` or `${VAR}` instead, and each instance sets its own values in `.landrace/.env`. One developer then runs with a bot's token and bot commits, another with their own token and their own name:
+
+```yaml
+# landrace.yaml — the same file for everyone
+agent:
+  git: { name: $LANDRACE_GIT_NAME, email: $LANDRACE_GIT_EMAIL }
+```
+
+```dotenv
+# .landrace/.env — each developer's own values
+LANDRACE_GIT_NAME=Ann Example
+LANDRACE_GIT_EMAIL=ann@example.com
+```
+
+A reference resolves at load, from `.env` first and then your shell, exactly as a secret does. A hook's `ctx.config.agent.git` holds the resolved values, never the reference. A variable that is set nowhere, or set to an empty value, is reported by `validate` under `vars`, naming the key and the variable, and `landrace start` and `landrace mcp` refuse to start over it.
 
 ### A write step's worktree
 

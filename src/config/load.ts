@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { expand, parseEnvFile } from "#config/env.js";
+import { expand, parseEnvFile, referenceOf } from "#config/env.js";
 import { branchTemplateProblem, branchVariantProblem } from "#conventions.js";
 import { MIN_SECRET_LENGTH } from "#runner/events.js";
 import { runtimeConfigSchema } from "#config/schema.js";
@@ -83,6 +83,12 @@ export function configProblems(dir: string, loaded: LoadedConfig): Problem[] {
         "A var is substituted into the workflow before anything validates it, so an unset or empty " +
         "one fills a predicate in with nothing — and a predicate filled in with nothing matches no item",
     })),
+    ...loaded.missingGit.map(({ key, variable }) => ({
+      rule: "vars",
+      message:
+        `agent.git.${key} is $${variable}, which does not resolve to a usable value; set it in ${env}. ` +
+        "An unset or empty variable would leave every commit an agent or a hook makes without the identity it names",
+    })),
     ...varsHoldingSecrets(loaded).map((name) => ({
       rule: "vars",
       message:
@@ -146,10 +152,34 @@ export async function loadConfig(dir: string): Promise<LoadedConfig> {
     else vars.set(name, value);
   }
 
+  /*
+   * `agent.git` per instance: the identity goes with the forge token, and the
+   * token is each developer's own, so a committed literal would name one
+   * person for everybody. Resolved here, and written back, because the kit may
+   * not import the config layer: `readGit` and every hook's `ctx.config` then
+   * see the identity, never the reference. Refused like a var when unset or
+   * empty — git refuses an empty ident, and `export X=` is the likelier slip.
+   * A refused reference stays as written, so the executor's shape check does
+   * not report the same mistake a second time in other words.
+   */
+  const missingGit: Array<{ key: string; variable: string }> = [];
+  const git: unknown = config.agent.git;
+  if (typeof git === "object" && git !== null && !Array.isArray(git)) {
+    const block = git as Record<string, unknown>;
+    for (const key of ["name", "email"]) {
+      const reference = block[key];
+      const variable = typeof reference === "string" ? referenceOf(reference) : undefined;
+      if (variable === undefined) continue;
+      const value = env.get(variable);
+      if (value === undefined || value.trim() === "") missingGit.push({ key, variable });
+      else block[key] = value;
+    }
+  }
+
   const telemetry = new Map(TELEMETRY_KEYS.flatMap((key) => {
     const value = env.get(key);
     return value === undefined ? [] : [[key, value] as const];
   }));
 
-  return { config, missing, secretValues, vars, missingVars, telemetry };
+  return { config, missing, secretValues, vars, missingVars, missingGit, telemetry };
 }

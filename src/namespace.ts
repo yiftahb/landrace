@@ -534,6 +534,12 @@ export interface LoadedConfig {
    * with "" is one that quietly matches no item at all.
    */
   missingVars: string[];
+  /**
+   * `agent.git` keys written as a `$VAR` or `${VAR}` that is unset or empty,
+   * with the variable each names. One that resolved is already written back
+   * into `config.agent.git`.
+   */
+  missingGit: Array<{ key: string; variable: string }>;
 }
 
 /* -------------------------------------------------------------- workflow -- */
