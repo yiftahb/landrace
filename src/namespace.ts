@@ -970,7 +970,14 @@ export type AgentSettings<E = unknown> = {
   effort?: string;
   mcp: McpEntry[];
   sandbox: SandboxSettings;
+  git?: GitIdentity;
 } & E;
+
+/** Who an agent's commits name as author and committer, from `agent.git`. */
+export interface GitIdentity {
+  name: string;
+  email: string;
+}
 
 /** An executor's own event log, as a hook is handed it. */
 export type HookLog = (event: string, data?: Record<string, unknown>) => void;
@@ -990,6 +997,8 @@ export interface KitSettings {
   /** Per server, the only tools a run may call on it; a server absent here allows every tool it has. */
   tools: Readonly<Record<string, readonly string[]>>;
   sandbox: SandboxSettings;
+  /** The identity every run's commits name, over any git config; absent, git's own resolution. */
+  git?: GitIdentity | undefined;
   log?: HookLog | undefined;
   /** A backstop only: the engine gives every run a limit. */
   timeoutMs?: number | undefined;

@@ -25,6 +25,7 @@ import type {
   Executor,
   ExecutorContext,
   ExecutorFactory,
+  GitIdentity,
   HandoffArg,
   HandoffPlan,
   KitSettings,
@@ -114,12 +115,25 @@ async function repositoryRoot(dir: string): Promise<string> {
   }
 }
 
-/** The agent's environment, never the engine's: `INHERITED_ENV_KEYS` and `extra`, from this process. */
-function childEnv(extra: readonly string[]): NodeJS.ProcessEnv {
+/**
+ * The agent's environment, never the engine's: `INHERITED_ENV_KEYS` and
+ * `extra`, from this process, and `agent.git` when it is set. git ranks these
+ * four variables above every config file, so a commit names the configured
+ * identity whatever HOME's `.gitconfig` or the repository's own config says:
+ * a forge that refuses approval from anyone who committed to a pull request
+ * would otherwise stop the operator approving the agent's work.
+ */
+function childEnv(extra: readonly string[], git: GitIdentity | undefined): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of [...INHERITED_ENV_KEYS, ...extra]) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
+  }
+  if (git !== undefined) {
+    env.GIT_AUTHOR_NAME = git.name;
+    env.GIT_AUTHOR_EMAIL = git.email;
+    env.GIT_COMMITTER_NAME = git.name;
+    env.GIT_COMMITTER_EMAIL = git.email;
   }
   return env;
 }
@@ -401,9 +415,29 @@ function narrowMcp(entries: readonly McpEntry[], known: Readonly<AllowedTools>):
 }
 
 /** The keys of `agent:` the kit reads for every integration, the engine's own four among them. */
-const KIT_KEYS = ["adapter", "isolation", "worktree", "signature", "model", "effort", "mcp", "sandbox"];
+const KIT_KEYS = ["adapter", "isolation", "worktree", "signature", "model", "effort", "mcp", "sandbox", "git"];
 /** The keys of `agent.sandbox`. */
 const SANDBOX_KEYS = new Set(["hosts", "deny"]);
+/** The keys of `agent.git`. */
+const GIT_KEYS: readonly string[] = ["name", "email"];
+
+/** `agent.git` as written, or why it is refused: one line per key that is wrong, so each is named. */
+function readGit(git: unknown, id: string): { git?: GitIdentity; problems: string[] } {
+  // Not a default: a bare "git:" in YAML parses as null, and is refused like any other non-object.
+  if (git === undefined) return { problems: [] };
+  if (typeof git !== "object" || git === null || Array.isArray(git)) {
+    return { problems: ["agent.git must be { name, email }, with only those two keys"] };
+  }
+  const block = git as Record<string, unknown>;
+  const problems = Object.keys(block)
+    .filter((key) => !GIT_KEYS.includes(key))
+    .map((key) => `agent.git.${key} is not a setting the ${id} executor reads`);
+  const { name, email } = block;
+  if (typeof name !== "string" || name.trim() === "") problems.push("agent.git.name must be a non-empty string");
+  if (typeof email !== "string" || email.trim() === "") problems.push("agent.git.email must be a non-empty string");
+  if (problems.length || typeof name !== "string" || typeof email !== "string") return { problems };
+  return { git: { name, email }, problems };
+}
 
 /**
  * What a write step's commands may not read when `agent.sandbox.deny` names
@@ -533,6 +567,8 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       if (!known.has(key)) problems.push(`agent.${key} is not a setting the ${this.id} executor reads`);
     }
     const { model, effort, mcp = [], sandbox = {} } = agent;
+    const { git, problems: gitProblems } = readGit(agent.git, this.id);
+    problems.push(...gitProblems);
     if (model !== undefined && (typeof model !== "string" || model === "")) problems.push("agent.model must be a model name");
     if (effort !== undefined && !this.efforts.includes(effort as string)) problems.push(this.effortProblem("agent.effort is", effort));
     problems.push(...extraProblems);
@@ -582,6 +618,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       settings: {
         ...(typeof model === "string" ? { model } : {}),
         ...(typeof effort === "string" ? { effort } : {}),
+        ...(git === undefined ? {} : { git }),
         ...extras,
         mcp: mcp as McpEntry[],
         // Read even when refused, so the problems above are the only thing thrown.
@@ -671,7 +708,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    */
   build(settings: KitSettings & E): Executor {
     const {
-      model, effort, servers: mcpServers, tools: mcpTools, sandbox, log, timeoutMs = FALLBACK_TIMEOUT_MS,
+      model, effort, servers: mcpServers, tools: mcpTools, sandbox, git, log, timeoutMs = FALLBACK_TIMEOUT_MS,
     } = settings;
     const extras = settings as unknown as E;
 
@@ -796,7 +833,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
             stdio: ["pipe", "pipe", "pipe"],
             shell: false,
             detached: true,
-            env: childEnv(this.envKeys),
+            env: childEnv(this.envKeys, git),
             ...(resolvedCwd !== undefined ? { cwd: resolvedCwd } : {}),
           });
         } catch (e) {
