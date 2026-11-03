@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { hookKindOf } from "#hooks/contracts.js";
 import { BaseExecutor } from "#kit/executor.js";
 import type { EventReading, ExecutorContext, HandoffArg, HandoffPlan, PairingKind, RunPlan, SandboxSettings, Step } from "#namespace.js";
@@ -212,6 +214,23 @@ describe("BaseExecutor", () => {
         .rejects.toThrow(/tiny has no network allowlist/);
     });
 
+    it.each([
+      ["no email", { name: "landrace" }, /agent\.git\.email must be a non-empty string/],
+      ["an empty name", { name: "", email: "bot@example.invalid" }, /agent\.git\.name must be a non-empty string/],
+      ["a non-object value", "landrace", /agent\.git must be \{ name, email \}/],
+      ["a list", [], /agent\.git must be \{ name, email \}/],
+      ["null", null, /agent\.git must be \{ name, email \}/],
+      ["an unknown key", { name: "landrace", email: "bot@example.invalid", signingkey: "x" }, /agent\.git\.signingkey is not a setting the tiny executor reads/],
+    ])("refuses agent.git with %s, naming which", async (_, git, message) => {
+      await expect(new Tiny("tiny").create(ctxFor({ adapter: "tiny", git }))).rejects.toThrow(message);
+    });
+
+    it("refuses only the part of agent.git that is wrong", async () => {
+      const refused = new Tiny("tiny").create(ctxFor({ adapter: "tiny", git: { name: "landrace" } }));
+      await expect(refused).rejects.toThrow(/email/);
+      await expect(refused).rejects.not.toThrow(/agent\.git\.name/);
+    });
+
     it("refuses a step's effort outside the integration's levels, naming the step, the effort and the levels", async () => {
       const steps = new Map<string, Step>([
         ["steps/fine.md", { effort: "high", prompt: "" } as Step],
@@ -332,5 +351,58 @@ describe("BaseExecutor", () => {
       expect(absent).not.toHaveProperty("skills");
       expect(absent).not.toHaveProperty("plugins");
     });
+  });
+});
+
+/**
+ * #173: a step's commits name the configured identity, not whoever the
+ * operator's `~/.gitconfig` names. Through `create` and `run`, so the
+ * environment is the one the kit hands a real agent, not one built here.
+ */
+describe("agent.git, the identity an agent commits as", () => {
+  const exec = promisify(execFile);
+  let home: string;
+  const savedHome = process.env.HOME;
+  beforeAll(() => {
+    home = tempDir("tiny-home-");
+    writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Operator\n\temail = operator@example.com\n");
+    process.env.HOME = home;
+  });
+  afterAll(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  });
+
+  /** A repository with no identity of its own, so only HOME's or the environment's can name one. */
+  const bareRepo = async (): Promise<string> => {
+    const dir = tempDir("tiny-repo-");
+    await exec("git", ["init", "-q", "-b", "main"], { cwd: dir });
+    return dir;
+  };
+
+  /** A stand-in agent that commits in its cwd, then answers. */
+  const committingBin = (): string => {
+    const bin = join(tempDir("tiny-bin-"), "tiny");
+    writeFileSync(bin, "#!/bin/sh\ncat >/dev/null\ngit commit -q --allow-empty -m step || exit 1\necho '{\"answer\":\"ok\"}'\n", { mode: 0o755 });
+    return bin;
+  };
+
+  const identities = async (cwd: string): Promise<string> =>
+    (await exec("git", ["log", "-1", "--format=%an <%ae> / %cn <%ce>"], { cwd })).stdout.trim();
+
+  const commitAs = async (agent: Record<string, unknown>, capabilities?: string[]): Promise<string> => {
+    const cwd = await bareRepo();
+    const executor = await new Tiny(committingBin()).create(ctxFor({ adapter: "tiny", ...agent }));
+    await executor.run("p", { round: 1, cwd, signal: new AbortController().signal, ...(capabilities ? { capabilities } : {}) });
+    return identities(cwd);
+  };
+
+  it.each([[["repo:write"]], [["repo:read"]]])("commits as agent.git's name and email, over HOME's .gitconfig, for a %j step", async (capabilities) => {
+    await expect(commitAs({ git: { name: "landrace", email: "bot@example.invalid" } }, capabilities))
+      .resolves.toBe("landrace <bot@example.invalid> / landrace <bot@example.invalid>");
+  });
+
+  it("commits as HOME's .gitconfig names when agent.git is unset", async () => {
+    await expect(commitAs({}, ["repo:write"])).resolves.toBe("Operator <operator@example.com> / Operator <operator@example.com>");
   });
 });
