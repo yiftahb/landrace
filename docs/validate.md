@@ -9,7 +9,7 @@ landrace validate path/to/ws   # another workspace
 
 It prints `<dir>: valid`, or one line per problem — `  <rule>: <message>` — and a count, and exits 1. With several workflows, a problem in one is prefixed with its id; a problem every workflow shares (the configuration, an executor, a notifier) is said once.
 
-In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's worktree — the declared secrets not resolving and `.mcp.json` missing are expected reports.
+In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's worktree — the declared secrets not resolving, an `agent.git` written as `$VAR` or `${VAR}` not resolving (reported under `vars`), and `.mcp.json` missing are expected reports.
 
 ## The order it checks in
 

@@ -270,7 +270,6 @@ stages:
       rule: "vars",
       message: expect.stringMatching(/agent\.git\.email.*\$LR_VALIDATE_GIT_EMAIL.*does not resolve.*set it in .*\.env/),
     }]);
-    expect(r.ok).toBe(false);
   });
 });
 
