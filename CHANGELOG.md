@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-11-03
+
+### Added
+
+- **Agents commit as a configured identity.** `agent.git: { name, email }` in `landrace.yaml` names the author and committer of every commit an agent makes, in place of the `user.name` and `user.email` from your `~/.gitconfig` or the repository's config. It sets `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` for every step and turn, for every coding agent built on the kit. When the forge token belongs to a bot, the pull request and its commits now name the same account, so a forge rule that refuses approval from anyone who committed to the pull request no longer stops you approving the agent's work. Each value may be a `$VAR` or `${VAR}` reference, resolved from `.env` and then your shell, so each developer's instance can name its own identity. `validate` reports an unset or empty variable under `vars`, and an `agent.git` that is not `{ name, email }` under `executor`; `landrace start` refuses to start over either. A hook that commits onto an item's branch passes the kit's new `gitIdentityEnv(ctx)` to its own git, so its commits name the same identity. A commit's signing key still comes from your own git config, and a worktree's `setup` commands get no identity. Unset, nothing changes. See [Who commits](docs/configuration.md#who-commits) and [The kit's functions](docs/hooks.md#the-kits-functions).
+
 ## [1.7.1] - 2026-10-28
 
 ### Fixed
