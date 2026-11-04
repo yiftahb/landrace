@@ -2239,6 +2239,35 @@ export const chatIdentity = brand("connection", {
     expect(JSON.stringify([...printed, ...exported])).not.toContain(LOOKED_UP);
   }, 30_000);
 
+  /*
+   * The whole path the warning takes: a stored connection's `connectedAt`
+   * turned into an expiry by the gate's judging, and `runStart` handing that
+   * judging to the warner on its tick. Made 340 days ago, lasting 365.
+   */
+  it("warns on its tick that a Claude login made 340 days ago, lasting 365, has under 25 whole days left", async () => {
+    const { dir } = await fixture({ hookExtra: CLAUDE_CONNECTION });
+    const credentials = await storeOf({ claude: { ...claudeStored.claude, connectedAt: new Date(Date.now() - 340 * 86_400_000).toISOString() } });
+    const { serve } = inProcessDoor();
+    const printed: string[] = [];
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (line: unknown): void => { printed.push(String(line)); };
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    const expiring = (): LandraceEvent[] =>
+      printed.map((l) => JSON.parse(l) as LandraceEvent).filter((e) => e.name === "connection.expiring");
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      await until(() => expiring().length > 0, "the tick's expiry warning");
+      expect(expiring()).toEqual([expect.objectContaining({ connection: "claude", daysLeft: 24 })]);
+      expect(printed.join("\n")).not.toContain(PERSON_TOKEN);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
   it("says why a lookup found nobody, and asks again at the next gate", async () => {
     const { dir } = await fixture({ hookExtra: CHAT_IDENTITY, configExtra: "people: { local: { email: other@example.invalid } }\n" });
     const credentials = await storeOf(null);

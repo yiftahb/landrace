@@ -40,8 +40,9 @@ import {
 } from "#cli/start.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
 import { createCredentialStore } from "#people/store.js";
+import { connectionStatus } from "#people/resolve.js";
 import { createLogger } from "#runner/events.js";
-import type { ConnectionStatus, CredentialStore, ExecutorFactory, PersonCredentials } from "#namespace.js";
+import type { ConnectionDef, ConnectionStatus, CredentialStore, ExecutorFactory, PersonCredentials } from "#namespace.js";
 
 
 afterAll(removeRepos);
@@ -976,11 +977,14 @@ describe("expiryWarner", () => {
     const events: LandraceEvent[] = [];
     let now = Date.parse("2026-11-04T00:00:00.000Z");
     const warn = expiryWarner(createLogger({ sink: (e) => events.push(e) }), () => new Date(now));
-    // Made 340 days ago, lasting 365: 25 days left.
-    const claude: ConnectionStatus = { id: "claude", label: "Claude", kind: "credential", state: "connected", expiresAt: new Date(now + 25 * DAY).toISOString() };
-    const far: ConnectionStatus = { ...claude, id: "forge", expiresAt: new Date(now + 40 * DAY).toISOString() };
+    // Judged from what the store holds, as the gate does: made 340 days ago,
+    // lasting 365, is 25 days left; made 325 days ago, 40.
+    const made = (id: string, daysAgo: number) => ({ fields: { token: `tok-${id}` }, source: "paste" as const, connectedAt: new Date(now - daysAgo * DAY).toISOString() });
+    const creds: PersonCredentials = { person: { id: "local" }, connections: { claude: made("claude", 340), forge: made("forge", 325) } };
+    const lasting = (id: string): ConnectionDef => ({ id, label: id, kind: "credential", fields: ["token"], lifetimeDays: 365 });
+    const statuses = [connectionStatus(lasting("claude"), creds, now), connectionStatus(lasting("forge"), creds, now)];
     for (let tick = 0; tick < 2 * 24 * 12; tick++) {
-      warn([claude, far]);
+      warn(statuses);
       now += 5 * 60_000;
     }
     const expiring = events.filter((e) => e.name === "connection.expiring");
