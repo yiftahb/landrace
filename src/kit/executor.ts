@@ -16,7 +16,7 @@ import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { CAPABILITIES, CHILD_SERVER_NAME, INHERITED_ENV_KEYS, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
+import { CAPABILITIES, CHILD_SERVER_NAME, CREDENTIALS_ROOT, INHERITED_ENV_KEYS, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { isLoopback } from "#kit/http.js";
 import type {
@@ -494,11 +494,20 @@ function readGit(git: unknown, id: string): { git?: GitIdentity; problems: strin
 }
 
 /**
+ * Where Landrace keeps each person's connections, which no run may read
+ * whatever `agent.sandbox.deny` says: a written list replaces `DEFAULT_DENY`,
+ * so an entry only there would leave the store readable to any operator who
+ * wrote their own. An integration adds it to the list it is handed.
+ */
+export const CREDENTIALS_DENY: string = CREDENTIALS_ROOT;
+
+/**
  * What a write step's commands may not read when `agent.sandbox.deny` names
  * nothing: the forge CLI's token, ssh keys, cloud keys, a package registry's
- * token. A step with a shell is otherwise one `cat` away from each.
+ * token, and Landrace's own credentials. A step with a shell is otherwise
+ * one `cat` away from each.
  */
-export const DEFAULT_DENY: readonly string[] =["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"];
+export const DEFAULT_DENY: readonly string[] = ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", CREDENTIALS_DENY];
 
 /**
  * A host a sandbox matches by name, optionally with its own leading `*.`.

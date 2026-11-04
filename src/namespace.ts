@@ -1715,6 +1715,8 @@ export interface Registry {
   executors: Map<string, Executor | ExecutorFactory>;
   /** By id: `notify.via` names them. */
   notifiers: Map<string, Notifier>;
+  /** By id: a per-person key's `connection: <id>.<field>` names them. */
+  connections: Map<string, ConnectionDef>;
 }
 
 /** One imported module: what the workflow called it, and what it exported. */
@@ -1812,6 +1814,130 @@ export interface Person {
   id: string;
   email?: string;
   name?: string;
+}
+
+/**
+ * A `secrets` or `vars` entry written in the per-person form: which map it
+ * is in, its name, the variable that answers it when set, and the stored
+ * connection field that answers it otherwise.
+ */
+export interface PerPersonKey {
+  kind: "secret" | "var";
+  name: string;
+  env?: string;
+  connection: { id: string; field: string };
+}
+
+/**
+ * A connection a person makes once and Landrace keeps for them, declared by
+ * a hook with `defineConnection`. A `credential` is something they hold — a
+ * token — and an `identity` is who they are on a system — a login, an
+ * account id. `fields` is what a stored one holds and what a key's
+ * `<id>.<field>` may name.
+ *
+ * A connection a per-person key names is required. `required` makes one
+ * required whether a key names it or not: `always`, or only on a remote
+ * instance. `paste.hint` tells a person what to paste. `lifetimeDays`, when
+ * set, is how long one lasts from `connectedAt`.
+ *
+ * `resolve` looks a person's fields up by their email, with the instance's
+ * own secrets and configuration — null when it finds nobody. `check` asks
+ * whether a stored one still works: null when it does, otherwise why not.
+ * The connect flow calls them, and nothing else does.
+ */
+export interface ConnectionDef {
+  id: string;
+  label: string;
+  kind: "credential" | "identity";
+  fields: readonly string[];
+  required?: "always" | "remote";
+  paste?: { hint: string };
+  lifetimeDays?: number;
+  resolve?(email: string, ctx: RuntimeContext): Promise<Record<string, string> | null>;
+  check?(value: ConnectionValue, ctx: RuntimeContext): Promise<string | null>;
+}
+
+/**
+ * One stored connection: its fields' values, how it was made, and when, as
+ * ISO 8601 times. `expiresAt` is the vendor's own end for it; `failedAt` and
+ * `failure` are the last `check` that said it no longer works; `refresh`
+ * renews one made by OAuth.
+ */
+export interface ConnectionValue {
+  fields: Record<string, string>;
+  source: "paste" | "oauth" | "lookup" | "override";
+  connectedAt: string;
+  expiresAt?: string;
+  failedAt?: string;
+  failure?: string;
+  refresh?: { token: string };
+}
+
+/**
+ * Everything one person has connected, by connection id: one file in the
+ * credentials store. `problem` is why the file could not be read —
+ * unreadable, or not the shape it must be — and its connections are then
+ * empty.
+ */
+export interface PersonCredentials {
+  person: Person;
+  connections: Record<string, ConnectionValue>;
+  problem?: string;
+}
+
+/**
+ * Where each person's connections are kept: `<root>/<encodeURIComponent(id)>.json`,
+ * the file 0600 and its directory 0700. A person with no file has connected
+ * nothing. `put` and `remove` refuse a file they cannot read rather than
+ * overwrite the other connections in it.
+ */
+export interface CredentialStore {
+  root: string;
+  read(personId: string): Promise<PersonCredentials>;
+  put(personId: string, person: Person, connId: string, value: ConnectionValue): Promise<void>;
+  remove(personId: string, connId: string): Promise<void>;
+  /** Every person with a file, readable or not — one that is not, by its id alone. */
+  list(): Promise<Person[]>;
+}
+
+/** One required connection of a person's: connected, never made, expired, or not working, with why. */
+export interface ConnectionStatus {
+  id: string;
+  label: string;
+  kind: ConnectionDef["kind"];
+  state: "connected" | "missing" | "expired" | "failed";
+  detail?: string;
+  expiresAt?: string;
+}
+
+/**
+ * A person judged against the connections the hooks declare: every
+ * per-person key's value, each required connection's status, and what is
+ * wrong. `ready` is no `connection.*` problem — `people.env-ignored` is a
+ * notice, not a fault.
+ */
+export interface PersonResolution {
+  secretValues: Map<string, string>;
+  vars: Map<string, string>;
+  statuses: ConnectionStatus[];
+  problems: Problem[];
+  ready: boolean;
+}
+
+/**
+ * `landrace.yaml` for the one local person: `configured`, as `landrace.yaml`
+ * and `.env` alone answer it; `loaded`, the same with each per-person key
+ * their store answers merged in; what the store held (null when no key is
+ * per-person, so nothing was read); and each key nothing answered.
+ */
+export interface LocalConfig {
+  /** The directory `landrace.yaml` and `.env` are in, for a refusal to say where to set a variable. */
+  dir: string;
+  /** Before the store: a per-person key in its map is one its variable answered. */
+  configured: LoadedConfig;
+  loaded: LoadedConfig;
+  credentials: PersonCredentials | null;
+  problems: Problem[];
 }
 
 /** Which limit an agent's failure says it hit: its plan's usage, a rate, or the provider being overloaded. */
@@ -2658,6 +2784,8 @@ export interface BuildOptions {
   board?: () => string | null;
   /** The front door's port, `--ui-port` over `serve.port`: what every step is held from. Absent, `serve.port`. */
   port?: number;
+  /** Where the local person's connections are read from. Absent, `~/.landrace/credentials`. */
+  credentials?: CredentialStore;
 }
 
 /* ------------------------------------------------------- sandbox (§15) -- */

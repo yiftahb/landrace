@@ -604,9 +604,13 @@ describe("buildMcpTools and the servers a turn is handed", () => {
     expect(JSON.parse(after("--mcp-config"))).toEqual({ mcpServers: { "codebase-memory-mcp": MEMORY } });
     expect(argv).toContain("--strict-mcp-config");
     expect(argv.slice(argv.indexOf("--allowedTools") + 1)).toEqual(["mcp__codebase-memory-mcp"]);
-    // And, like the step, the setting that loads the CLAUDE.md of the worktree it runs in.
+    // And, like the step, the setting that loads the CLAUDE.md of the worktree
+    // it runs in, and the Read rules of every denied path, Landrace's
+    // credentials among them.
+    const denied = ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"];
     expect(JSON.parse(after("--settings"))).toEqual({
       enabledPlugins: { "superpowers@claude-plugins-official": true },
+      permissions: { deny: denied.flatMap((p) => [`Read(${p})`, `Read(${p}/**)`]) },
       env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" },
     });
     // The step's own declaration still decides the rest: read-only, manual,

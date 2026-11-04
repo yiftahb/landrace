@@ -71,7 +71,7 @@ describe("the operator tools leave a workflow's admit labels to the operator", (
     const state = createExternalState({ items: [{ id: "1", labels: ["lr:fast"] }] });
     const registry: Registry = {
       preflights: [], pre: [state.pre], post: [state.post], artifacts: [], source: state.source, operator: state.operator,
-      executors: new Map(), notifiers: new Map(),
+      executors: new Map(), notifiers: new Map(), connections: new Map(),
     };
     const ctx = { config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as never;
     return { state, tools: createTools([hooked(registry, loaded(fast))], ctx) };

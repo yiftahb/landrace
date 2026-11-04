@@ -13,7 +13,9 @@ import { ARGV_CASES } from "#tests/support/claude-argv-cases.js";
  * directory, under a path written `<built>` here, and the setting that loads
  * its `CLAUDE.md` — beside skills, `--plugin-dir` over the plugin made of
  * them — and a write step is denied writing there. Since #90 a write step loads no
- * settings file, the operator's included: `--setting-sources ""`.
+ * settings file, the operator's included: `--setting-sources ""`. Since #181
+ * every declared run is denied `~/.landrace/credentials` whatever its deny
+ * list says, and a read-only step carries each denied path as Read rules.
  */
 const bin = join(__dirname, "..", "agent", "fake-agent.mjs");
 const recorded = JSON.parse(readFileSync(join(__dirname, "..", "fixtures", "claude-argv.json"), "utf8")) as Record<string, string[]>;
@@ -34,7 +36,7 @@ describe("the Claude integration's command lines", () => {
       mkdirSync(dirname(join(cwd, path)), { recursive: true });
       writeFileSync(join(cwd, path), text);
     }
-    const { mcpServers = {}, mcpTools = {}, plugins = [], sandbox = { hosts: [], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] }, ...rest } =
+    const { mcpServers = {}, mcpTools = {}, plugins = [], sandbox = { hosts: [], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"] }, ...rest } =
       c.executor as Record<string, never>;
     const executor = new Claude({ bin, home }).build({ ...rest, servers: mcpServers, tools: mcpTools, plugins, sandbox });
     const r = await executor.run("p", { round: 1, signal: new AbortController().signal, cwd, ...c.run });

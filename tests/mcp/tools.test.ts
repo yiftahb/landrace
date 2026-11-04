@@ -548,7 +548,7 @@ describe("waking the loop", () => {
  */
 describe("with no operator hook configured", () => {
   const empty: Registry = {
-    preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map(), notifiers: new Map(),
+    preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map(), notifiers: new Map(), connections: new Map(),
   };
   const tools = () => createTools([hooked(empty)], createFakeTracker().ctx);
 
@@ -1114,7 +1114,7 @@ describe("relationships by hand, asked of the tracker before anything is written
     const state = createExternalState({ items: [{ id: "4", labels: ["lr:auto"] }, { id: "10" }] });
     const registry: Registry = {
       preflights: [], pre: [state.pre], post: [state.post], artifacts: [], source: state.source, operator: state.operator,
-      executors: new Map(), notifiers: new Map(),
+      executors: new Map(), notifiers: new Map(), connections: new Map(),
     };
     const tools = createTools([hooked(registry, loaded(admitting(["lr:auto"])))], { ...createFakeTracker().ctx });
     return { state, tools };

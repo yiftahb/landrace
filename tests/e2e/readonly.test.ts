@@ -79,7 +79,7 @@ function workspace(
   };
   const registry: Registry = {
     preflights: [state.preflight], pre: [state.pre], post: [state.post], artifacts: [], source: state.source,
-    operator: state.operator, executors: new Map(), notifiers: new Map(),
+    operator: state.operator, executors: new Map(), notifiers: new Map(), connections: new Map(),
   };
   const tools = createTools([{ id, dir: `/w/workflows/${id}`, workflow, steps, registry }], ctx, { lock: { root } });
 
@@ -517,7 +517,7 @@ describe("main and a read-only workflow over one tracker", () => {
     };
     const registry: Registry = {
       preflights: [state.preflight], pre: [state.pre], post: [state.post], artifacts: [], source: state.source,
-      operator: state.operator, executors: new Map(), notifiers: new Map(),
+      operator: state.operator, executors: new Map(), notifiers: new Map(), connections: new Map(),
     };
     const tools = createTools([
       { id: "main", dir: "/w/workflows/main", workflow: main.workflow, steps: main.steps, registry },

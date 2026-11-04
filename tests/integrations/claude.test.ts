@@ -91,6 +91,11 @@ const list = (argv: string[], name: string): string[] => {
 const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as const;
 /** What a step's `--settings` carries so `--add-dir` loads its `CLAUDE.md`. */
 const INSTRUCTIONS = { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" };
+/** The Read rules for a path: itself and everything under it. */
+const reads = (...paths: string[]): string[] => paths.flatMap((p) => [`Read(${p})`, `Read(${p}/**)`]);
+const CREDENTIALS = "~/.landrace/credentials";
+/** What a read-only step is denied with the default deny list: every path's Read rules, Landrace's credentials among them. */
+const READ_DENIED = { deny: reads("~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", CREDENTIALS) };
 /** The copy of a step's instructions that `--add-dir` names, written `<instructions>` so a whole argv can be compared. */
 const atInstructions = (argv: string[]): string[] =>
   argv.map((a, i) => (argv[i - 1] === "--add-dir" ? "<instructions>" : a));
@@ -766,7 +771,7 @@ describe("plugins and MCP servers", () => {
   it("enables the operator's plugins through one --settings element holding the JSON", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin, ...tools }), { capabilities: ["repo:read"] });
     expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({
-      enabledPlugins: { [PLUGIN]: true, "other@market": true }, env: INSTRUCTIONS,
+      enabledPlugins: { [PLUGIN]: true, "other@market": true }, permissions: READ_DENIED, env: INSTRUCTIONS,
     });
     expect(argv.filter((a) => a === "--settings")).toHaveLength(1);
   });
@@ -782,7 +787,7 @@ describe("plugins and MCP servers", () => {
 
   it("passes only the setting that loads the step's CLAUDE.md when no plugin is configured", async () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"] });
-    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ env: INSTRUCTIONS });
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ permissions: READ_DENIED, env: INSTRUCTIONS });
   });
 
   it("hands the step only the allowlisted servers, as defined, strictly, and allows them by name", async () => {
@@ -917,7 +922,7 @@ describe("the create_child tool", () => {
   it("keeps a read-only step without the binding on exactly the flags any read-only step gets", async () => {
     const readOnly = [
       "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted",
-      "--disallowedTools", ...WRITE_TOOLS, "--settings", JSON.stringify({ env: INSTRUCTIONS }), "--add-dir", "<instructions>",
+      "--disallowedTools", ...WRITE_TOOLS, "--settings", JSON.stringify({ permissions: READ_DENIED, env: INSTRUCTIONS }), "--add-dir", "<instructions>",
       "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ];
     const declaring = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["items:create", "repo:read"] });
@@ -990,7 +995,7 @@ describe("the create_child tool", () => {
     const servers = JSON.parse(argv[argv.indexOf("--mcp-config") + 1] as string).mcpServers;
     expect(Object.keys(servers).sort()).toEqual(["codebase-memory-mcp", "landrace"]);
     expect(JSON.parse(argv[argv.indexOf("--settings") + 1] as string)).toEqual({
-      enabledPlugins: { "superpowers@claude-plugins-official": true }, env: INSTRUCTIONS,
+      enabledPlugins: { "superpowers@claude-plugins-official": true }, permissions: READ_DENIED, env: INSTRUCTIONS,
     });
   });
 });
@@ -1355,13 +1360,10 @@ describe("a writing step's sandbox", () => {
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       network: { allowedDomains: [], strictAllowlist: true },
-      filesystem: { denyRead: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] },
+      filesystem: { denyRead: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"] },
     },
     permissions: {
-      deny: [
-        "Read(~/.config/gh)", "Read(~/.config/gh/**)", "Read(~/.ssh)", "Read(~/.ssh/**)",
-        "Read(~/.aws)", "Read(~/.aws/**)", "Read(~/.npmrc)", "Read(~/.npmrc/**)",
-      ],
+      deny: reads("~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", CREDENTIALS),
     },
   };
   /** CONFINED for the step that printed `argv`, denied writing the copies of its instructions and skills. */
@@ -1402,7 +1404,11 @@ describe("a writing step's sandbox", () => {
     expect(readOnly).not.toContain("--setting-sources");
   });
 
-  it("puts the configured hosts and paths, and the plugins, in one --settings document", async () => {
+  /*
+   * A written deny list replaces the defaults, and this repository's own
+   * landrace.yaml writes one: Landrace's credentials are denied all the same.
+   */
+  it("puts the configured hosts and paths, and the plugins, in one --settings document, with the credentials denied beside them", async () => {
     const argv = await argvOf(
       createClaudeExecutor({ bin, plugins: [PLUGIN], sandbox: { hosts: ["github.com", "registry.npmjs.org"], deny: ["~/.ssh"] } }),
       { capabilities: ["repo:read", "repo:write"] },
@@ -1413,9 +1419,9 @@ describe("a writing step's sandbox", () => {
       sandbox: {
         ...CONFINED.sandbox,
         network: { allowedDomains: ["github.com", "registry.npmjs.org"], strictAllowlist: true },
-        filesystem: { denyRead: ["~/.ssh"], denyWrite: [dirname(flag(argv, "--add-dir") as string)] },
+        filesystem: { denyRead: ["~/.ssh", CREDENTIALS], denyWrite: [dirname(flag(argv, "--add-dir") as string)] },
       },
-      permissions: { deny: ["Read(~/.ssh)", "Read(~/.ssh/**)", `Edit(/${dirname(flag(argv, "--add-dir") as string)}/**)`] },
+      permissions: { deny: [...reads("~/.ssh", CREDENTIALS), `Edit(/${dirname(flag(argv, "--add-dir") as string)}/**)`] },
       env: INSTRUCTIONS,
     });
   });
@@ -1450,12 +1456,13 @@ describe("a writing step's sandbox", () => {
     }
   });
 
-  it("gives a read-only step and the screener nothing of the sandbox", async () => {
+  it("gives a read-only step only the Read rules of the sandbox, the credentials among them, and the screener nothing", async () => {
     const executor = createClaudeExecutor({ bin, plugins: [PLUGIN], sandbox: { hosts: ["github.com"], deny: ["~/.ssh"] } });
     expect(atInstructions(await argvOf(executor, { capabilities: ["repo:read"] }))).toEqual([
       "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "manual", "--restricted",
       "--disallowedTools", ...WRITE_TOOLS,
-      "--settings", JSON.stringify({ enabledPlugins: { [PLUGIN]: true }, env: INSTRUCTIONS }), "--add-dir", "<instructions>",
+      "--settings", JSON.stringify({ enabledPlugins: { [PLUGIN]: true }, permissions: { deny: reads("~/.ssh", CREDENTIALS) }, env: INSTRUCTIONS }),
+      "--add-dir", "<instructions>",
       "--mcp-config", JSON.stringify({ mcpServers: {} }), "--strict-mcp-config",
     ]);
     expect(await argvOf(executor, {})).toEqual([
@@ -1546,7 +1553,7 @@ describe("the factory's wiring, end to end", () => {
       const argv = await argvOf(executor, { capabilities: ["repo:read"] });
       expect(flag(argv, "--model")).toBe("opus");
       expect(flag(argv, "--effort")).toBe("high");
-      expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ enabledPlugins: { "p@m": true }, env: INSTRUCTIONS });
+      expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ enabledPlugins: { "p@m": true }, permissions: READ_DENIED, env: INSTRUCTIONS });
       expect(JSON.parse(flag(argv, "--mcp-config") as string).mcpServers).toEqual({
         memory: { command: "codebase-memory-mcp", args: [] },
       });
@@ -1561,7 +1568,7 @@ describe("the factory's wiring, end to end", () => {
       const write = JSON.parse(flag(await argvOf(executor, { capabilities: ["repo:read", "repo:write"] }), "--settings") as string);
       expect(write.enabledPlugins).toEqual({ "p@m": true });
       expect(write.sandbox.network).toEqual({ allowedDomains: ["github.com"], strictAllowlist: true });
-      expect(write.sandbox.filesystem.denyRead).toEqual(["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"]);
+      expect(write.sandbox.filesystem.denyRead).toEqual(["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"]);
     } finally {
       process.env.PATH = savedPath;
     }

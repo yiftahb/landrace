@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { loadConfig } from "#config/load.js";
 import { decide, deriveRun, planEffects } from "#core/index.js";
 import type { Decision, Effect, Snapshot } from "#namespace.js";
+import { loadLocalConfig } from "#people/resolve.js";
 import { loadWorkspace, onlyWorkflow, workflowById } from "#workflow/workspace.js";
 
 export async function runNext(
@@ -13,7 +13,9 @@ export async function runNext(
   // to read them from — `next` explains what the engine would do, and a
   // workflow whose predicates it read unsubstituted is a different workflow.
   // Optional, like validate's: this command is otherwise I/O-free by design.
-  const loaded = await loadConfig(dir).catch(() => undefined);
+  // With the local person's stored values, so a var their connection answers
+  // is filled in as the loop fills it.
+  const loaded = await loadLocalConfig(dir).then((l) => l.loaded, () => undefined);
   const ws = await loadWorkspace(dir, loaded?.vars, loaded?.config.workflows);
   const { workflow } = workflowId === undefined ? onlyWorkflow(ws, "next") : workflowById(ws, workflowId);
   const raw = JSON.parse(await readFile(snapshotPath, "utf8")) as Snapshot;

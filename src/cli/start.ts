@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
-import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
+import { redactionValues } from "#config/load.js";
+import { assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
+import { credentialValues } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
@@ -609,12 +611,17 @@ function refuseUnsound(dir: string, problems: Array<[id: string, problems: Probl
  * shared preflight once.
  */
 export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Promise<WorkspaceRuntime> {
-  const loaded = await loadConfig(dir);
-  // Unresolved secrets, unresolved vars, and a var holding a secret's value —
-  // worded once, in config/load.ts, because `landrace validate` reports the
-  // same three and a daemon that checked fewer of them than the CLI would run
-  // a configuration the CLI rejects.
-  assertConfigUsable(dir, loaded);
+  // With the local person's stored connections answering each per-person key
+  // their variable left unset: the vars must be whole before the workflow
+  // is read, and the connections the hooks define are not known until then.
+  const local = await loadLocalConfig(dir, opts.credentials);
+  const { loaded } = local;
+  // Unresolved secrets, unresolved vars, a var holding a secret's value, and
+  // a per-person key nothing answers — worded once, in config/load.ts and
+  // people/resolve.ts, because `landrace validate` reports the same and a
+  // daemon that checked fewer of them than the CLI would run a configuration
+  // the CLI rejects.
+  assertLocalUsable(local);
   // A door nothing asks a caller about, open to the network, hands anyone who
   // reaches it every item and the loop. `validate` reports the same words.
   // Not for `landrace status`, which serves nothing.
@@ -640,6 +647,9 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     ...(opts.sink === undefined ? {} : { sink: opts.sink }),
     ...(telemetry ? { exporter: telemetry.sink } : {}),
   }).with(personFields(localPerson(loaded)));
+  // What the person's store holds — a token beside a login — is kept out of
+  // every line from here on, as a secret's value is.
+  log.redact(credentialValues(local.credentials));
 
   // With `vars` already substituted in: the graphs the daemon runs are the
   // graphs `landrace validate` checked, filled in from the same map.
@@ -696,6 +706,16 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     }
     hooked.push({ loaded: w, registry, source: registry.source });
   }
+
+  // The local person against every connection the hooks define. One person,
+  // so nothing runs while theirs is missing, expired or unreadable; `validate`
+  // reports the same words.
+  const people = connectionsOf(hooked.map((h) => ({ id: h.loaded.id, registry: h.registry })));
+  const person = localPerson(loaded);
+  const creds = await localCredentials(local, person, people.connections, opts.credentials);
+  // Read only now when no key was per-person but a hook requires a connection anyway.
+  if (creds !== local.credentials) log.redact(credentialValues(creds));
+  assertPersonReady(resolvePerson(local.configured, people, person, creds, { remote: false }), people.problems);
 
   // Between workflows, so only once every hook is loaded: two share a source
   // when they share the loaded object, which is what the tick's claims go

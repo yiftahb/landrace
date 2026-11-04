@@ -133,7 +133,23 @@ export async function loadConfig(dir: string): Promise<LoadedConfig> {
 
   const secretValues = new Map<string, string>();
   const missing: string[] = [];
+  /*
+   * A per-person key's variable, when it is set to something: its value,
+   * exactly as a `$VAR` would resolve. Unset or empty, the key is neither
+   * resolved nor missing here — the person's stored connection answers it
+   * (`personValues`), and only that can say it is missing.
+   */
+  const personal = (key: { env?: string | undefined }): string | undefined => {
+    const value = key.env === undefined ? undefined : env.get(key.env);
+    return value === undefined || value.trim() === "" ? undefined : value;
+  };
+
   for (const [name, reference] of Object.entries(config.secrets)) {
+    if (typeof reference !== "string") {
+      const value = personal(reference);
+      if (value !== undefined) secretValues.set(name, value);
+      continue;
+    }
     const value = expand(reference, env);
     if (value === reference && reference.startsWith("$")) missing.push(name);
     else secretValues.set(name, value);
@@ -153,6 +169,11 @@ export async function loadConfig(dir: string): Promise<LoadedConfig> {
   const vars = new Map<string, string>();
   const missingVars: string[] = [];
   for (const [name, reference] of Object.entries(config.vars)) {
+    if (typeof reference !== "string") {
+      const value = personal(reference);
+      if (value !== undefined) vars.set(name, value);
+      continue;
+    }
     const value = expand(reference, env);
     if (value.trim() === "" || (value === reference && reference.startsWith("$"))) missingVars.push(name);
     else vars.set(name, value);

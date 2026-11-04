@@ -19,6 +19,9 @@ export * from "#conventions.js";
 export type {
   ArtifactHook,
   Closed,
+  ConnectionDef,
+  ConnectionStatus,
+  ConnectionValue,
   Effect,
   Entry,
   Executor,

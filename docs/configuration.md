@@ -31,9 +31,9 @@ Every key, with its default:
 | `serve.port` | `4545` | Their port. `landrace start --ui-port` wins over it |
 | `serve.publicUrl` | none | An `http://` or `https://` URL a proxy of your own serves the board at — see [The front door](#the-front-door) |
 | `log.redact` | `[]` | Names of secrets whose values are cut from every log line and event. Each must name a declared secret whose value is 8 characters or longer, or `landrace start` refuses. A secret not named here is not redacted from the log |
-| `secrets.*` | `{}` | Values handed to hooks, usually `$VAR` references resolved from [`.env`](#env) |
+| `secrets.*` | `{}` | Values handed to hooks, usually `$VAR` references resolved from [`.env`](#env), or each person's own — see [Per-person keys](#per-person-keys) |
 | `workflows` | by each workflow's `name`, then folder id, by code point | The order the MCP lists workflows in, and the board's sidebar and `/board` tabs show them in. Display only. When given, it must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
-| `vars.*` | `{}` | Values substituted into the workflow files — see [vars](#vars) |
+| `vars.*` | `{}` | Values substituted into the workflow files — see [vars](#vars), or each person's own — see [Per-person keys](#per-person-keys) |
 | `people.local.email` | none | Your email, stamped on every event `landrace start` logs as `personEmail` — see [people](#people) |
 | `people.local.name` | none | Your name. Read and resolved, but stamped on nothing yet |
 | `notify.on` | none | The events to tell a person about. There is one: `needs-you` |
@@ -208,6 +208,51 @@ eligible:
 ```
 
 An item assigned to somebody else is skipped, with that `else` as the reason `landrace status` prints, and nothing is written to it. An item assigned to nobody is skipped by everybody rather than worked by everybody, because `node.state.assignees` is an empty list, never absent. The skip costs nothing per item: `list()` already carries every item's assignees, so the rule is answered before any item is read and before any lock is taken. It is still answered after the list, though, so it cannot keep a list under its bound. On a Jira project too large to list whole, scope the tracker itself with the `jiraAssignee` secret; see [One developer's issues](integrations.md#jira).
+
+### Per-person keys
+
+A `secrets` or `vars` entry can be each person's own instead of one value in `.env`. Write it as an object:
+
+```yaml
+vars:
+  assignee: { perPerson: true, env: LANDRACE_ASSIGNEE, connection: github.login }
+```
+
+- `perPerson` is `true`, always.
+- `env` is optional. It is a bare variable name, never a `$VAR` and never a value, so the file holds no literal.
+- `connection` is `<connection id>.<field>`: the field of a stored connection that answers the key. A hook defines the connection with [`defineConnection`](hooks.md#connections).
+
+Any other key is refused. For the one local person, `local`, the value comes from:
+
+1. `env`, when the variable is set to something, from `.env` first and then your shell, as a `$VAR` resolves. The key then needs no stored connection, so a setup that already sets the variable runs as before, even when no hook defines its `connection` yet.
+2. Otherwise, the connection's field in `~/.landrace/credentials/local.json`.
+
+A key neither answers is reported by `validate` as `connection.missing`, naming the variable and the connection. `landrace start`, `landrace status` and `landrace mcp` refuse to start over it in the same words. A credentials file that cannot be read, or is not the shape below, is `connection.failed`, with the reason. Once the hooks load, `validate` reports and `start` and `status` refuse:
+
+- `connection.unknown`: a key its variable left unset naming a connection no hook defines, or a field the connection does not list;
+- `connection.expired`: a connection older than its `lifetimeDays`, or past its `expiresAt`;
+- `connection.failed`: a connection whose stored `failure` says it no longer works;
+- `connection.missing`, `connection.expired` or `connection.failed` for a connection a hook marks `required: always`, whether a key names it or not;
+- `connection.duplicate`: two different connection objects with one id, in two workflows' hooks.
+
+`landrace next` fills in a var from the store too.
+
+The credentials file is JSON, mode 0600, in a directory of mode 0700. Replace `your-login` with your login on that system:
+
+```json
+{
+  "person": { "id": "local" },
+  "connections": {
+    "github": { "fields": { "login": "your-login" }, "source": "paste", "connectedAt": "2026-11-04T09:00:00.000Z" }
+  }
+}
+```
+
+- `person` is `{ id, email?, name? }`. Its `id` must be the file's name.
+- Each connection holds `fields`, `source` (`paste`, `oauth`, `lookup` or `override`) and `connectedAt`, an ISO 8601 time.
+- A connection may also hold `expiresAt`, `failedAt`, `failure` and `refresh: { token }`. Any other key makes the file unreadable.
+
+Nothing in Landrace writes this file yet. A later release adds the flow that connects an account; until then, write it by hand, or set the variable. Every value in the file is cut from the log once it is read, if it is 8 characters or longer; a per-person secret is also handed to hooks and scrubbed as any secret is (see [.env](#env)). A per-person var is still a var: it reaches comments and prompts unredacted. How runs are kept from reading the file is in [Security](security.md#stored-credentials).
 
 ### Durations
 
