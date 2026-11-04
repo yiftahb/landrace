@@ -46,4 +46,5 @@ A toast says when an item newly needs you, as in `landrace: #40 needs you: Pick 
 
 - Only the session's own board. Another project's `landrace start` is not shown.
 - The pane draws rows, not the board page itself. The item panel, search and the writes are on the board page.
+- The pane has no Integrations tab. While the board shows only its [Integrations tab](cli.md#the-board), because a connection is missing, its `/board.json` holds no rows, and the pane counts each read as failed: before any rows it says "Waiting for the first tick…", and after some it keeps them dimmed under "stale since HH:MM". Connect on the board page; the pane draws the board again at its next read after that.
 - The desktop app links only `https:` and `http://localhost` addresses, and draws any other as plain text. `port` names `127.0.0.1`, so `Board ↗` links `localhost` in its place. The board answers both.
