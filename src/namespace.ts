@@ -2800,6 +2800,39 @@ export interface StartOptions {
   otel?: readonly string[];
   /** See BuildOptions.credentials. */
   credentials?: CredentialStore;
+  /** Serves the front door. Default `serveFrontDoor`; a test passes one that binds nothing and drives the listener itself. */
+  serve?: (opts: FrontDoorOptions) => Promise<UiServer>;
+}
+
+/**
+ * What `start` learns of the local person before it builds a runtime: their
+ * configuration, every connection the hooks define, what their store holds,
+ * and how that judges. Not `ready`, the front door serves only the
+ * Integrations tab.
+ */
+export interface LocalGate {
+  local: LocalConfig;
+  person: Person;
+  connections: Map<string, ConnectionDef>;
+  credentials: PersonCredentials;
+  resolution: PersonResolution;
+}
+
+/**
+ * One runtime as `start` serves it: the board drawn from its workflows, what
+ * its listings feed, the page's writes over its workflows and the MCP
+ * endpoint over its tools. Built once per runtime, so a reload replaces all
+ * of them together; the front door's routes reach whichever is current.
+ */
+export interface ServedRuntime {
+  rt: WorkspaceRuntime;
+  board: Board;
+  seen(listing: WorkspaceListing): void;
+  goto?: GotoPath | undefined;
+  refresh(): Promise<void>;
+  panel?: ItemPanel | undefined;
+  admit(item: string, workflow: string): Promise<AdmitResult>;
+  mcp?: McpEndpoint | undefined;
 }
 
 export interface BuildOptions {

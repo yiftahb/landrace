@@ -2,10 +2,14 @@ import { spawn } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
-import { redactionValues } from "#config/load.js";
+import { assertConfigUsable, redactionValues } from "#config/load.js";
+import { perPersonKeys } from "#people/keys.js";
+import { createPeoplePanel } from "#people/panel.js";
 import { assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
-import { credentialValues } from "#people/store.js";
+import { createCredentialStore, credentialValues } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
+import { createRuntimeSlot } from "#runner/slot.js";
+import { send as sendPage } from "#ui/server.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
 import { durationMs, RECORD_EFFECT } from "#conventions.js";
@@ -19,7 +23,13 @@ import type {
   BuildOptions,
   ConversationDeps,
   ConversationLine,
+  CredentialStore,
+  FrontDoorOptions,
+  LocalGate,
   Sandbox,
+  ServedRuntime,
+  UiOptions,
+  Workspace,
   EventName,
   Executor,
   ExecutorContext,
@@ -113,18 +123,21 @@ export function parsePort(text: string): number {
  */
 export async function startUi(
   opts: {
-    board: Board; ui: boolean; once: boolean; port: number; host?: string; publicUrl?: string | undefined;
+    board: Pick<Board, "view">; ui: boolean; once: boolean; port: number; host?: string; publicUrl?: string | undefined;
     tick?: () => WakeResult; goto?: GotoPath | undefined;
     refresh?: (() => Promise<void>) | undefined; panel?: ItemPanel | undefined;
     admit?: ((item: string, workflow: string) => Promise<AdmitResult>) | undefined;
     /** The operator's MCP endpoint, served at `/mcp` beside the board. */
     mcp?: McpEndpoint | undefined;
+    people?: UiOptions["people"];
+    ready?: (() => boolean) | undefined;
+    serve?: ((opts: FrontDoorOptions) => Promise<UiServer>) | undefined;
   },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
   let ui: UiServer;
   try {
-    ui = await serveFrontDoor({
+    ui = await (opts.serve ?? serveFrontDoor)({
       host: opts.host ?? "127.0.0.1",
       port: opts.port,
       ...(opts.publicUrl === undefined ? {} : { publicUrl: opts.publicUrl }),
@@ -136,6 +149,8 @@ export async function startUi(
         ...(opts.refresh === undefined ? {} : { refresh: opts.refresh }),
         ...(opts.panel === undefined ? {} : { panel: opts.panel }),
         ...(opts.admit === undefined ? {} : { admit: opts.admit }),
+        ...(opts.people === undefined ? {} : { people: opts.people }),
+        ...(opts.ready === undefined ? {} : { ready: opts.ready }),
       },
     });
   } catch (e) {
@@ -595,6 +610,62 @@ function refuseUnsound(dir: string, problems: Array<[id: string, problems: Probl
 }
 
 /**
+ * Every rule that can be judged before a hook is imported, by every workflow.
+ * The isolation and admission rules only where the loop runs: `landrace
+ * status` reads, and a workflow it cannot run is still one it can describe.
+ */
+function refuseUnsoundBeforeHooks(dir: string, ws: Workspace, config: RuntimeConfig, readOnly: boolean): void {
+  refuseUnsound(dir, ws.workflows.map(({ id, workflow, steps }): [string, Problem[]] => [id, [
+    ...validate(workflow, steps, undefined, config.branch, config.branchVariants),
+    ...(readOnly ? [] : [
+      ...branchIsolationProblems(workflow, config.agent.isolation),
+      ...pairingIsolationProblems(workflow, config.agent.isolation),
+      ...admitProblems(id, workflow),
+    ]),
+  ]]));
+}
+
+/**
+ * The local person, judged before `start` builds a runtime: what refuses the
+ * start, and what only keeps the board behind the Integrations tab.
+ *
+ * Refused, as the build refuses them: the configuration's own problems, a
+ * door open to the network, an unsound workflow, a hook that will not load,
+ * two hooks defining one connection, and a key naming a connection no hook
+ * defines or a field it does not hold — none of which a paste could mend.
+ * Not refused: a connection missing, expired or failed, or a store that does
+ * not read, which the Integrations tab shows and a paste or a disconnect mends.
+ *
+ * A per-person var nothing answers is loaded as "", only so the workflow
+ * loads far enough to import its hooks and learn their connections: the
+ * schema was checked before substitution, and nothing from this load runs.
+ * The rules a filled-in workflow is judged by wait for the build, since a
+ * blank var would be judged as nothing.
+ */
+export async function localGate(dir: string, store: CredentialStore): Promise<LocalGate> {
+  const local = await loadLocalConfig(dir, store);
+  const { loaded } = local;
+  assertConfigUsable(dir, loaded);
+  const unserved = serveProblems(loaded.config.serve);
+  if (unserved.length) throw new Error(unserved.map((p) => `${p.rule}: ${p.message}`).join("\n"));
+  const blank = perPersonKeys(loaded.config).filter((k) => k.kind === "var" && !loaded.vars.has(k.name)).map((k) => k.name);
+  const vars = new Map([...loaded.vars, ...blank.map((name): [string, string] => [name, ""])]);
+  const ws = await loadWorkspace(dir, vars, loaded.config.workflows);
+  if (blank.length === 0) refuseUnsoundBeforeHooks(dir, ws, loaded.config, false);
+  const registries: Array<{ id: string; registry: Registry }> = [];
+  for (const w of ws.workflows) {
+    registries.push({ id: w.id, registry: await loadHooks({ dir: w.dir, modules: w.workflow.hooks ?? [], workspace: ws.dir }) });
+  }
+  const people = connectionsOf(registries);
+  const person = localPerson(loaded);
+  const credentials = await localCredentials(local, person, people.connections, store);
+  const resolution = resolvePerson(local.configured, people, person, credentials, { remote: false });
+  const unmendable = [...people.problems, ...resolution.problems.filter((p) => p.rule === "connection.unknown")];
+  if (unmendable.length) throw new Error(unmendable.map((p) => `${p.rule}: ${p.message}`).join("\n"));
+  return { local, person, connections: people.connections, credentials, resolution };
+}
+
+/**
  * Read the workspace and assemble a runnable loop out of every workflow in
  * it, or refuse with the reason.
  *
@@ -637,13 +708,19 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   //
   // Telemetry is built first so it sees the first event. Not for `landrace
   // status`, which must make no call beyond the ones reading requires.
-  const otel = opts.readOnly ? null : telemetrySettings(loaded.telemetry, opts.otel);
+  //
+  // A logger handed in is the process's — `start`'s, whose runtime a connect
+  // rebuilds — and comes with its own telemetry and its own person stamp; it
+  // is told this configuration's secrets, checked as strictly.
+  const otel = opts.readOnly || opts.log ? null : telemetrySettings(loaded.telemetry, opts.otel);
   const telemetry = otel ? await createOtelSink(otel) : undefined;
+  const redactValues = redactionValues(loaded);
+  opts.log?.redact(redactValues);
   // Every event the runtime logs is the one local person's: its own log, every
   // hook's through ctx.log, and each workflow's deps and notify below.
-  const log: RedactingLogger = createLogger({
+  const log: RedactingLogger = opts.log ?? createLogger({
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
-    redactValues: redactionValues(loaded),
+    redactValues,
     ...(opts.sink === undefined ? {} : { sink: opts.sink }),
     ...(telemetry ? { exporter: telemetry.sink } : {}),
   }).with(personFields(localPerson(loaded)));
@@ -663,14 +740,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // get that far. The isolation and admission rules only where the loop runs:
   // `landrace status` reads, and a workflow it cannot run is still one it can
   // describe.
-  refuseUnsound(dir, ws.workflows.map(({ id, workflow, steps }): [string, Problem[]] => [id, [
-    ...validate(workflow, steps, undefined, loaded.config.branch, loaded.config.branchVariants),
-    ...(opts.readOnly ? [] : [
-      ...branchIsolationProblems(workflow, loaded.config.agent.isolation),
-      ...pairingIsolationProblems(workflow, loaded.config.agent.isolation),
-      ...admitProblems(id, workflow),
-    ]),
-  ]]));
+  refuseUnsoundBeforeHooks(dir, ws, loaded.config, opts.readOnly === true);
 
   const hooked: Array<{ loaded: LoadedWorkflow; registry: Registry; source: Source }> = [];
   for (const w of ws.workflows) {
@@ -730,7 +800,8 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     }
   }
 
-  const stop = new AbortController();
+  // The process's own when handed in, so one Ctrl-C stops every runtime it rebuilt.
+  const stop = opts.stop ?? new AbortController();
   const ctx: RuntimeContext = {
     config: loaded.config,
     secrets: loaded.secretValues,
@@ -1106,101 +1177,45 @@ export async function loop(rt: Pick<WorkspaceRuntime, "stop">, schedule: Schedul
   await Promise.all(inFlight);
 }
 
-export async function runStart(dir: string, opts: StartOptions): Promise<void> {
-  // One board per workspace: a second would overwrite the record and leave
-  // `landrace port` naming one of two. Asked of the board itself, so a
-  // record a crash left behind does not block. A start that serves no board
-  // writes no record and is not refused.
-  const serves = (opts.ui ?? true) && !(opts.once ?? false);
-  const running = async (own?: number): Promise<string | null> => {
-    const found = await boardLiveness(dir);
-    // A record naming the port this start's own board holds can only be a
-    // crash's: its pid, reused by an unrelated process, still looks alive,
-    // and this board answers for this workspace, so it would refuse itself.
-    return "live" in found && found.instance.port !== own
-      ? `a landrace start already serves this workspace's board at ${found.live} (pid ${found.instance.pid}); ` +
-        "stop it first, or start this one with --headless"
-      : null;
-  };
-  if (serves) {
-    const refused = await running();
-    if (refused) throw new Error(refused);
-  }
-
-  // The board has to exist before the runtime does, because it listens to
-  // the runtime's events. Its workflow is filled in once the runtime has
-  // loaded one; until then it has nothing listed and renders nothing.
-  //
-  // A boxed reference, not a reassigned `let board`: nothing calls the sink
-  // synchronously while the runtime is built, but `prefer-const` cannot see
-  // that, and a mutable cell the closure reads through is the same fact
-  // stated in a shape the linter can verify rather than one it has to trust.
-  const boardRef: { current?: Board } = {};
-  const print = (e: LandraceEvent): void => console.log(JSON.stringify(e));
-  // What a notification links to, once the page below is up; null without one.
-  const pageRef: { url: string | null } = { url: null };
-  const rt = await buildWorkspaceRuntime(dir, {
-    ...(opts.debug === undefined ? {} : { debug: opts.debug }),
-    ...(opts.otel === undefined ? {} : { otel: opts.otel }),
-    sink: boardSink(print, boardRef),
-    board: () => pageRef.url,
-    ...(opts.uiPort === undefined ? {} : { port: opts.uiPort }),
-  });
-
-  // Before anything else the hooks might do — including `--once`'s one tick
-  // — a permission problem has to stop the process here, not after the first
-  // paid agent has already run and a publish 403s with nothing durable
-  // recorded to show for it. Run from here rather than from the runtime's
-  // build so `landrace status`, which builds one the same way, never makes
-  // this write while only trying to read.
-  await runPreflights(rt.preflights, { ...rt.ctx, ...declaredOf(rt.workflows.map((w) => w.deps)) });
-
+/**
+ * One runtime as `start` serves it: its board, the listing its ticks and
+ * Refresh feed, and the page's writes and MCP tools over its workflows. Built
+ * again on every reload, so nothing here outlives the runtime it reads.
+ */
+export async function servedRuntime(
+  rt: WorkspaceRuntime, opts: { schedule: Schedule; folder: string; workspace: string; serves: boolean },
+): Promise<ServedRuntime> {
   // The last listing a tick or a Refresh made. The page is shown what
   // `display` makes of it, and finds an item's workflow there; a write also
   // needs this one to have judged the item itself.
   const last: { fresh?: WorkspaceListing } = {};
   const display = displayOf(rt.workflows);
-  const seen = (listing: WorkspaceListing): void => {
-    last.fresh = listing;
-    const shown = display(listing);
-    if (shown) boardRef.current?.list(shown);
-  };
-
-  // Built before the board and the page, which both need to reach into it —
-  // the board reads schedule.nextAt for the countdown, the page's writes and
-  // the wake file call schedule.wake. `--once` never starts it: one tick and
-  // no page means nothing here is ever armed.
-  const inFlight = new Set<Promise<void>>();
-  const schedule = createSchedule({ intervalMs: rt.intervalMs, run: trackedRun(rt, seen, inFlight) });
-
-  const { folder, workspace } = await repoWorkspace(dir);
   const board = createBoard({
     // Each item placed by the stages of the workflow that owns it, and
     // offered Start work only in one with an operator to add labels through.
     workflows: rt.workflows.map((w) => ({ id: w.id, workflow: w.deps.workflow, operator: w.operator !== undefined })),
-    held: (t) => held(t), nextTickAt: schedule.nextAt, folder, workspace,
+    held: (t) => held(t), nextTickAt: opts.schedule.nextAt, folder: opts.folder, workspace: opts.workspace,
     // The tree nests along exactly what a source says is one-per-node — a
     // parent, the item a pull request implements — and nothing configured.
     nest: [...new Set(rt.workflows.flatMap((w) => w.source.relations.filter((r) => r.singular).map((r) => r.type)))],
   });
-  boardRef.current = board;
+  const seen = (listing: WorkspaceListing): void => {
+    last.fresh = listing;
+    const shown = display(listing);
+    if (shown) board.list(shown);
+  };
 
   // A write by the fresh listing alone; its refusal quotes a source's
   // failure, which can carry what the log would redact.
-  const writeOwner = (item: string, opts: { closed?: boolean } = {}): Ownership => {
-    const owner = writeOwnerOf(last.fresh, item, opts);
+  const writeOwner = (item: string, o: { closed?: boolean } = {}): Ownership => {
+    const owner = writeOwnerOf(last.fresh, item, o);
     return "refused" in owner ? { refused: rt.log.scrub(owner.refused) } : owner;
   };
   const { activity } = rt;
   // An unowned item's reads, by the index its source has in every listing.
   const sources = sourceReaders(rt.workflows, rt.ctx);
-  const { serve } = rt.ctx.config;
-  const ui = await startUi({
-    board, ui: opts.ui ?? true, once: opts.once ?? false, port: rt.port ?? serve.port, host: serve.host, publicUrl: serve.publicUrl,
-    tick: schedule.wake,
-    // The operator's tools beside the board, over every workflow as this
-    // loop runs them; a write wakes the loop itself, with no wake file.
-    mcp: serves && rt.toolWorkflows ? mcpEndpointFor(rt, schedule) : undefined,
+  return {
+    rt, board, seen,
     goto: gotoByClaim(writeOwner, new Map(rt.workflows.map((w) => [w.id, gotoFor({
       source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx, workflow: w.deps.workflow,
     })]))),
@@ -1238,49 +1253,228 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       const said = rt.log.scrub(messageOf(e));
       throw e instanceof Refusal ? new Refusal(said) : new Error(said);
     }),
-  });
-  if (ui) {
-    // Once the board listens, on the port it bound — never the flag's, which
-    // may be 0 — and naming the workspace the board publishes as its own.
-    // Asked again: building the runtime and the preflights take seconds, and
-    // a board another start brought up meanwhile would lose its record to
-    // this one, leaving `port` naming one of two.
-    const refused = await running(ui.port).catch(async (e: unknown) => {
-      await ui.close();
-      throw e;
-    });
-    if (refused) {
-      await ui.close();
-      throw new Error(refused);
-    }
-    try {
-      await writeInstance(dir, { pid: process.pid, port: ui.port, host: ui.host, workspace, startedAt: new Date().toISOString() });
-    } catch (e) {
-      await ui.close();
-      throw new Error(`could not record which port serves this workspace's board: ${messageOf(e)}`);
-    }
-    console.error(`landrace: triage page at ${ui.url}`);
-    pageRef.url = ui.url;
-    // Only now: a start refused above, or one that could not write its
-    // record, has already closed its board, and a tab on it would be dead.
-    openBoard(ui.url, { interactive: opts.interactive ?? process.stdout.isTTY === true, open: opts.open ?? openBrowser });
+    // The operator's tools beside the board, over every workflow as this
+    // loop runs them; a write wakes the loop itself, with no wake file.
+    mcp: opts.serves && rt.toolWorkflows ? mcpEndpointFor(rt, opts.schedule) : undefined,
+  };
+}
+
+/** What a board write meets in the moment between a disconnect and the page learning of it. */
+const NOT_RUNNING = "Landrace is not running yet; connect what the Integrations tab lists first";
+
+/** The item panel of whichever runtime is current, refused when there is none. */
+function currentPanel(current: () => ServedRuntime | null): ItemPanel {
+  const via = <T>(fn: (p: ItemPanel) => Promise<T>): Promise<T> => {
+    const panel = current()?.panel;
+    return panel ? fn(panel) : Promise.reject(new Refusal(NOT_RUNNING));
+  };
+  return {
+    activity: (item, after) => via((p) => p.activity(item, after)),
+    conversation: (item) => via((p) => p.conversation(item)),
+    pairing: (item) => via((p) => p.pairing(item)),
+    reply: (item, message) => via((p) => p.reply(item, message)),
+    ask: (item, message) => via((p) => p.ask(item, message)),
+    resolve: (item) => via((p) => p.resolve(item)),
+    pair: (item, stage) => via((p) => p.pair(item, stage)),
+    finish: (item, note) => via((p) => p.finish(item, note)),
+    release: (item) => via((p) => p.release(item)),
+  };
+}
+
+export async function runStart(dir: string, opts: StartOptions): Promise<void> {
+  // One board per workspace: a second would overwrite the record and leave
+  // `landrace port` naming one of two. Asked of the board itself, so a
+  // record a crash left behind does not block. A start that serves no board
+  // writes no record and is not refused.
+  const serves = (opts.ui ?? true) && !(opts.once ?? false);
+  const running = async (own?: number): Promise<string | null> => {
+    const found = await boardLiveness(dir);
+    // A record naming the port this start's own board holds can only be a
+    // crash's: its pid, reused by an unrelated process, still looks alive,
+    // and this board answers for this workspace, so it would refuse itself.
+    return "live" in found && found.instance.port !== own
+      ? `a landrace start already serves this workspace's board at ${found.live} (pid ${found.instance.pid}); ` +
+        "stop it first, or start this one with --headless"
+      : null;
+  };
+  if (serves) {
+    const refused = await running();
+    if (refused) throw new Error(refused);
   }
 
-  // What `landrace mcp` touches after a person's write, in its own process:
-  // watched only where there is a loop to wake.
-  const unwatch = opts.once ? null : watchWake(wakePath(dir), schedule.wake);
-  const off = onSignals(createInterrupt({ stop: rt.stop }));
+  // Whether the local person is ready, before anything is built. Without a
+  // door to connect through — `--once`, `--headless` — a missing connection
+  // refuses the start, in validate's words, as it always has.
+  const store = opts.credentials ?? createCredentialStore();
+  const first = await localGate(dir, store);
+  if (!first.resolution.ready && !serves) {
+    assertLocalUsable(first.local);
+    assertPersonReady(first.resolution);
+  }
+  const { config } = first.local.loaded;
+
+  // One logger, one telemetry sink and one stop for the process, whatever
+  // runtime is current: events and telemetry outlive a reload, and Ctrl-C
+  // stops every runtime this process built. The sink reaches whichever board
+  // is current through a boxed reference, set on every swap.
+  const boardRef: { current?: Board } = {};
+  const print = (e: LandraceEvent): void => console.log(JSON.stringify(e));
+  const settings = telemetrySettings(first.local.loaded.telemetry, opts.otel);
+  const telemetry = settings ? await createOtelSink(settings) : undefined;
+  const log: RedactingLogger = createLogger({
+    ...(opts.debug === undefined ? {} : { debug: opts.debug }),
+    sink: boardSink(print, boardRef),
+    ...(telemetry ? { exporter: telemetry.sink } : {}),
+  }).with(personFields(first.person));
+  // Before anything logs. Each build tells it again, and checks them strictly.
+  const { secretValues } = first.local.loaded;
+  log.redact([...config.log.redact.flatMap((name) => secretValues.get(name) ?? []), ...credentialValues(first.credentials)]);
+  const stop = new AbortController();
+  // What a notification links to, once the page below is up; null without one.
+  const pageRef: { url: string | null } = { url: null };
+
   try {
-    // A single tick reports its own failure by throwing: one shot, one answer,
-    // and the exit code is what a script that ran it will read.
-    await (opts.once ? pass(rt, seen) : loop(rt, schedule, inFlight));
+    const { folder, workspace } = await repoWorkspace(dir);
+    const inFlight = new Set<Promise<void>>();
+    // The build reads `schedule`, made below: no reload runs before it is.
+    const slot = createRuntimeSlot<ServedRuntime>(async () => {
+      // Judged afresh: the connection just made or removed is in the store now.
+      const gate = await localGate(dir, store);
+      if (!gate.resolution.ready) return null;
+      const rt = await buildWorkspaceRuntime(dir, {
+        log, stop, credentials: store,
+        ...(opts.debug === undefined ? {} : { debug: opts.debug }),
+        board: () => pageRef.url,
+        ...(opts.uiPort === undefined ? {} : { port: opts.uiPort }),
+      });
+      // Before anything else the hooks might do — including `--once`'s one
+      // tick — a permission problem has to stop the process here, not after
+      // the first paid agent has already run and a publish 403s with nothing
+      // durable recorded to show for it. Run from here rather than from the
+      // runtime's build so `landrace status`, which builds one the same way,
+      // never makes this write while only trying to read.
+      await runPreflights(rt.preflights, { ...rt.ctx, ...declaredOf(rt.workflows.map((w) => w.deps)) });
+      return servedRuntime(rt, { schedule, folder, workspace, serves });
+    }, {
+      onSwap: async (previous, next) => {
+        if (next) boardRef.current = next.board;
+        else delete boardRef.current;
+        // Its sessions end with it; an editor reconnects to the new one.
+        await previous?.mcp?.close();
+      },
+    });
+    // Reads the slot on every run, so a swapped-out runtime starts no new
+    // pass. Its runs already in flight finish under their own item locks
+    // rather than being aborted, since a connect must not kill a paid step;
+    // until one slot pool is shared across runtimes, they may briefly run
+    // beside the new runtime's, each runtime bounded only by its own
+    // `tick.concurrency`.
+    const schedule = createSchedule({
+      intervalMs: parseInterval(config.tick.interval),
+      run: () => {
+        const served = slot.current();
+        return served ? trackedRun(served.rt, served.seen, inFlight)() : Promise.resolve();
+      },
+    });
+    await slot.reload();
+    const current = (): ServedRuntime | null => slot.current();
+
+    // The Integrations tab. A paste is checked against the instance's own
+    // configuration and secrets, which are the same in every runtime.
+    const people = createPeoplePanel({
+      store, registry: { connections: first.connections }, loaded: first.local.configured, mode: { remote: false }, log,
+      ctx: {
+        config, secrets: secretValues, signal: stop.signal,
+        log: (event, data) => log(event as EventName, data),
+      },
+      onChange: async () => {
+        await slot.reload();
+        schedule.wake();
+      },
+    });
+
+    const { serve } = config;
+    const ui = await startUi({
+      ui: opts.ui ?? true, once: opts.once ?? false, port: doorPort(config, opts.uiPort), host: serve.host, publicUrl: serve.publicUrl,
+      ...(opts.serve ? { serve: opts.serve } : {}),
+      board: { view: () => current()?.board.view() ?? Promise.reject(new Error(NOT_RUNNING)) },
+      tick: schedule.wake,
+      ready: () => current() !== null,
+      people: { panel: people, caller: () => first.person },
+      mcp: serves ? {
+        handle: (req, res) => {
+          const mcp = current()?.mcp;
+          if (mcp) return mcp.handle(req, res);
+          sendPage(res, 503, "text/plain; charset=utf-8", `${NOT_RUNNING}, then reconnect`);
+        },
+        close: async () => { await current()?.mcp?.close(); },
+      } : undefined,
+      goto: {
+        send: (item, target, o) => {
+          const served = current();
+          if (!served) return Promise.resolve({ refused: NOT_RUNNING });
+          return served.goto
+            ? served.goto.send(item, target, o)
+            : Promise.resolve({ refused: `#${item} cannot be sent back: no workflow here loads a hook that writes a record` });
+        },
+      },
+      refresh: () => current()?.refresh() ?? Promise.reject(new Refusal(NOT_RUNNING)),
+      panel: currentPanel(current),
+      admit: (item, workflow) => current()?.admit(item, workflow) ?? Promise.reject(new Refusal(NOT_RUNNING)),
+    });
+    try {
+      if (ui) {
+        // Once the board listens, on the port it bound — never the flag's, which
+        // may be 0 — and naming the workspace the board publishes as its own.
+        // Asked again: building the runtime and the preflights take seconds, and
+        // a board another start brought up meanwhile would lose its record to
+        // this one, leaving `port` naming one of two.
+        const refused = await running(ui.port);
+        if (refused) throw new Error(refused);
+        try {
+          await writeInstance(dir, { pid: process.pid, port: ui.port, host: ui.host, workspace, startedAt: new Date().toISOString() });
+        } catch (e) {
+          throw new Error(`could not record which port serves this workspace's board: ${messageOf(e)}`);
+        }
+        console.error(`landrace: triage page at ${ui.url}`);
+        if (!current()) {
+          const missing = first.resolution.problems.filter((p) => p.rule.startsWith("connection.")).map((p) => `  ${p.rule}: ${p.message}`);
+          console.error(`landrace: nothing runs until these are connected in the board's Integrations tab:\n${log.scrub(missing.join("\n"))}`);
+        }
+        pageRef.url = ui.url;
+        // Only now: a start refused above, or one that could not write its
+        // record, has already closed its board, and a tab on it would be dead.
+        openBoard(ui.url, { interactive: opts.interactive ?? process.stdout.isTTY === true, open: opts.open ?? openBrowser });
+      }
+    } catch (e) {
+      await ui?.close();
+      throw e;
+    }
+
+    // What `landrace mcp` touches after a person's write, in its own process:
+    // watched only where there is a loop to wake.
+    const unwatch = opts.once ? null : watchWake(wakePath(dir), schedule.wake);
+    const off = onSignals(createInterrupt({ stop }));
+    try {
+      // A single tick reports its own failure by throwing: one shot, one answer,
+      // and the exit code is what a script that ran it will read.
+      const served = current();
+      if (opts.once) {
+        if (!served) throw new Error(NOT_RUNNING);
+        await pass(served.rt, served.seen);
+      } else {
+        await loop({ stop }, schedule, inFlight);
+      }
+    } finally {
+      unwatch?.();
+      off();
+      await ui?.close();
+      if (ui) await removeInstance(dir, process.pid).catch((e: unknown) => console.error(`landrace: could not remove the board's record: ${messageOf(e)}`));
+    }
   } finally {
-    unwatch?.();
-    off();
-    await ui?.close();
-    if (ui) await removeInstance(dir, process.pid).catch((e: unknown) => console.error(`landrace: could not remove the board's record: ${messageOf(e)}`));
-    // --once, a normal stop and the first Ctrl-C all come through here; the
-    // batch would otherwise lose up to its whole export interval of records.
-    await rt.telemetry?.shutdown();
+    // --once, a normal stop, the first Ctrl-C and a refused start all come
+    // through here; the batch would otherwise lose up to its whole export
+    // interval of records.
+    await telemetry?.shutdown();
   }
 }
