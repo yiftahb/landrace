@@ -11,6 +11,7 @@ import { scrubberOf } from "#runner/events.js";
 import { buildBriefing } from "#runner/artifacts.js";
 import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
 import { runStep } from "#runner/step.js";
+import { limitKindOf } from "#runner/limits.js";
 
 /** Generous. The real bound on a run is the workflow's iteration budget. */
 const DEFAULT_MAX_PASSES = 30;
@@ -457,6 +458,11 @@ async function converging(
           // A record here would be CLAUDE.md's hard-fail rule pointed the
           // wrong way — that rule is about a step whose *output* was
           // rejected, and this step has no output to reject.
+          //
+          // A limit is said as one, so a shared instance can tell a person's
+          // plan running out from an outage. Only said: it is the same halt.
+          const kind = limitKindOf(result.reason);
+          if (kind !== null) deps.log("agent.limited", { item, stage: stage.id, round, kind });
           return { passes: pass, settled: "halt", why: result.reason };
         }
 

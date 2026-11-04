@@ -385,6 +385,29 @@ describe("converge", () => {
       expect(r2.settled).toBe("terminal");
       expect([...w.labels]).toContain("lr:stage:done");
     });
+
+    /*
+     * #179: a limit is said as one, under the workflow `buildWorkspaceRuntime`
+     * stamps on each workflow's deps log, and is still an outage: no record,
+     * and the round it owed is the round it runs next.
+     */
+    it("logs agent.limited for an executor that hit its usage limit, and still records nothing", async () => {
+      const w = world();
+      const events: LandraceEvent[] = [];
+      const log = createLogger({ sink: (e) => events.push(e) }).with({ workflow: "main" });
+      const limited: Executor = { id: "limited", run: async () => { throw new Error("Claude AI usage limit reached|1760000000"); } };
+
+      await converge("1", deps(w, { workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: limited, log }));
+      expect(events.filter((e) => e.name === "agent.limited")).toEqual([
+        { name: "agent.limited", workflow: "main", item: "1", stage: "spec", round: 1, kind: "usage" },
+      ]);
+      expect(w.entries).toHaveLength(0);
+
+      const plain: Executor = { id: "plain", run: async () => { throw new Error("spawn claude ENOENT"); } };
+      await converge("1", deps(w, { workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: plain, log }));
+      expect(events.filter((e) => e.name === "agent.limited")).toHaveLength(1);
+      expect(events.filter((e) => e.name === "step.started").map((e) => e.round)).toEqual([1, 1]);
+    });
   });
 
   // I4 — CLAUDE.md says errors report, they do not crash. The dispatcher's

@@ -301,6 +301,43 @@ describe("buildWorkspaceRuntime", () => {
   });
 
   /*
+   * #179: every event the runtime logs is the local person's — its own log,
+   * every hook's ctx.log and each workflow's deps — and a workflow's deps
+   * name the workflow too, which is how `agent.limited` names it.
+   */
+  it("stamps every runtime event with the local person, and a workflow's own with its id", async () => {
+    const seen: LandraceEvent[] = [];
+    const { dir } = await fixture({ configExtra: "people: { local: { email: dev1@example.invalid } }\n" });
+    const rt = await buildMain(dir, { sink: (e) => seen.push(e) });
+
+    rt.log("tick.started", {});
+    rt.ctx.log("tracker.request", {});
+    rt.deps.ctx.log("tracker.request", {});
+    rt.deps.log("step.finished", { item: ITEM });
+
+    const who = { person: "local", personEmail: "dev1@example.invalid" };
+    expect(seen).toEqual([
+      { name: "tick.started", ...who },
+      { name: "tracker.request", ...who },
+      { name: "tracker.request", ...who },
+      { name: "step.finished", ...who, workflow: "main", item: ITEM },
+    ]);
+  });
+
+  it("stamps only the person, with no email, when landrace.yaml names no people", async () => {
+    const seen: LandraceEvent[] = [];
+    const { dir } = await fixture();
+    const rt = await buildMain(dir, { sink: (e) => seen.push(e) });
+    rt.log("tick.started", {});
+    expect(seen).toEqual([{ name: "tick.started", person: "local" }]);
+  });
+
+  it("refuses to start while people.local.email's variable is unset", async () => {
+    const { dir } = await fixture({ configExtra: "people: { local: { email: $LR_TEST_UNSET_EMAIL } }\n" });
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(/people\.local\.email: people\.local\.email is \$LR_TEST_UNSET_EMAIL/);
+  });
+
+  /*
    * The item panel's live lines: where the page reads them, and never with
    * a secret in them, whatever the agent put on its own command line.
    */
@@ -1174,7 +1211,7 @@ describe("runStart --once", () => {
     } finally {
       console.dir = dir_;
     }
-    expect(seen).toEqual([{ name: "step.started", note: "deploying to production" }]);
+    expect(seen).toEqual([{ name: "step.started", person: "local", workflow: "main", note: "deploying to production" }]);
   });
 
   /**
