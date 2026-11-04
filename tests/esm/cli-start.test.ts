@@ -1942,22 +1942,23 @@ describe("runStart --once while the local person is not ready", () => {
  * what is proved is the wiring `runStart` hands the door, Host checks and all.
  */
 const DOOR_PORT = 4545;
-function inProcessDoor(): { serve: NonNullable<StartOptions["serve"]>; drive: (path: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{ status: number; body: string }> } {
+function inProcessDoor(): { serve: NonNullable<StartOptions["serve"]>; drive: (path: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{ status: number; body: string; headers: Record<string, string> }> } {
   let door: FrontDoorOptions | null = null;
   const serve: NonNullable<StartOptions["serve"]> = async (opts) => {
     door = opts;
     return { url: `http://127.0.0.1:${DOOR_PORT}/`, port: DOOR_PORT, host: "127.0.0.1", close: async () => { await opts.mcp?.close(); } };
   };
-  const drive = (path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<{ status: number; body: string }> =>
+  const drive = (path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<{ status: number; body: string; headers: Record<string, string> }> =>
     new Promise((resolve, reject) => {
       if (door === null) return reject(new Error("runStart has not served its door yet"));
       const req = Object.assign(Readable.from(init.body === undefined ? [] : [Buffer.from(init.body)]), {
         method: init.method ?? "GET", url: path, headers: { host: `127.0.0.1:${DOOR_PORT}`, ...init.headers },
       });
       let status = 0;
+      let headers: Record<string, string> = {};
       const res = {
-        writeHead(s: number) { status = s; return res; },
-        end(b?: string) { resolve({ status, body: String(b ?? "") }); },
+        writeHead(s: number, h?: Record<string, string>) { status = s; headers = h ?? {}; return res; },
+        end(b?: string) { resolve({ status, body: String(b ?? ""), headers }); },
       };
       frontDoorListener(door, DOOR_PORT)(req as unknown as IncomingMessage, res as unknown as ServerResponse);
     });
@@ -2295,5 +2296,131 @@ export const chatIdentity = brand("connection", {
     const gate = await localGate(dir, credentials);
     expect(gate.lookups).toEqual(new Map([["chat", "Chat found nobody with your email"]]));
     expect((await credentials.read("local")).connections).toEqual({});
+  }, 30_000);
+});
+
+/*
+ * #184: `start`'s refresher, through `runStart`. A forge connection made by
+ * OAuth, two minutes from its end; the token endpoint is a stub. A spy
+ * preflight keeps the context the runtime's hooks are handed, so the test
+ * reads the very `ctx.secrets` every hook reads.
+ */
+describe("runStart's OAuth refresher", () => {
+  const OLD = "glo-old-access-token-0123456789";
+  const NEW = "glo-new-access-token-0123456789";
+  const REFRESH = "glr-old-refresh-token-0123456789";
+  const NEXT_REFRESH = "glr-new-refresh-token-0123456789";
+  const OAUTH_FORGE = `
+export const forge = brand("connection", {
+  id: "forge", label: "Forge", kind: "credential", fields: ["token"], paste: { hint: "a token" },
+  oauth: () => ({
+    authorizeUrl: "https://forge.example.invalid/oauth/authorize", tokenUrl: "https://forge.example.invalid/oauth/token",
+    clientId: "client-123", clientSecret: "client-secret-0123456789", scope: "api",
+  }),
+});
+export const spy = brand("preflight", {
+  id: "spy",
+  check: async (ctx: { secrets: ReadonlyMap<string, string> }): Promise<void> => { (globalThis as Record<string, unknown>).__lrLiveSecrets = ctx.secrets; },
+});
+`;
+  const live = (): ReadonlyMap<string, string> | undefined => (globalThis as Record<string, unknown>).__lrLiveSecrets as ReadonlyMap<string, string> | undefined;
+
+  async function oauthFixture(): Promise<{ dir: string; credentials: CredentialStore }> {
+    const f = await fixture({ hookExtra: OAUTH_FORGE });
+    const yaml = join(f.dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("secrets: { githubToken: $LR_TEST_TOKEN }", PER_PERSON_SECRET));
+    const root = join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials");
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, "local.json"), JSON.stringify({
+      person: { id: "local" },
+      connections: {
+        forge: {
+          fields: { token: OLD }, source: "oauth", connectedAt: new Date(Date.now() - 3_600_000).toISOString(),
+          expiresAt: new Date(Date.now() + 120_000).toISOString(), refresh: { token: REFRESH },
+        },
+      },
+    }));
+    return { dir: f.dir, credentials: createCredentialStore(root) };
+  }
+
+  async function started<T>(dir: string, credentials: CredentialStore, answer: () => Response, body: (door: ReturnType<typeof inProcessDoor>, printed: string[]) => Promise<T>): Promise<T> {
+    delete (globalThis as Record<string, unknown>).__lrLiveSecrets;
+    const door = inProcessDoor();
+    const printed: string[] = [];
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (line: unknown): void => { printed.push(String(line)); };
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const fetch = (async () => answer()) as typeof globalThis.fetch;
+    const running = runStart(dir, { interactive: false, credentials, serve: door.serve, oauth: { everyMs: 20, fetch } });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      return await body(door, printed);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }
+
+  it("renews a token near its end, stores it, and the live ctx.secrets every hook reads holds it — never logging either token", async () => {
+    const { dir, credentials } = await oauthFixture();
+    const answer = (): Response => new Response(JSON.stringify({ access_token: NEW, refresh_token: NEXT_REFRESH, expires_in: 7200 }), { status: 200 });
+    await started(dir, credentials, answer, async (_door, printed) => {
+      await until(() => live()?.get("forgeToken") === OLD, "the runtime's hooks to be handed the stored token");
+      await until(async () => (await credentials.read("local")).connections["forge"]?.fields["token"] === NEW, "the renewed token to be stored");
+      await until(() => live()?.get("forgeToken") === NEW, "the live secrets to hold the renewed token");
+      expect((await credentials.read("local")).connections["forge"]).toMatchObject({ source: "oauth", refresh: { token: NEXT_REFRESH } });
+      await until(() => printed.some((l) => l.includes("connection.refreshed")), "connection.refreshed");
+      for (const secret of [OLD, NEW, REFRESH, NEXT_REFRESH]) expect(printed.join("\n")).not.toContain(secret);
+      // Two minutes from its end, but renewed before it: nothing to warn a person of.
+      expect(printed.filter((l) => l.includes("connection.expiring"))).toEqual([]);
+    });
+  }, 30_000);
+
+  it("marks the row Not working when the token endpoint refuses the refresh with a 400", async () => {
+    const { dir, credentials } = await oauthFixture();
+    const answer = (): Response => new Response(JSON.stringify({ error: "invalid_grant", error_description: "The refresh token is revoked" }), { status: 400 });
+    await started(dir, credentials, answer, async (door, printed) => {
+      await until(async () => (await credentials.read("local")).connections["forge"]?.failure !== undefined, "the refused refresh to be marked");
+      await until(async () => {
+        const me = JSON.parse((await door.drive("/people/me")).body) as { connections: Array<{ id: string; state: string }>; ready: boolean };
+        return me.connections.some((c) => c.id === "forge" && c.state === "failed") && !me.ready;
+      }, "the row to be Not working");
+      expect((await credentials.read("local")).connections["forge"]?.failure).toMatch(/invalid_grant: The refresh token is revoked/);
+      const failed = printed.map((l) => JSON.parse(l) as LandraceEvent).filter((e) => e.name === "connection.failed");
+      expect(failed[0]).toMatchObject({ connection: "forge", error: expect.stringMatching(/invalid_grant/) });
+      for (const secret of [OLD, REFRESH]) expect(printed.join("\n")).not.toContain(secret);
+    });
+  }, 30_000);
+
+  it("connects through the door: the provider is sent back to the door's own callback, and the token is stored", async () => {
+    const { dir, credentials } = await oauthFixture();
+    await credentials.remove("local", "forge");
+    const answer = (): Response => new Response(JSON.stringify({ access_token: NEW, refresh_token: NEXT_REFRESH, expires_in: 7200 }), { status: 200 });
+    await started(dir, credentials, answer, async (door) => {
+      const me = JSON.parse((await door.drive("/people/me")).body) as { oauth: Record<string, string> };
+      expect(me.oauth).toEqual({ forge: "/connect/forge/start" });
+      const start = await door.drive("/connect/forge/start");
+      expect(start.status).toBe(302);
+      const consent = new URL(start.headers["location"] ?? "");
+      expect(consent.searchParams.get("redirect_uri")).toBe(`http://127.0.0.1:${DOOR_PORT}/connect/forge/callback`);
+      const back = await door.drive(`/connect/forge/callback?code=c&state=${consent.searchParams.get("state") ?? ""}`);
+      expect([back.status, back.headers["location"]]).toEqual([302, "/#/integrations"]);
+      expect((await credentials.read("local")).connections["forge"]).toMatchObject({ fields: { token: NEW }, source: "oauth", refresh: { token: NEXT_REFRESH } });
+      await until(() => live()?.get("forgeToken") === NEW, "the reload to hand the hooks the connected token");
+    });
+  }, 30_000);
+
+  it("keeps the token and tries again after a 5xx, marking nothing", async () => {
+    const { dir, credentials } = await oauthFixture();
+    let asked = 0;
+    const answer = (): Response => { asked++; return new Response("upstream down", { status: 503 }); };
+    await started(dir, credentials, answer, async (_door, printed) => {
+      await until(() => asked >= 2, "a second try after the first 503");
+      expect((await credentials.read("local")).connections["forge"]).toMatchObject({ fields: { token: OLD } });
+      expect((await credentials.read("local")).connections["forge"]).not.toHaveProperty("failure");
+      expect(printed.some((l) => l.includes("connection.failed"))).toBe(true);
+    });
   }, 30_000);
 });

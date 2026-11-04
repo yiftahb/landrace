@@ -2843,6 +2843,13 @@ export interface WorkspaceRuntime {
   log: RedactingLogger;
   ctx: RuntimeContext;
   /**
+   * The map behind `ctx.secrets`, and every hook context made from it: what
+   * `start`'s refresher writes a renewed OAuth token into, so the runs it
+   * already started and the clients they keep send the new one.
+   * `buildWorkspaceRuntime` always sets it; a runtime a test builds by hand may not.
+   */
+  secretValues?: Map<string, string>;
+  /**
    * What each step's agent is doing, for the page's item panel: one log for
    * the workspace, keyed by item, and the one every workflow's deps carry.
    * Absent for a runtime built only to read, which writes nothing.
@@ -2903,6 +2910,8 @@ export interface StartOptions {
   credentials?: CredentialStore;
   /** Serves the front door. Default `serveFrontDoor`; a test passes one that binds nothing and drives the listener itself. */
   serve?: (opts: FrontDoorOptions) => Promise<UiServer>;
+  /** The OAuth refresher's pass, every 60 s by default, and what it and a callback reach a token endpoint with; a test passes a stub. */
+  oauth?: { everyMs?: number; fetch?: typeof fetch };
 }
 
 /**

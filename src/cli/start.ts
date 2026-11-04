@@ -4,6 +4,7 @@ import { Command, InvalidArgumentError, Option } from "commander";
 import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, redactionValues } from "#config/load.js";
 import { perPersonKeys } from "#people/keys.js";
+import { refreshIfNeeded } from "#people/oauth.js";
 import { createPeoplePanel } from "#people/panel.js";
 import {
   assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, lookupIdentities, personEnvOf, resolvePerson,
@@ -27,7 +28,9 @@ import type {
   ConversationLine,
   CredentialStore,
   FrontDoorOptions,
+  ConnectionDef,
   ConnectionStatus,
+  ConnectionValue,
   LocalGate,
   PersonLogins,
   Sandbox,
@@ -553,6 +556,106 @@ export function connectionFailedFor(
   };
 }
 
+/**
+ * One pass of `start`'s OAuth refresher over the local person's stored
+ * connections: each made by OAuth, not marked failed, within ten minutes of
+ * its end is renewed (`refreshIfNeeded`).
+ *
+ * - Renewed: the new token is redacted, then stored — unless the stored
+ *   refresh token changed while the provider answered, a new connect having
+ *   won — then written into the live secret map for each per-person secret
+ *   the environment did not set, so the runs already going and the clients
+ *   they keep send it; `connection.refreshed`. With no runtime up — the
+ *   person was not ready — it reloads, which may now find them ready.
+ * - Refused (a 4xx, or an `error` answer): marked failed with why, as a
+ *   refused agent login is, `connection.failed`, and reloaded, which finds
+ *   the person not ready: runs stop, and the row is Not working.
+ * - Anything else (a network error, a 5xx): `connection.failed`, and the
+ *   next pass asks again.
+ *
+ * A pass still running when the next is due is not overlapped.
+ */
+export function connectionRefresher(opts: {
+  store: CredentialStore;
+  gate: () => Pick<LocalGate, "person" | "connections" | "local">;
+  ctx: () => RuntimeContext;
+  live: () => Map<string, string> | null;
+  log: RedactingLogger;
+  reload: () => Promise<void>;
+  now?: () => Date;
+  fetch?: typeof fetch;
+}): () => Promise<void> {
+  const now = opts.now ?? (() => new Date());
+  let busy = false;
+  const reload = async (connection: string, what: string): Promise<void> => {
+    try {
+      await opts.reload();
+    } catch (e) {
+      opts.log("connection.failed", { connection, error: `${what}, but could not reload: ${opts.log.scrub(messageOf(e))}` });
+    }
+  };
+  const one = async (def: ConnectionDef, stored: ConnectionValue, gate: Pick<LocalGate, "person" | "connections" | "local">): Promise<void> => {
+    const { person } = gate;
+    let next: ConnectionValue | null;
+    try {
+      next = await refreshIfNeeded(def, opts.ctx(), stored, { now: () => now().getTime(), ...(opts.fetch ? { fetch: opts.fetch } : {}) });
+    } catch (e) {
+      const why = opts.log.scrub(oneLine(messageOf(e))).slice(0, 500);
+      if (!(e instanceof Refusal)) {
+        opts.log("connection.failed", { connection: def.id, error: `could not renew it, and will ask again: ${why}` });
+        return;
+      }
+      const again = (await opts.store.read(person.id)).connections[def.id];
+      // A connect made meanwhile holds a refresh token nobody has refused.
+      if (again === undefined || again.refresh?.token !== stored.refresh?.token) return;
+      await opts.store.put(person.id, person, def.id, { ...again, failedAt: now().toISOString(), failure: why });
+      opts.log("connection.failed", { connection: def.id, error: why });
+      await reload(def.id, "marked it failed");
+      return;
+    }
+    if (next === null) return;
+    opts.log.redact([...Object.values(next.fields), ...(next.refresh === undefined ? [] : [next.refresh.token])]);
+    // Asked again just before the write: a connect made while the provider
+    // answered holds a refresh token of its own, and this would drop it.
+    const again = (await opts.store.read(person.id)).connections[def.id];
+    if (again === undefined || again.refresh?.token !== stored.refresh?.token) return;
+    await opts.store.put(person.id, person, def.id, next);
+    const { configured, loaded } = gate.local;
+    const keys = perPersonKeys(loaded.config).filter((k) => k.kind === "secret" && k.connection.id === def.id && !configured.secretValues.has(k.name));
+    const runtime = opts.live();
+    for (const map of [runtime, loaded.secretValues]) {
+      for (const k of keys) {
+        const value = next.fields[k.connection.field];
+        if (map !== null && value !== undefined) map.set(k.name, value);
+      }
+    }
+    opts.log("connection.refreshed", { connection: def.id, ...(next.expiresAt === undefined ? {} : { expiresAt: next.expiresAt }) });
+    if (runtime === null) await reload(def.id, "renewed it");
+  };
+  return async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const gate = opts.gate();
+      const creds = await opts.store.read(gate.person.id);
+      if (creds.problem !== undefined) return;
+      for (const def of [...gate.connections.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+        const stored = creds.connections[def.id];
+        if (stored === undefined || stored.source !== "oauth" || stored.failure !== undefined) continue;
+        try {
+          await one(def, stored, gate);
+        } catch (e) {
+          opts.log("connection.failed", { connection: def.id, error: `could not renew it: ${opts.log.scrub(messageOf(e))}` });
+        }
+      }
+    } catch (e) {
+      opts.log("connection.failed", { error: `could not read the stored connections to renew them: ${opts.log.scrub(messageOf(e))}` });
+    } finally {
+      busy = false;
+    }
+  };
+}
+
 const DAY_MS = 86_400_000;
 
 /**
@@ -1017,6 +1120,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     seen: opts.seen ?? new Map(),
     log,
     ctx,
+    secretValues: loaded.secretValues,
     ...(activity ? { activity } : {}),
     ...(telemetry ? { telemetry } : {}),
     ...(opts.readOnly ? {} : { toolWorkflows }),
@@ -1507,7 +1611,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     const schedule = createSchedule({
       intervalMs: parseInterval(config.tick.interval),
       run: () => {
-        warnExpiring(latest.resolution.statuses);
+        // Not one the refresher renews: a GitLab OAuth token lasts two hours,
+        // and a daily warning for it would say nothing a person can act on.
+        warnExpiring(latest.resolution.statuses.filter((s) => latest.credentials.connections[s.id]?.refresh === undefined));
         const served = slot.current();
         return served ? trackedRun(served.rt, served.seen, inFlight)() : Promise.resolve();
       },
@@ -1516,22 +1622,37 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     const current = (): ServedRuntime | null => slot.current();
 
     // The Integrations tab. A paste is checked against the configuration and
-    // secrets of the same judging, so a reload that re-read them checks by them.
+    // secrets of the same judging, so a reload that re-read them checks by them;
+    // an OAuth app is read out of those same secrets.
+    const gateCtx = (): RuntimeContext => ({
+      config: latest.local.loaded.config, secrets: latest.local.loaded.secretValues, signal: stop.signal,
+      log: (event, data) => log(event as EventName, data),
+    });
     const people = createPeoplePanel({
       store, mode: { remote: false }, log,
       gate: () => ({
         registry: { connections: latest.connections },
         loaded: latest.local.configured,
         lookups: { person: latest.person.id, reasons: latest.lookups },
-        ctx: {
-          config: latest.local.loaded.config, secrets: latest.local.loaded.secretValues, signal: stop.signal,
-          log: (event, data) => log(event as EventName, data),
-        },
+        ctx: gateCtx(),
       }),
       onChange: async () => {
         await slot.reload();
         schedule.wake();
       },
+      // Where a provider sends the person back: `serve.publicUrl`, else the
+      // address the door bound — known once it is up, and null before.
+      door: () => pageRef.url,
+      ...(opts.oauth?.fetch ? { fetch: opts.oauth.fetch } : {}),
+    });
+    const refresh = connectionRefresher({
+      store, log, gate: () => latest, ctx: gateCtx,
+      live: () => slot.current()?.rt.secretValues ?? null,
+      reload: async () => {
+        await slot.reload();
+        schedule.wake();
+      },
+      ...(opts.oauth?.fetch ? { fetch: opts.oauth.fetch } : {}),
     });
 
     const { serve } = config;
@@ -1595,6 +1716,15 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     // What `landrace mcp` touches after a person's write, in its own process:
     // watched only where there is a loop to wake.
     const unwatch = opts.once ? null : watchWake(wakePath(dir), schedule.wake);
+    // A token renewed before its end, where there is a loop to keep running:
+    // once now, then every pass. Unref'd, so it never holds the process open.
+    let renewing: ReturnType<typeof setInterval> | null = null;
+    if (!opts.once) {
+      void refresh();
+      renewing = setInterval(() => void refresh(), opts.oauth?.everyMs ?? 60_000);
+      renewing.unref();
+      stop.signal.addEventListener("abort", () => { if (renewing) clearInterval(renewing); }, { once: true });
+    }
     const off = onSignals(createInterrupt({ stop }));
     try {
       // A single tick reports its own failure by throwing: one shot, one answer,
@@ -1608,6 +1738,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       }
     } finally {
       unwatch?.();
+      if (renewing) clearInterval(renewing);
       off();
       await ui?.close();
       if (ui) await removeInstance(dir, process.pid).catch((e: unknown) => console.error(`landrace: could not remove the board's record: ${messageOf(e)}`));

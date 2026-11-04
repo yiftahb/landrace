@@ -21,6 +21,7 @@ import {
   buildWorkspaceRuntime,
   childServerCommand,
   connectionFailedFor,
+  connectionRefresher,
   createInterrupt,
   executorFor,
   expiryWarner,
@@ -1087,5 +1088,42 @@ describe("connectionFailedFor", () => {
     await failed?.("OAuth token has expired");
     expect((await store.read("local")).connections["agent"]).not.toHaveProperty("failure");
     expect(reloads).toBe(0);
+  });
+});
+
+/*
+ * #184: a renewed token is stored only over the value it renewed. A connect
+ * made while the provider answered holds a refresh token of its own, and
+ * writing the renewal over it would drop the one the person just made.
+ */
+describe("connectionRefresher", () => {
+  it("stores nothing when the stored refresh token changed while the provider answered", async () => {
+    const ME = { id: "local" };
+    const store = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-refresh-")), "credentials"));
+    const soon = new Date(Date.now() + 60_000).toISOString();
+    await store.put("local", ME, "forge", { fields: { token: "glo-old-0123456789" }, source: "oauth", connectedAt: soon, expiresAt: soon, refresh: { token: "glr-old-0123456789" } });
+    const reconnected = { fields: { token: "glo-reconnected-0123456789" }, source: "oauth" as const, connectedAt: soon, refresh: { token: "glr-reconnected-0123456789" } };
+    const def: ConnectionDef = {
+      id: "forge", label: "Forge", kind: "credential", fields: ["token"],
+      oauth: () => ({ authorizeUrl: "https://f.invalid/a", tokenUrl: "https://f.invalid/t", clientId: "id", clientSecret: "secret-0123456789", scope: "api" }),
+    };
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" }, secrets: { forgeToken: { perPerson: true, connection: "forge.token" } } });
+    const loaded = { config, missing: [], secretValues: new Map<string, string>(), vars: new Map(), telemetry: new Map(), missingVars: [], missingGit: [], missingPerson: [] };
+    const live = new Map([["forgeToken", "glo-old-0123456789"]]);
+    const events: LandraceEvent[] = [];
+    const refresh = connectionRefresher({
+      store, log: createLogger({ sink: (e) => events.push(e) }), reload: async () => {},
+      gate: () => ({ person: ME, connections: new Map([["forge", def]]), local: { dir: "", configured: loaded, loaded, credentials: null, problems: [] } }),
+      ctx: () => ({ config, secrets: new Map(), signal: new AbortController().signal, log: () => {} }),
+      live: () => live,
+      fetch: (async () => {
+        await store.put("local", ME, "forge", reconnected);
+        return new Response(JSON.stringify({ access_token: "glo-renewed-0123456789", refresh_token: "glr-renewed-0123456789", expires_in: 7200 }));
+      }) as typeof fetch,
+    });
+    await refresh();
+    expect((await store.read("local")).connections["forge"]).toEqual(reconnected);
+    expect(live.get("forgeToken")).toBe("glo-old-0123456789");
+    expect(events.map((e) => e.name)).not.toContain("connection.refreshed");
   });
 });
