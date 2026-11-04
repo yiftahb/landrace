@@ -44,6 +44,7 @@ import type {
   Problem,
   RedactingLogger,
   RunningItem,
+  SeenAt,
   Registry,
   RuntimeConfig,
   RuntimeContext,
@@ -652,6 +653,12 @@ export async function localGate(dir: string, store: CredentialStore): Promise<Lo
   assertConfigUsable(dir, loaded);
   const unserved = serveProblems(loaded.config.serve);
   if (unserved.length) throw new Error(unserved.map((p) => `${p.rule}: ${p.message}`).join("\n"));
+  // The redaction list, as the build judges it, but for a per-person secret:
+  // one nothing answers yet is the Integrations tab's to mend, and the build
+  // judges it once it is. Left to the build, a name no secret defines would
+  // refuse only the first connect, with a 502, rather than the start.
+  const personal = new Set(perPersonKeys(loaded.config).map((k) => k.name));
+  redactionValues({ ...loaded, config: { ...loaded.config, log: { ...loaded.config.log, redact: loaded.config.log.redact.filter((n) => !personal.has(n)) } } });
   const blank = perPersonKeys(loaded.config).filter((k) => k.kind === "var" && !loaded.vars.has(k.name)).map((k) => k.name);
   const vars = new Map([...loaded.vars, ...blank.map((name): [string, string] => [name, ""])]);
   const ws = await loadWorkspace(dir, vars, loaded.config.workflows);
@@ -900,7 +907,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     turnedAway: [],
     stop,
     running: opts.running ?? new Map(),
-    seen: new Map(),
+    seen: opts.seen ?? new Map(),
     log,
     ctx,
     ...(activity ? { activity } : {}),
@@ -1338,6 +1345,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // item or taking its admit label, which only the current runtime's ticks
   // can see, so they must judge every run this process has in flight.
   const runs = new Map<string, RunningItem>();
+  // And which items a person has been told of, or a connect would tell them
+  // again of every item already waiting on them.
+  const told = new Map<string, SeenAt>();
   // What a notification links to, once the page below is up; null without one.
   const pageRef: { url: string | null } = { url: null };
 
@@ -1356,7 +1366,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       latest = gate;
       if (!gate.resolution.ready) return null;
       const rt = await buildWorkspaceRuntime(dir, {
-        log, stop, running: runs, credentials: store,
+        log, stop, running: runs, seen: told, credentials: store,
         ...(opts.debug === undefined ? {} : { debug: opts.debug }),
         board: () => pageRef.url,
         ...(opts.uiPort === undefined ? {} : { port: opts.uiPort }),

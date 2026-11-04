@@ -2737,7 +2737,7 @@ export interface WorkspaceRuntime {
    * item placed by its own state has just come to wait on someone, since it
    * makes no transition to say so. In this process only, like `running` —
    * nothing about it is stored, so a restart tells once more of every item
-   * already waiting (see `noteArrivals`).
+   * already waiting (see `noteArrivals`); a rebuild on a connect does not.
    */
   seen: Map<string, SeenAt>;
   /** The one logger every workflow logs through; its `scrub` is the one redaction set. */
@@ -2873,6 +2873,12 @@ export interface BuildOptions {
    * closing its item still stops it. Absent, the build makes its own.
    */
   running?: Map<string, RunningItem>;
+  /**
+   * The process's one record of where each item was told of, for the same
+   * reason: a rebuild that started from an empty one would tell every person
+   * again of every item already waiting on them. Absent, the build makes its own.
+   */
+  seen?: Map<string, SeenAt>;
 }
 
 /* ------------------------------------------------------- sandbox (§15) -- */

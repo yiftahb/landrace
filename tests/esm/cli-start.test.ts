@@ -2042,6 +2042,89 @@ describe("runStart while the local person is not ready", () => {
     }
   }, 30_000);
 
+  /*
+   * The thread on #182: `seen` is what tells that an item placed by its own
+   * state has already been told of. A connect rebuilds the runtime, and a
+   * rebuild that started from an empty one told everyone again.
+   */
+  it("tells once of an item waiting on you, however many connects rebuild the runtime", async () => {
+    const review = (await readFile("tests/fixtures/review/workflow.yaml", "utf8"))
+      .replace("eligible:", "hooks: [../../hooks/fake.ts, ../../hooks/claude.ts]\neligible:");
+    const { dir, record } = await fixture({
+      workflow: review, items: [{ id: ITEM, labels: ["review-requested"] }],
+      hookExtra: FORGE_CONNECTION + RECORDING_NOTIFIER, configExtra: "notify: { on: [needs-you], via: [chat] }\n",
+    });
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("secrets: { githubToken: $LR_TEST_TOKEN }", PER_PERSON_SECRET));
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials"));
+    const { serve, drive } = inProcessDoor();
+    const printed: string[] = [];
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (line: unknown): void => { printed.push(String(line)); };
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    const finished = (): number => printed.filter((l) => l.includes('"name":"tick.finished"')).length;
+    const connect = (token: string) =>
+      drive("/connect/forge", { method: "POST", headers: { "x-landrace-action": "connect" }, body: JSON.stringify({ fields: { token } }) });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      expect((await connect(PASTED)).status).toBe(200);
+      await until(async () => (await applied(record)).length > 0, "the notification");
+      const before = finished();
+      expect((await connect(`${PASTED}-2`)).status).toBe(200);
+      await until(() => finished() > before, "a tick under the rebuilt runtime");
+      await new Promise((r) => setTimeout(r, 300));
+      expect(await applied(record)).toEqual([{ notified: ITEM, workflow: "main", stage: "reviewing", why: "waiting on you" }]);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  /*
+   * The thread on #182: a `log.redact` entry that means nothing is a config
+   * problem, and refuses the start, unready or not, rather than waiting for
+   * the first connect to 502 on it. A per-person secret nobody has answered
+   * yet is not one: the build judges it once it is.
+   */
+  it.each([
+    ["names no secret", (y: string) => y.replace("log: { redact: [githubToken] }", "log: { redact: [githubToken, nope] }"), /log\.redact names "nope", which no secret defines/],
+    ["names a secret too short to redact by", (y: string) => y.replace("$LR_TEST_TOKEN,", "$LR_TEST_SHORT,"), /secret\(s\) "githubToken" resolve to fewer than/],
+  ])("refuses an unready start whose log.redact %s", async (_, edit, refusal) => {
+    const { dir, credentials } = await unready("secret");
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, edit(await readFile(yaml, "utf8")));
+    await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\nLR_TEST_SHORT=abc\n`);
+    const { serve } = inProcessDoor();
+    await expect(runStart(dir, { interactive: false, credentials, serve })).rejects.toThrow(refusal);
+  });
+
+  it("serves an unready start whose log.redact names the per-person secret not yet connected", async () => {
+    const { dir, credentials } = await unready("secret");
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("log: { redact: [githubToken] }", "log: { redact: [githubToken, forgeToken] }"));
+    const { serve, drive } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    const failed = running.then(() => null, (e: unknown) => e as Error);
+    try {
+      await Promise.race([
+        until(() => said.some((l) => l.includes("triage page at ")), "the page to start"),
+        failed.then((e) => { if (e) throw e; }),
+      ]);
+      expect(JSON.parse((await drive("/board.json")).body)).toEqual({ ready: false });
+    } finally {
+      process.emit("SIGINT");
+      await running.catch(() => undefined);
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
   it("keeps a .env-only setup starting and ticking as it did", async () => {
     const { dir, record } = await fixture();
     const { serve, drive } = inProcessDoor();
