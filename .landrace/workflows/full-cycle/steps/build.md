@@ -76,7 +76,12 @@ change, and leaned on its old value — another element at the z-index you take,
 a scroll into view that assumed nothing covers the window's top, every
 existing caller and test of a function you give a side effect — a spawned
 process, a network call — reaching it through the outermost entry point, each
-of which must be able to inject a stub.
+of which must be able to inject a stub. And when what was built once becomes
+built again — a reload, a rebuild — it means each value that build makes, not
+only those the spec names: a record of what is in flight or already sent is
+shared across builds, what is read from configuration is judged from the
+latest build, never kept by a part built once from the first, and each check
+the old path ran still runs on the new one before it is reached.
 
 **Step 2 — Bring the branch up to date with the default branch.** Merge
 origin's default branch: `git merge "$(git rev-parse --abbrev-ref origin/HEAD)"`.

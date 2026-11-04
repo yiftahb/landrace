@@ -82,7 +82,7 @@ articles, filler, hedging. Fragments fine. Every path, name and technical term
 exact. No pre-text, post-text or slop.
 
 - `## Problem` — what is broken or missing, and the case that shows it. Two or three lines.
-- `## Decisions` — product flow first: what a person does and sees, step by step. Then each choice made, one line each, with its reason.
+- `## Decisions` — product flow first: what a person does and sees, step by step. Then each choice made, one line each, with its reason. Later work is named by what it does, never by a plan's task number.
 - `## Technical design` — file changes, one line per file: `path` — what changes. New types, functions and settings by name. A shape the item fixes for later work — each field, each signature — carried whole: build sees only the spec. No code.
 - `## Done when` — observable checks, one per line.
 
