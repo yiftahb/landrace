@@ -44,7 +44,7 @@ const fast = (): Workflow => ({
 
 const registryOf = (state: ExternalState): Registry => ({
   preflights: [], pre: [state.pre], post: [state.post], artifacts: [], source: state.source, operator: state.operator,
-  executors: new Map(), notifiers: new Map(),
+  executors: new Map(), notifiers: new Map(), connections: new Map(),
 });
 
 const ctx = (): RuntimeContext => ({ config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} });

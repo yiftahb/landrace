@@ -297,7 +297,7 @@ describe("buildWorkspaceRuntime", () => {
  */
 describe("which executor screens", () => {
   const empty: Registry = {
-    preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map(), notifiers: new Map(),
+    preflights: [], pre: [], post: [], artifacts: [], source: null, operator: null, executors: new Map(), notifiers: new Map(), connections: new Map(),
   };
   const ctx = (): ExecutorContext => ({
     config: runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" } }),

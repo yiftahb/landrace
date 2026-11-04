@@ -9,6 +9,7 @@ import { hookKindOf } from "#hooks/contracts.js";
 import type {
   ArtifactHook,
   Claim,
+  ConnectionDef,
   Executor,
   ExecutorFactory,
   HookModule,
@@ -43,6 +44,8 @@ export function buildRegistry(modules: HookModule[]): Registry {
   const preflightIds = new Map<string, Claim>();
   const notifiers = new Map<string, Notifier>();
   const notifierIds = new Map<string, Claim>();
+  const connections = new Map<string, ConnectionDef>();
+  const connectionIds = new Map<string, Claim>();
   let source: { hook: Source; claim: Claim } | null = null;
   let operator: { hook: Operator; claim: Claim } | null = null;
 
@@ -127,6 +130,12 @@ export function buildRegistry(modules: HookModule[]): Registry {
           notifiers.set(hook.id, hook);
           break;
         }
+        case "connection": {
+          const hook = value as ConnectionDef;
+          claimed(connectionIds, "connections", { id: hook.id, from: module.specifier });
+          connections.set(hook.id, hook);
+          break;
+        }
         // A module is free to export helpers, constants and types.
         case null:
           break;
@@ -140,7 +149,7 @@ export function buildRegistry(modules: HookModule[]): Registry {
   createDispatcher(post);
 
   return {
-    preflights, pre, post, artifacts, source: source?.hook ?? null, operator: operator?.hook ?? null, executors, notifiers,
+    preflights, pre, post, artifacts, source: source?.hook ?? null, operator: operator?.hook ?? null, executors, notifiers, connections,
   };
 }
 

@@ -1715,6 +1715,8 @@ export interface Registry {
   executors: Map<string, Executor | ExecutorFactory>;
   /** By id: `notify.via` names them. */
   notifiers: Map<string, Notifier>;
+  /** By id: a per-person key's `connection: <id>.<field>` names them. */
+  connections: Map<string, ConnectionDef>;
 }
 
 /** One imported module: what the workflow called it, and what it exported. */
@@ -1812,6 +1814,108 @@ export interface Person {
   id: string;
   email?: string;
   name?: string;
+}
+
+/**
+ * A `secrets` or `vars` entry written in the per-person form: which map it
+ * is in, its name, the variable that answers it when set, and the stored
+ * connection field that answers it otherwise.
+ */
+export interface PerPersonKey {
+  section: "secrets" | "vars";
+  name: string;
+  env?: string;
+  connection: string;
+  field: string;
+}
+
+/** What a connection's `resolve` and `check` are handed: whose it is. */
+export interface ConnectionContext {
+  person: string;
+  signal: AbortSignal;
+  log: HookLog;
+}
+
+/**
+ * A connection a person makes once and Landrace keeps for them — an
+ * account's login, a token — declared by a hook with `defineConnection`.
+ * `fields` is what a stored one holds and what a key's `<id>.<field>` may
+ * name. `lifetimeDays`, when set, is how long one lasts from `connectedAt`.
+ * `resolve` makes one and `check` asks whether a stored one still works;
+ * the connect flow calls them, and nothing else does.
+ */
+export interface ConnectionDef {
+  id: string;
+  fields: readonly string[];
+  lifetimeDays?: number;
+  resolve(ctx: ConnectionContext): Promise<Record<string, string>>;
+  check?(value: ConnectionValue, ctx: ConnectionContext): Promise<{ ok: true } | { ok: false; reason: string }>;
+}
+
+/** One stored connection: its fields' values, and when it was made, as an ISO 8601 time. */
+export interface ConnectionValue {
+  values: Record<string, string>;
+  connectedAt: string;
+}
+
+/** Everything one person has connected, by connection id: one file in the credentials store. */
+export interface PersonCredentials {
+  person: string;
+  connections: Record<string, ConnectionValue>;
+}
+
+/** A person's file, read: what it holds, or why it could not be read — unreadable or not the shape it must be. */
+export type PersonCredentialsRead =
+  | { ok: true; credentials: PersonCredentials }
+  | { ok: false; reason: string };
+
+/**
+ * Where each person's connections are kept: `<root>/<person>.json`, the
+ * file 0600 and its directory 0700. A person with no file has connected
+ * nothing. `put` and `remove` refuse a file they cannot read rather than
+ * overwrite the other connections in it.
+ */
+export interface CredentialStore {
+  root: string;
+  read(person: string): Promise<PersonCredentialsRead>;
+  put(person: string, connection: string, value: ConnectionValue): Promise<void>;
+  remove(person: string, connection: string): Promise<void>;
+  /** Every person with a file, readable or not. */
+  list(): Promise<string[]>;
+}
+
+/** One required connection of a person's: connected, expired, never made, or not readable, with why. */
+export interface ConnectionStatus {
+  connection: string;
+  state: "connected" | "expired" | "missing" | "failed";
+  reason?: string;
+  connectedAt?: string;
+}
+
+/**
+ * A person judged against the connections the hooks declare: each required
+ * one's status, every per-person key's value, and what is wrong. `ready` is
+ * no `connection.*` problem — `people.env-ignored` is a notice, not a fault.
+ */
+export interface PersonResolution {
+  person: string;
+  remote: boolean;
+  ready: boolean;
+  statuses: ConnectionStatus[];
+  vars: Map<string, string>;
+  secrets: Map<string, string>;
+  problems: Problem[];
+}
+
+/**
+ * `landrace.yaml` for the one local person: `loaded` with every per-person
+ * key their store answers merged in, what the store held (null when no key
+ * is per-person, so nothing was read), and each key nothing answered.
+ */
+export interface LocalConfig {
+  loaded: LoadedConfig;
+  credentials: PersonCredentialsRead | null;
+  problems: Problem[];
 }
 
 /** Which limit an agent's failure says it hit: its plan's usage, a rate, or the provider being overloaded. */

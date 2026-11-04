@@ -10,6 +10,7 @@
  */
 import type {
   ArtifactHook,
+  ConnectionDef,
   Executor,
   ExecutorFactory,
   HookKind,
@@ -27,7 +28,7 @@ import type {
  * kind with no helper is a kind nobody can register, which would fail silently
  * at load rather than loudly at build.
  */
-export const HOOK_KINDS = ["pre", "post", "artifact", "source", "operator", "executor", "preflight", "notifier"] as const;
+export const HOOK_KINDS = ["pre", "post", "artifact", "source", "operator", "executor", "preflight", "notifier", "connection"] as const;
 
 /**
  * How the loader tells the kinds apart.
@@ -69,3 +70,4 @@ export const defineSource = (source: Source): Source => brand("source", source);
 export const defineOperator = (operator: Operator): Operator => brand("operator", operator);
 export const definePreflight = (preflight: Preflight): Preflight => brand("preflight", preflight);
 export const defineNotifier = (notifier: Notifier): Notifier => brand("notifier", notifier);
+export const defineConnection = (connection: ConnectionDef): ConnectionDef => brand("connection", connection);

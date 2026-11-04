@@ -19,7 +19,7 @@ const keyValue = z.union([
         .string()
         .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, { message: "must be a bare variable name like LANDRACE_ASSIGNEE, not a $reference or a value" })
         .optional(),
-      connection: z.string().regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, { message: 'must be "<connection id>.<field>", like github.login' }),
+      connection: z.string().regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, { message: 'must be "<connection id>.<field>", like forge.login' }),
     })
     .strict(),
 ]);

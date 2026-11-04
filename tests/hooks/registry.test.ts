@@ -1,7 +1,7 @@
 import { buildRegistry } from "#hooks/load.js";
 import type { HookModule } from "#namespace.js";
 import {
-  defineArtifactHook, defineExecutor, defineNotifier, defineOperator, definePostHook, definePreHook, definePreflight, defineSource,
+  defineArtifactHook, defineConnection, defineExecutor, defineNotifier, defineOperator, definePostHook, definePreHook, definePreflight, defineSource,
 } from "#hooks/contracts.js";
 import type { HookContext, Node } from "#namespace.js";
 
@@ -216,5 +216,22 @@ describe("ambiguity halts, naming both sides", () => {
   it("lets one integration use its own name in both phases", () => {
     const r = buildRegistry([module_("hooks/tracker.ts", { pre: pre("tracker"), post: post("tracker", ["x"]) })]);
     expect([r.pre[0]?.id, r.post[0]?.id]).toEqual(["tracker", "tracker"]);
+  });
+});
+
+describe("connections", () => {
+  const connection = (id: string) => defineConnection({ id, fields: ["login"], resolve: async () => ({ login: "dev1" }) });
+
+  it("are filed by id", () => {
+    const github = connection("github");
+    const r = buildRegistry([module_("hooks/people.ts", { github, other: connection("jira") })]);
+    expect([...r.connections.keys()].sort()).toEqual(["github", "jira"]);
+    expect(r.connections.get("github")).toBe(github);
+  });
+
+  it("halt when two share an id, naming both modules", () => {
+    expect(() =>
+      buildRegistry([module_("hooks/a.ts", { c: connection("github") }), module_("hooks/b.ts", { c: connection("github") })]),
+    ).toThrow(/two connections share the id "github": "hooks\/a\.ts" and "hooks\/b\.ts"/);
   });
 });
