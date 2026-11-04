@@ -11,7 +11,7 @@ import { scrubberOf } from "#runner/events.js";
 import { buildBriefing } from "#runner/artifacts.js";
 import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
 import { runStep } from "#runner/step.js";
-import { limitKindOf } from "#runner/limits.js";
+import { isAuthFailure, limitKindOf } from "#runner/limits.js";
 
 /** Generous. The real bound on a run is the workflow's iteration budget. */
 const DEFAULT_MAX_PASSES = 30;
@@ -450,7 +450,18 @@ async function converging(
       if (!result.ok) {
         deps.log("step.rejected", { item, stage: stage.id, round, kind: result.kind, reason: result.reason });
 
-        if (result.kind === "unavailable") {
+        // A screener refused the person's own token judged nothing: it is
+        // the agent refusing their login one call early, and is answered as
+        // that below — not recorded as a verdict, which would spend a round
+        // on every item and leave the connection "connected".
+        // Each is answered by its own executor's connection: the screener
+        // runs on `security.adapter`'s, which need not be the steps'.
+        const refusedLogin = result.kind === "unavailable"
+          ? (isAuthFailure(result.reason) ? deps.connectionFailed : undefined)
+          : result.kind === "refused" && result.outage !== undefined && isAuthFailure(result.outage) ? deps.screen?.connectionFailed : undefined;
+        const tokenRefused = refusedLogin !== undefined;
+
+        if (result.kind === "unavailable" || tokenRefused) {
           // The step never ran at all — the executor itself threw (a
           // network blip, a timeout, a Ctrl-C). Nothing was produced, so
           // there is nothing to reject: no durable record, so the next tick
@@ -463,6 +474,13 @@ async function converging(
           // plan running out from an outage. Only said: it is the same halt.
           const kind = limitKindOf(result.reason);
           if (kind !== null) deps.log("agent.limited", { item, stage: stage.id, round, kind });
+          // The agent refused the person's own login: their connection is
+          // marked failed, so nothing runs until they make it again. Still
+          // no record — the step never ran, and is still owed.
+          if (refusedLogin) {
+            deps.log("connection.failed", { item, stage: stage.id, round });
+            await refusedLogin(result.reason);
+          }
           return { passes: pass, settled: "halt", why: result.reason };
         }
 

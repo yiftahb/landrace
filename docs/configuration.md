@@ -214,8 +214,8 @@ An item assigned to somebody else is skipped, with that `else` as the reason `la
 A `secrets` or `vars` entry can be each person's own instead of one value in `.env`. Write it as an object:
 
 ```yaml
-vars:
-  assignee: { perPerson: true, env: LANDRACE_ASSIGNEE, connection: github.login }
+secrets:
+  githubToken: { perPerson: true, env: GITHUB_TOKEN, connection: github.token }
 ```
 
 - `perPerson` is `true`, always.
@@ -231,19 +231,20 @@ A key neither answers is reported by `validate` as `connection.missing`, naming 
 
 - `connection.unknown`: a key its variable left unset naming a connection no hook defines, or a field the connection does not list;
 - `connection.expired`: a connection older than its `lifetimeDays`, or past its `expiresAt`;
-- `connection.failed`: a connection whose stored `failure` says it no longer works;
+- `connection.failed`: a connection whose stored `failure` says it no longer works, such as a Claude token the agent refused;
 - `connection.missing`, `connection.expired` or `connection.failed` for a connection a hook marks `required: always`, whether a key names it or not;
+- `connection.expired` or `connection.failed` for any stored connection a hook defines, whether anything requires it or not;
 - `connection.duplicate`: two different connection objects with one id, in two workflows' hooks.
 
 `landrace next` fills in a var from the store too.
 
-The credentials file is JSON, mode 0600, in a directory of mode 0700. Replace `your-login` with your login on that system:
+The credentials file is JSON, mode 0600, in a directory of mode 0700. Replace `your-member-id` with your Slack member id (`U…`, from your profile's ⋮ → Copy member ID):
 
 ```json
 {
   "person": { "id": "local" },
   "connections": {
-    "github": { "fields": { "login": "your-login" }, "source": "paste", "connectedAt": "2026-11-04T09:00:00.000Z" }
+    "slack": { "fields": { "userId": "your-member-id" }, "source": "override", "connectedAt": "2026-11-04T09:00:00.000Z" }
   }
 }
 ```
@@ -252,7 +253,7 @@ The credentials file is JSON, mode 0600, in a directory of mode 0700. Replace `y
 - Each connection holds `fields`, `source` (`paste`, `oauth`, `lookup` or `override`) and `connectedAt`, an ISO 8601 time.
 - A connection may also hold `expiresAt`, `failedAt`, `failure` and `refresh: { token }`. Any other key makes the file unreadable.
 
-The board's [Integrations tab](cli.md#the-board) writes a credential you paste into it, with `source: paste`, and removes one you disconnect. An identity cannot be pasted: until a later release looks identities up, write its connection by hand, or set the variable. Every value in the file is cut from the log once it is read, if it is 8 characters or longer, and a pasted one before its connection's `check` runs; a per-person secret is also handed to hooks and scrubbed as any secret is (see [.env](#env)). A per-person var is still a var: it reaches comments and prompts unredacted. How runs are kept from reading the file is in [Security](security.md#stored-credentials).
+The board's [Integrations tab](cli.md#the-board) writes a credential you paste into it, with `source: paste`, and removes one you disconnect. An identity cannot be pasted: `start` looks it up by `people.local.email` and writes it with `source: lookup` (see [Connections](hooks.md#connections)). To name one a lookup cannot find, write it by hand, as above, or set the variable. When a step's agent refuses a stored login, `start` adds `failedAt` and `failure` to it. Every value in the file is cut from the log once it is read, if it is 8 characters or longer, and a pasted one before its connection's `check` runs; a per-person secret is also handed to hooks and scrubbed as any secret is (see [.env](#env)). A per-person var is still a var: it reaches comments and prompts unredacted. How runs are kept from reading the file is in [Security](security.md#stored-credentials).
 
 ### Durations
 
@@ -283,7 +284,7 @@ The reference is resolved at load, from `.env` first and then your shell — a p
 
 ## Telemetry
 
-Telemetry is off by default. When it is on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, `notify.*`, `worktree.setup.*`, `agent.limited`, `integration.limited`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to an OpenTelemetry collector as a **log record**, the way Claude Code exports its own events.
+Telemetry is off by default. When it is on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, `notify.*`, `worktree.setup.*`, `agent.limited`, `integration.limited`, `connection.*`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to an OpenTelemetry collector as a **log record**, the way Claude Code exports its own events.
 
 - The record's body and its `event.name` attribute are the event's name.
 - Every other field becomes an attribute prefixed `landrace.` (`landrace.item`; an agent's parsed output in `landrace.event`, and a line of it that was not JSON in `landrace.raw`), JSON-encoded unless it is a string, number or boolean.
@@ -294,6 +295,12 @@ Two events say a limit was hit:
 
 - **`agent.limited`** — `{ item, workflow, stage, round, kind }`. A step's agent failed with text naming a limit. `kind` is `usage` (the plan's usage limit or quota), `rate` (a rate limit, or a 429) or `overloaded` (the provider is overloaded, or a 529). The step is unavailable as before, after its `step.rejected`: it writes no record and counts no round, and the next tick runs it again.
 - **`integration.limited`** — `{ integration, status, where, retryAfter? }`. A tracker, forge, docs or notifier integration got a 429 — or, from GitHub, a 403 with `x-ratelimit-remaining: 0`. `where` is the API path it was refused on; Slack's is `webhook`, since its URL is the credential. `retryAfter` is the `Retry-After` header as sent, when there is one. Notion logs every 429 it waits out, not only the last.
+
+Two say a person's connection needs them:
+
+- **`connection.expiring`** — `{ connection, expiresAt, daysLeft }`. A stored connection has 30 days or fewer left. `start` logs it at most once a day per connection, at the first tick of each UTC day.
+- **`connection.failed`** — `{ item, workflow, stage, round }`. A step's agent refused the person's own stored login, such as a Claude token that has expired. The step is unavailable as before and writes no record; the connection is marked failed, `start` rebuilds its runtime, and nothing runs until it is connected again. With `{ connection, error }` instead, marking it failed did not work, and why.
+
 - Records carry the same redaction as the console. Traces and metrics are not exported.
 
 | Variable | Meaning | Default |

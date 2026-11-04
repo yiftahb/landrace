@@ -1705,10 +1705,10 @@ describe("the page", () => {
  */
 describe("the Integrations tab", () => {
   interface Conn { id: string; label: string; kind: "credential" | "identity"; state: string; detail?: string; expiresAt?: string }
-  const build = (conn: Conn, hint = "", fields: string[] = []): FakeElement => runInNewContext(`
+  const build = (conn: Conn, hint = "", fields: string[] = [], identity?: Record<string, string>): FakeElement => runInNewContext(`
     ${constSource("STATE_TEXT")}${constSource("CONNECT_BUTTON")}${constSource("DISCONNECT_BUTTON")}
     ${["el", "integrationRow"].map(fnSource).join("")}
-    integrationRow(CONN, HINT, FIELDS)`, { CONN: conn, HINT: hint, FIELDS: fields, document: fakeDocument }) as FakeElement;
+    integrationRow(CONN, HINT, FIELDS, IDENTITY)`, { CONN: conn, HINT: hint, FIELDS: fields, IDENTITY: identity, document: fakeDocument }) as FakeElement;
   const all = (e: FakeElement, tag: string): FakeElement[] => descendants(e).filter((d) => d.tag === tag);
   const texts = (e: FakeElement): string[] => descendants(e).map((d) => d.text).filter(Boolean);
   const forge: Conn = { id: "forge", label: "Forge", kind: "credential", state: "missing" };
@@ -1779,6 +1779,14 @@ describe("the Integrations tab", () => {
     expect(all(row, "input")).toEqual([]);
     expect(all(row, "button")).toEqual([]);
     expect(texts(row)).toEqual(expect.arrayContaining(["Chat", "Not connected"]));
+  });
+
+  // A lookup can match the wrong account; the person sees which it matched.
+  it("shows a looked-up identity's fields as plain text, with no input to change them", () => {
+    const row = build({ id: "slack", label: "Slack", kind: "identity", state: "connected" }, "", [], { userId: "U0123ABCD" });
+    expect(all(row, "input")).toEqual([]);
+    expect(all(row, "button")).toEqual([]);
+    expect(texts(row)).toEqual(expect.arrayContaining(["Slack", "Connected", "userId: U0123ABCD"]));
   });
 });
 

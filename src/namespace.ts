@@ -727,6 +727,14 @@ export interface ArtifactHook extends PostHook {
 export interface Screener {
   executor: Executor;
   model: string | undefined;
+  /**
+   * Set only when the screener's own executor runs on a person's stored
+   * connection: a screening its agent could not start because it refused
+   * that login marks that connection failed. Its own, never the steps'
+   * (`ConvergeDeps.connectionFailed`): `security.adapter` may name another
+   * executor, on another login.
+   */
+  connectionFailed?: (reason: string) => Promise<void>;
 }
 
 /**
@@ -954,7 +962,23 @@ export type ExecutorContext = RuntimeContext & {
    * its agent a fetch of it. Required, so a runtime that forgot it does not compile.
    */
   frontDoor: FrontDoor;
+  /**
+   * The variables the person's own stored connection answers, by name, from
+   * the factory's `connection`: their agent login rather than the operator's.
+   * Absent when they stored none, and the agent runs as it always has.
+   */
+  personEnv?: Readonly<Record<string, string>>;
 };
+
+/**
+ * Which of a person's connections an executor runs on, and how: `id` names
+ * a connection a hook defines, and `env` maps each variable the agent reads
+ * to the stored field that answers it.
+ */
+export interface ExecutorConnection {
+  id: string;
+  env: Readonly<Record<string, string>>;
+}
 
 /**
  * An executor a hook builds from the runtime's context rather than at import.
@@ -965,6 +989,8 @@ export type ExecutorContext = RuntimeContext & {
  */
 export interface ExecutorFactory {
   id: string;
+  /** The person's connection its runs are billed to, when it takes one: see `ExecutorConnection`. */
+  connection?: ExecutorConnection;
   create(ctx: ExecutorContext): Promise<Pick<Executor, "run" | "handoff">>;
 }
 
@@ -1037,6 +1063,8 @@ export interface KitSettings {
   timeoutMs?: number | undefined;
   /** The operator's front door, which no run may reach; `create` sets it from `ExecutorContext.frontDoor`. */
   frontDoor?: FrontDoor | undefined;
+  /** Set on every run's environment over the kit's own; `create` sets it from `ExecutorContext.personEnv`. */
+  personEnv?: Readonly<Record<string, string>> | undefined;
 }
 
 /**
@@ -1759,7 +1787,8 @@ export type EventName =
   | "wake.failed"
   | "notify.sent" | "notify.failed"
   | "agent.limited" | "integration.limited"
-  | "person.connected" | "person.disconnected";
+  | "person.connected" | "person.disconnected"
+  | "connection.expiring" | "connection.failed";
 
 export interface LandraceEvent {
   name: EventName;
@@ -1945,7 +1974,9 @@ export interface LocalConfig {
  * What the Integrations tab shows a person: every connection the hooks
  * define, its state, and whether nothing stops their runs. `hints` is each
  * pasted credential's `paste.hint`, and `fields` the names its paste form
- * asks for, both by connection id. Never a value.
+ * asks for, both by connection id. `identities` is each of the caller's own
+ * connected identities' fields — who a lookup matched, so they can see it
+ * matched them — and the only values here: never a credential's.
  */
 export interface MeView {
   person: Person;
@@ -1953,6 +1984,7 @@ export interface MeView {
   ready: boolean;
   hints: Record<string, string>;
   fields: Record<string, string[]>;
+  identities: Record<string, Record<string, string>>;
 }
 
 /**
@@ -2044,7 +2076,16 @@ export interface LockOptions {
  */
 export type StepResult =
   | { ok: true; effects: Effect[]; sessionId: string | null; model: string | null }
-  | { ok: false; kind: "contract" | "unavailable" | "refused"; reason: string };
+  | {
+    ok: false; kind: "contract" | "unavailable" | "refused"; reason: string;
+    /**
+     * A refusal because the screener itself threw: what it threw, apart from
+     * any verdict. The screener runs on the step's own login, so a refused
+     * token fails it first; this, and never a verdict's reason — the
+     * screener's reading of untrusted text — is what is judged for one.
+     */
+    outage?: string;
+  };
 
 export interface ConvergeDeps {
   workflow: Workflow;
@@ -2112,6 +2153,13 @@ export interface ConvergeDeps {
    * nothing for it, so the step is still owed. Absent, a step needs none.
    */
   slot?: AgentSlot;
+  /**
+   * Set only when the step's agent runs on a person's own stored connection:
+   * a step the agent could not start because it refused that login marks
+   * the connection failed with the reason, so nothing runs until it is made
+   * again. Absent, an auth failure is the operator's own login, and only a halt.
+   */
+  connectionFailed?: (reason: string) => Promise<void>;
 }
 
 export interface ConvergeResult {
@@ -2818,6 +2866,14 @@ export interface LocalGate {
   connections: Map<string, ConnectionDef>;
   credentials: PersonCredentials;
   resolution: PersonResolution;
+  /** Why each identity the gate looked up and could not store is still missing, by connection id. */
+  lookups: Map<string, string>;
+}
+
+/** A person's stored connections beside the ones the hooks define: what an executor's `connection` is answered from. */
+export interface PersonLogins {
+  credentials: PersonCredentials;
+  connections: ReadonlyMap<string, ConnectionDef>;
 }
 
 /**
@@ -2879,6 +2935,11 @@ export interface BuildOptions {
    * again of every item already waiting on them. Absent, the build makes its own.
    */
   seen?: Map<string, SeenAt>;
+  /**
+   * Called once a step's agent refused the person's stored connection and it
+   * is marked failed: `start` reloads, and the person is no longer ready.
+   */
+  onConnectionFailed?: () => Promise<void>;
 }
 
 /* ------------------------------------------------------- sandbox (§15) -- */

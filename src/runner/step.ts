@@ -310,7 +310,10 @@ export async function runStep(opts: {
       // A verdict, not an outage: the screener ran and said no. "refused",
       // not "unavailable" — this must be durable and terminal (see the
       // StepResult doc comment), never a silent, free-to-repeat retry.
-      return { ok: false, kind: "refused", reason: `prompt screening blocked this step: ${verdict.reason}` };
+      return {
+        ok: false, kind: "refused", reason: `prompt screening blocked this step: ${verdict.reason}`,
+        ...(verdict.outage === undefined ? {} : { outage: verdict.outage }),
+      };
     }
     log?.("screen.passed", { stage: stageId, round });
   }

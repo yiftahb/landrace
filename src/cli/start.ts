@@ -5,7 +5,9 @@ import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } fro
 import { assertConfigUsable, redactionValues } from "#config/load.js";
 import { perPersonKeys } from "#people/keys.js";
 import { createPeoplePanel } from "#people/panel.js";
-import { assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
+import {
+  assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, lookupIdentities, personEnvOf, resolvePerson,
+} from "#people/resolve.js";
 import { createCredentialStore, credentialValues } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
 import { createRuntimeSlot } from "#runner/slot.js";
@@ -25,7 +27,9 @@ import type {
   ConversationLine,
   CredentialStore,
   FrontDoorOptions,
+  ConnectionStatus,
   LocalGate,
+  PersonLogins,
   Sandbox,
   ServedRuntime,
   UiOptions,
@@ -37,7 +41,9 @@ import type {
   GotoPath,
   LandraceEvent,
   LoadedWorkflow,
+  Logger,
   Ownership,
+  Person,
   PairDeps,
   PreHook,
   ReadRoute,
@@ -436,6 +442,11 @@ export async function executorFor(
      * screener's: `security.adapter`, see `screenerFor`.
      */
     adapter?: { key: string; id: string };
+    /**
+     * The local person's stored connections and the ones the hooks define:
+     * a factory naming a `connection` they stored runs on it, as `personEnv`.
+     */
+    person?: PersonLogins;
   } = {},
 ): Promise<Executor> {
   const { key, id } = opts.adapter ?? { key: "agent.adapter", id: config.agent.adapter };
@@ -455,7 +466,8 @@ export async function executorFor(
         // Typed, but a hook is JavaScript by the time it runs: a factory that
         // returned nothing used to start the loop, and the first paid step
         // met "run is not a function" on an item it had already moved.
-        const made: unknown = await hook.create(ctx);
+        const personEnv = hook.connection && opts.person ? personEnvOf(hook.connection, opts.person.connections, opts.person.credentials) : undefined;
+        const made: unknown = await hook.create(personEnv === undefined ? ctx : { ...ctx, personEnv });
         const run = (made as { run?: unknown } | null | undefined)?.run;
         if (typeof run !== "function") throw new Error("its factory returned no run function");
         // Optional, and only what the factory built: pairing is offered
@@ -483,8 +495,8 @@ export async function executorFor(
  * own words; this holds a plain `Executor` hook, or a factory not built on the
  * kit, to the same. Not the screener's, which nobody pairs with.
  */
-export async function stepExecutorFor(config: RuntimeConfig, registry: Registry, ctx: ExecutorContext): Promise<Executor> {
-  const executor = await executorFor(config, registry, ctx);
+export async function stepExecutorFor(config: RuntimeConfig, registry: Registry, ctx: ExecutorContext, person?: PersonLogins): Promise<Executor> {
+  const executor = await executorFor(config, registry, ctx, person === undefined ? {} : { person });
   const pairing = ctx.pairingStages ?? [];
   if (pairing.length && !executor.handoff) {
     const named = pairing.map((id) => `"${id}"`).join(", ");
@@ -494,6 +506,73 @@ export async function stepExecutorFor(config: RuntimeConfig, registry: Registry,
     );
   }
   return executor;
+}
+
+/**
+ * What converge calls when the step's agent refused the person's own login:
+ * their stored connection marked failed — when, and the agent's reason with
+ * every secret taken out — then `then`, the reload that finds them no longer
+ * ready, so nothing runs until they connect it again. Undefined when the
+ * step executor takes no connection or the person stored none: a refused
+ * login is then the operator's own, and only a halt.
+ *
+ * Only the token the run was handed is marked: one pasted again while it
+ * ran is a new one nobody has refused.
+ *
+ * `adapter` names the executor that ran, `agent.adapter`'s by default: the
+ * screener's is `security.adapter`'s, and a refusal blamed on the other
+ * executor's connection marked a token nobody had refused, or none at all.
+ */
+export function connectionFailedFor(
+  config: RuntimeConfig, registry: Registry, logins: PersonLogins,
+  opts: { store: CredentialStore; person: Person; log: RedactingLogger; then?: () => Promise<void>; now?: () => Date; adapter?: string },
+): ((reason: string) => Promise<void>) | undefined {
+  const hook = registry.executors.get(opts.adapter ?? config.agent.adapter);
+  const connection = hook !== undefined && "create" in hook ? hook.connection : undefined;
+  if (connection === undefined || personEnvOf(connection, logins.connections, logins.credentials) === undefined) return undefined;
+  const used = JSON.stringify(logins.credentials.connections[connection.id]?.fields ?? null);
+  const now = opts.now ?? (() => new Date());
+  return async (reason) => {
+    try {
+      const stored = (await opts.store.read(opts.person.id)).connections[connection.id];
+      if (stored === undefined || JSON.stringify(stored.fields) !== used) return;
+      const failure = opts.log.scrub(oneLine(reason)).slice(0, 500);
+      await opts.store.put(opts.person.id, opts.person, connection.id, { ...stored, failedAt: now().toISOString(), failure });
+    } catch (e) {
+      opts.log("connection.failed", { connection: connection.id, error: `could not mark it failed: ${messageOf(e)}` });
+      return;
+    }
+    // Apart from the mark: a reload that throws (a hook that no longer loads)
+    // leaves the old runtime current, still on the refused token, and saying
+    // the mark failed would send the operator after the wrong cause.
+    try {
+      await opts.then?.();
+    } catch (e) {
+      opts.log("connection.failed", { connection: connection.id, error: `marked it failed, but could not reload: ${messageOf(e)}` });
+    }
+  };
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * `connection.expiring` for each connection with 30 days or fewer left, at
+ * most once a day each: asked on every tick, it keeps the UTC day it last
+ * said so per connection. Days left are whole days, rounded down.
+ */
+export function expiryWarner(log: Logger, now: () => Date = () => new Date()): (statuses: readonly ConnectionStatus[]) => void {
+  const said = new Map<string, string>();
+  return (statuses) => {
+    const at = now();
+    const day = at.toISOString().slice(0, 10);
+    for (const s of statuses) {
+      if (s.state !== "connected" || s.expiresAt === undefined) continue;
+      const left = Date.parse(s.expiresAt) - at.getTime();
+      if (left > 30 * DAY_MS || said.get(s.id) === day) continue;
+      said.set(s.id, day);
+      log("connection.expiring", { connection: s.id, expiresAt: s.expiresAt, daysLeft: Math.max(0, Math.floor(left / DAY_MS)) });
+    }
+  };
 }
 
 const unknownExecutor = (key: string, id: string, registry: Registry): string => {
@@ -523,10 +602,14 @@ export function registeredExecutor(config: RuntimeConfig, registry: Registry): s
  * has no default — a model name is a provider's word, and the engine names
  * no provider.
  */
-export async function screenerFor(config: RuntimeConfig, registry: Registry, ctx: ExecutorContext): Promise<Screener | undefined> {
+export async function screenerFor(config: RuntimeConfig, registry: Registry, ctx: ExecutorContext, person?: PersonLogins): Promise<Screener | undefined> {
   if (!config.security.screen) return undefined;
   const adapter = config.security.adapter;
-  const executor = await executorFor(config, registry, ctx, adapter === undefined ? {} : { adapter: { key: "security.adapter", id: adapter } });
+  const executor = await executorFor(config, registry, ctx, {
+    ...(adapter === undefined ? {} : { adapter: { key: "security.adapter", id: adapter } }),
+    ...(person === undefined ? {} : { person }),
+  });
+
   return { executor, model: config.security.model };
 }
 
@@ -647,7 +730,9 @@ function refuseUnsoundBeforeHooks(dir: string, ws: Workspace, config: RuntimeCon
  * The rules a filled-in workflow is judged by wait for the build, since a
  * blank var would be judged as nothing.
  */
-export async function localGate(dir: string, store: CredentialStore): Promise<LocalGate> {
+export async function localGate(
+  dir: string, store: CredentialStore, opts: { log?: RedactingLogger; signal?: AbortSignal } = {},
+): Promise<LocalGate> {
   const local = await loadLocalConfig(dir, store);
   const { loaded } = local;
   assertConfigUsable(dir, loaded);
@@ -669,11 +754,21 @@ export async function localGate(dir: string, store: CredentialStore): Promise<Lo
   }
   const people = connectionsOf(registries);
   const person = localPerson(loaded);
-  const credentials = await localCredentials(local, person, people.connections, store);
-  const resolution = resolvePerson(local.configured, people, person, credentials, { remote: false });
+  // Who the person is on each system a hook can look them up on, by their
+  // email, with the instance's own secrets: a lookup stored is a value like
+  // any other in the file, kept out of every log line once it is read. A
+  // start's first gate runs before its logger exists, and `runStart` tells
+  // the logger what this gate read before anything logs.
+  const looked = await lookupIdentities(store, person, people.connections, await localCredentials(local, person, people.connections, store), {
+    config: loaded.config, secrets: loaded.secretValues, signal: opts.signal ?? new AbortController().signal,
+    log: (event, data) => opts.log?.(event as EventName, data),
+  });
+  const { credentials, lookups } = looked;
+  opts.log?.redact(credentialValues(credentials));
+  const resolution = resolvePerson(local.configured, people, person, credentials, { remote: false }, new Date(), lookups);
   const unmendable = [...people.problems, ...resolution.problems.filter((p) => p.rule === "connection.unknown")];
   if (unmendable.length) throw new Error(unmendable.map((p) => `${p.rule}: ${p.message}`).join("\n"));
-  return { local, person, connections: people.connections, credentials, resolution };
+  return { local, person, connections: people.connections, credentials, resolution, lookups };
 }
 
 /**
@@ -794,9 +889,11 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   const people = connectionsOf(hooked.map((h) => ({ id: h.loaded.id, registry: h.registry })));
   const person = localPerson(loaded);
   const creds = await localCredentials(local, person, people.connections, opts.credentials);
-  // Read only now when no key was per-person but a hook requires a connection anyway.
+  // Read only now when no key was per-person but a hook defines a connection anyway.
   if (creds !== local.credentials) log.redact(credentialValues(creds));
   assertPersonReady(resolvePerson(local.configured, people, person, creds, { remote: false }), people.problems);
+  const logins: PersonLogins = { credentials: creds, connections: people.connections };
+  const store = opts.credentials ?? createCredentialStore();
 
   // Between workflows, so only once every hook is loaded: two share a source
   // when they share the loaded object, which is what the tick's claims go
@@ -849,13 +946,21 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     // A context of its own per workflow, so a factory two workflows share is
     // built once for each, against that workflow's steps (see `executorFor`).
     const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps, pairingStages: pairingStages(workflow), frontDoor };
-    const screener = opts.readOnly ? undefined : await screenerFor(loaded.config, registry, ectx);
     // Named on what converge and notify log for it — `agent.limited` among
     // them — without a field of its own in deps.
     const workflowLog = log.with({ workflow: id });
+    const failedOpts = { store, person, log: workflowLog, ...(opts.onConnectionFailed ? { then: opts.onConnectionFailed } : {}) };
+    const screening = opts.readOnly ? undefined : await screenerFor(loaded.config, registry, ectx, logins);
+    // The screener's refused login is its own executor's connection, which
+    // `security.adapter` may make another than the steps'.
+    const screenerFailed = screening && connectionFailedFor(loaded.config, registry, logins, {
+      ...failedOpts, adapter: loaded.config.security.adapter ?? loaded.config.agent.adapter,
+    });
+    const screener = screening && (screenerFailed ? { ...screening, connectionFailed: screenerFailed } : screening);
     const executor = opts.readOnly
       ? readOnlyExecutor(registeredExecutor(loaded.config, registry))
-      : await stepExecutorFor(loaded.config, registry, ectx);
+      : await stepExecutorFor(loaded.config, registry, ectx, logins);
+    const connectionFailed = opts.readOnly ? undefined : connectionFailedFor(loaded.config, registry, logins, failedOpts);
     const childServer = childServerCommand(dir, id);
     // The same hooks, executor, screener and pairing server as the steps', so
     // a turn asked through the front door's `/mcp` runs as one asked on the page.
@@ -877,8 +982,10 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
         childServer,
         ...(sandbox === null ? {} : { sandbox }),
         ...(screener ? { screen: screener } : {}),
+        ...(connectionFailed ? { connectionFailed } : {}),
         ctx,
         log: workflowLog,
+
         scrub: log.scrub,
         ...(activity ? { activity } : {}),
         // Not for `landrace status`: reading must not message anyone.
@@ -1362,11 +1469,14 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     // The build reads `schedule`, made below: no reload runs before it is.
     const slot = createRuntimeSlot<ServedRuntime>(async () => {
       // Judged afresh: the connection just made or removed is in the store now.
-      const gate = await localGate(dir, store);
+      const gate = await localGate(dir, store, { log, signal: stop.signal });
       latest = gate;
       if (!gate.resolution.ready) return null;
       const rt = await buildWorkspaceRuntime(dir, {
         log, stop, running: runs, seen: told, credentials: store,
+        // An agent that refused the person's own login: it is marked failed,
+        // and this reload finds them not ready, so nothing more runs on it.
+        onConnectionFailed: () => slot.reload(),
         ...(opts.debug === undefined ? {} : { debug: opts.debug }),
         board: () => pageRef.url,
         ...(opts.uiPort === undefined ? {} : { port: opts.uiPort }),
@@ -1393,9 +1503,11 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     // until one slot pool is shared across runtimes, they may briefly run
     // beside the new runtime's, each runtime bounded only by its own
     // `tick.concurrency`.
+    const warnExpiring = expiryWarner(log);
     const schedule = createSchedule({
       intervalMs: parseInterval(config.tick.interval),
       run: () => {
+        warnExpiring(latest.resolution.statuses);
         const served = slot.current();
         return served ? trackedRun(served.rt, served.seen, inFlight)() : Promise.resolve();
       },
@@ -1410,6 +1522,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       gate: () => ({
         registry: { connections: latest.connections },
         loaded: latest.local.configured,
+        lookups: { person: latest.person.id, reasons: latest.lookups },
         ctx: {
           config: latest.local.loaded.config, secrets: latest.local.loaded.secretValues, signal: stop.signal,
           log: (event, data) => log(event as EventName, data),

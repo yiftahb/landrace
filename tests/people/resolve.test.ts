@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConnection } from "#hooks/contracts.js";
 import { createCredentialStore } from "#people/store.js";
-import { connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
-import type { ConnectionDef, ConnectionValue, CredentialStore, Person, Registry } from "#namespace.js";
+import { claudeConnection } from "landrace/integrations/claude";
+import { connectionsOf, loadLocalConfig, localCredentials, lookupIdentities, personEnvOf, resolvePerson } from "#people/resolve.js";
+import type { ConnectionDef, ConnectionValue, CredentialStore, Person, Registry, RuntimeContext } from "#namespace.js";
 
 const DAY = 86_400_000;
 const NOW = Date.parse("2026-11-04T00:00:00.000Z");
@@ -180,15 +181,42 @@ describe("resolvePerson", () => {
     expect(made).toMatchObject({ ready: true, problems: [] });
   });
 
-  it("opens the store for a configuration with no per-person key only when a hook requires a connection always", async () => {
+  it("requires a person's own Claude login on a remote instance, so no step there runs on the operator's, and never locally", async () => {
+    const claudeOnly = new Map<string, ConnectionDef>([["claude", claudeConnection]]);
+    const remote = await judged(await workspace(""), await store(null), claudeOnly, true);
+    expect(remote.ready).toBe(false);
+    expect(remote.statuses).toEqual([expect.objectContaining({ id: "claude", state: "missing" })]);
+    expect(remote.problems).toEqual([{ rule: "connection.missing", message: expect.stringMatching(/"claude" connection \(Claude\) is required/) }]);
+    const local = await judged(await workspace(""), await store(null), claudeOnly);
+    expect(local).toMatchObject({ ready: true, problems: [], statuses: [] });
+  });
+
+  it("opens the store for a configuration with no per-person key only when a hook defines a connection", async () => {
     const opened: string[] = [];
     const spy: CredentialStore = { ...createCredentialStore("/nonexistent"), read: async (p) => { opened.push(p); return { person: { id: p }, connections: {} }; } };
     const local = await loadLocalConfig(await workspace(""), spy);
-    expect(await localCredentials(local, ME, defs, spy)).toEqual({ person: ME, connections: {} });
+    expect(await localCredentials(local, ME, new Map(), spy)).toEqual({ person: ME, connections: {} });
     expect(opened).toEqual([]);
-    const always = new Map([["forge", { ...forge, required: "always" as const }]]);
-    await localCredentials(local, ME, always, spy);
+    await localCredentials(local, ME, defs, spy);
     expect(opened).toEqual(["local"]);
+  });
+
+  it("judges a stored connection nothing requires, so a failed one is not ready rather than ignored", async () => {
+    const failing = { forge: value(1, undefined, { failedAt: new Date(NOW).toISOString(), failure: "OAuth token has expired" }) };
+    const r = await judged(await workspace(""), await store(failing));
+    expect(r.statuses).toEqual([expect.objectContaining({ id: "forge", state: "failed", detail: "OAuth token has expired" })]);
+    expect(r.problems).toEqual([{ rule: "connection.failed", message: expect.stringMatching(/"forge" connection \(Forge\) is failed: OAuth token has expired; connect forge/) }]);
+    expect(r.ready).toBe(false);
+    const fine = await judged(await workspace(""), await store(connected(1)));
+    expect(fine).toMatchObject({ ready: true, problems: [], statuses: [expect.objectContaining({ id: "forge", state: "connected" })] });
+  });
+
+  it("gives a missing connection the reason its lookup failed", async () => {
+    const chat = defineConnection({ id: "chat", label: "Chat", kind: "identity", fields: ["user"], required: "always" });
+    const local = await loadLocalConfig(await workspace(""), await store(null));
+    const r = resolvePerson(local.configured, { connections: new Map([["chat", chat]]) }, ME, { person: ME, connections: {} }, { remote: false }, new Date(NOW),
+      new Map([["chat", "the chatBotToken secret is not set"]]));
+    expect(r.statuses).toEqual([expect.objectContaining({ id: "chat", state: "missing", detail: "the chatBotToken secret is not set" })]);
   });
 
   it("reports connection.unknown for a connection no hook defines, and for a field it does not declare", async () => {
@@ -213,5 +241,70 @@ describe("connectionsOf", () => {
     const other = defineConnection({ id: "forge", label: "Other", kind: "identity", fields: ["login"] });
     expect(connectionsOf([{ id: "a", registry: registry(forge) }, { id: "b", registry: registry(other) }]).problems)
       .toEqual([{ rule: "connection.duplicate", message: expect.stringMatching(/"forge".*workflows\/a.*workflows\/b/) }]);
+  });
+});
+
+describe("lookupIdentities", () => {
+  const ctx = { config: {}, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+  const MAILED: Person = { id: "local", email: "dev1@example.invalid" };
+  const chatWith = (resolve: ConnectionDef["resolve"]) => defineConnection({ id: "chat", label: "Chat", kind: "identity", fields: ["user"], ...(resolve ? { resolve } : {}) });
+
+  it("stores an identity it looks up by the person's email as a lookup, which is then connected", async () => {
+    const asked: string[] = [];
+    const chat = chatWith(async (email) => { asked.push(email); return { user: "U0123ABCD" }; });
+    const s = await store(null);
+    const { credentials, lookups } = await lookupIdentities(s, MAILED, new Map([["chat", chat]]), { person: MAILED, connections: {} }, ctx, new Date(NOW));
+    expect(asked).toEqual(["dev1@example.invalid"]);
+    expect(lookups).toEqual(new Map());
+    expect(credentials.connections.chat).toEqual({ fields: { user: "U0123ABCD" }, source: "lookup", connectedAt: new Date(NOW).toISOString() });
+    expect((await s.read("local")).connections.chat?.source).toBe("lookup");
+    const local = await loadLocalConfig(await workspace(""), s);
+    const r = resolvePerson(local.configured, { connections: new Map([["chat", chat]]) }, MAILED, credentials, { remote: false }, new Date(NOW));
+    expect(r.statuses).toEqual([expect.objectContaining({ id: "chat", state: "connected" })]);
+  });
+
+  it("asks nothing without an email, nor for an identity already stored, nor for a credential", async () => {
+    let calls = 0;
+    const chat = chatWith(async () => { calls += 1; return { user: "U0123ABCD" }; });
+    const token = defineConnection({ id: "tok", label: "Tok", kind: "credential", fields: ["token"], resolve: async () => { calls += 1; return { token: "x".repeat(10) }; } });
+    const both = new Map<string, ConnectionDef>([["chat", chat], ["tok", token]]);
+    const none = await lookupIdentities(await store(null), ME, both, { person: ME, connections: {} }, ctx, new Date(NOW));
+    expect(none.lookups.get("chat")).toMatch(/no email/);
+    await lookupIdentities(await store(null), MAILED, both, { person: MAILED, connections: { chat: value(1, { user: "U9" }) } }, ctx, new Date(NOW));
+    expect(calls).toBe(0);
+  });
+
+  it("keeps why a lookup threw, and says when it found nobody, storing nothing", async () => {
+    const s = await store(null);
+    const threw = chatWith(async () => { throw new Error("the chatBotToken secret is not set"); });
+    const a = await lookupIdentities(s, MAILED, new Map([["chat", threw]]), { person: MAILED, connections: {} }, ctx, new Date(NOW));
+    expect(a.lookups).toEqual(new Map([["chat", "the chatBotToken secret is not set"]]));
+    const nobody = chatWith(async () => null);
+    const b = await lookupIdentities(s, MAILED, new Map([["chat", nobody]]), { person: MAILED, connections: {} }, ctx, new Date(NOW));
+    expect(b.lookups.get("chat")).toMatch(/Chat found nobody with your email/);
+    expect((await s.read("local")).connections).toEqual({});
+  });
+
+  it("refuses an answer that is not exactly the connection's fields, storing nothing", async () => {
+    const odd = chatWith(async () => ({ login: "U1" }));
+    const s = await store(null);
+    const r = await lookupIdentities(s, MAILED, new Map([["chat", odd]]), { person: MAILED, connections: {} }, ctx, new Date(NOW));
+    expect(r.lookups.get("chat")).toMatch(/user/);
+    expect((await s.read("local")).connections).toEqual({});
+  });
+});
+
+describe("personEnvOf", () => {
+  const claude = defineConnection({ id: "claude", label: "Claude", kind: "credential", fields: ["token"] });
+  const conn = { id: "claude", env: { CLAUDE_CODE_OAUTH_TOKEN: "token" } };
+
+  it("maps the stored connection's fields onto the variables the executor names", () => {
+    const creds = { person: ME, connections: { claude: value(1, { token: "sk-ant-oat01-abc" }) } };
+    expect(personEnvOf(conn, new Map([["claude", claude]]), creds)).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-abc" });
+  });
+
+  it("is nothing with no stored connection, or one no hook defines", () => {
+    expect(personEnvOf(conn, new Map([["claude", claude]]), { person: ME, connections: {} })).toBeUndefined();
+    expect(personEnvOf(conn, new Map(), { person: ME, connections: { claude: value(1, { token: "sk-ant-oat01-abc" }) } })).toBeUndefined();
   });
 });

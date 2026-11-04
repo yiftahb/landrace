@@ -24,6 +24,7 @@ import type {
   AllowedTools,
   EventReading,
   Executor,
+  ExecutorConnection,
   ExecutorContext,
   HookContext,
   ExecutorFactory,
@@ -124,15 +125,17 @@ async function repositoryRoot(dir: string): Promise<string> {
  * four variables above every config file, so a commit names the configured
  * identity whatever HOME's `.gitconfig` or the repository's own config says:
  * a forge that refuses approval from anyone who committed to a pull request
- * would otherwise stop the operator approving the agent's work.
+ * would otherwise stop the operator approving the agent's work. `personal`
+ * is the person's own login, set last so nothing of this process's can
+ * stand in for it.
  */
-function childEnv(extra: readonly string[], git: GitIdentity | undefined): NodeJS.ProcessEnv {
+function childEnv(extra: readonly string[], git: GitIdentity | undefined, personal: Readonly<Record<string, string>> | undefined): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of [...INHERITED_ENV_KEYS, ...extra]) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
-  return { ...env, ...identityEnv(git) };
+  return { ...env, ...identityEnv(git), ...personal };
 }
 
 /** git's four author and committer variables for an identity, or none without one. */
@@ -556,6 +559,12 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
   /** Environment variables the agent needs beyond the kit's own few, passed through by name. Never a credential. */
   readonly envKeys: readonly string[] = [];
   /**
+   * The person's connection the agent's runs are billed to, and the
+   * variables its fields go in; the engine hands them as `personEnv`.
+   * Absent, every run is the operator's own login.
+   */
+  readonly connection?: ExecutorConnection;
+  /**
    * The step front-matter keys the integration enforces, in `RunPlan`. A step
    * naming any other is refused, at startup and on its run: one the agent
    * ignored would read as a limit the step does not have.
@@ -723,7 +732,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     // `security.model`, and it gets no server whatever the block says.
     if (ctx.config.agent.adapter !== this.id) {
       const screener = this.build({
-        servers: {}, tools: {}, sandbox: { hosts: [], deny: [...DEFAULT_DENY] }, log: ctx.log, frontDoor: ctx.frontDoor, ...this.extrasOf({}).extras,
+        servers: {}, tools: {}, sandbox: { hosts: [], deny: [...DEFAULT_DENY] }, log: ctx.log, frontDoor: ctx.frontDoor, personEnv: ctx.personEnv, ...this.extrasOf({}).extras,
       });
       return { run: screener.run };
     }
@@ -772,7 +781,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     if (resolved.problems.length) throw new Error(resolved.problems.map((p) => `${p.rule}: ${p.message}`).join("\n"));
     ctx.redact(mcpRedactionValues(resolved.servers));
     const executor = this.build({
-      ...(rest as unknown as KitSettings & E), servers: resolved.servers, tools: resolved.tools, log: ctx.log, frontDoor: ctx.frontDoor,
+      ...(rest as unknown as KitSettings & E), servers: resolved.servers, tools: resolved.tools, log: ctx.log, frontDoor: ctx.frontDoor, personEnv: ctx.personEnv,
     });
     // Pairing only here, where `agent:` is this integration's: a screener
     // built from another agent's block is never the one a person pairs with.
@@ -786,7 +795,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    */
   build(settings: KitSettings & E): Executor {
     const {
-      model, effort, servers: mcpServers, tools: mcpTools, sandbox, git, log, timeoutMs = FALLBACK_TIMEOUT_MS, frontDoor = NO_DOOR,
+      model, effort, servers: mcpServers, tools: mcpTools, sandbox, git, log, timeoutMs = FALLBACK_TIMEOUT_MS, frontDoor = NO_DOOR, personEnv,
     } = settings;
     const extras = settings as unknown as E;
 
@@ -911,7 +920,8 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
             stdio: ["pipe", "pipe", "pipe"],
             shell: false,
             detached: true,
-            env: childEnv(this.envKeys, git),
+            env: childEnv(this.envKeys, git, personEnv),
+
             ...(resolvedCwd !== undefined ? { cwd: resolvedCwd } : {}),
           });
         } catch (e) {

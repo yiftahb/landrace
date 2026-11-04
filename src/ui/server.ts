@@ -267,7 +267,8 @@ function fieldsOf(body: string): Record<string, string> | null {
 
 /**
  * The Integrations tab. Its read is a local file, open like /board.json,
- * and holds states and hints, never a value. Connect and Disconnect are
+ * and holds states and hints, and the caller's own looked-up identities —
+ * never a credential's value. Connect and Disconnect are
  * writes like every other here, each under its own header; a connect's body
  * is capped far below a comment's. A refusal — an unknown id, an identity, a
  * failing check — is 409 in its own scrubbed sentence; a reload that failed

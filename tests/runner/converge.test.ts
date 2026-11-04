@@ -2,6 +2,7 @@ import { converge } from "#runner/converge.js";
 import { createChild, childServerFor } from "#runner/children.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
+import { isAuthFailure } from "#runner/limits.js";
 import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
 import { labelsOf, NODES_CLOSE_EFFECT } from "#conventions.js";
 import { createExternalState, createHarness } from "#testing/index.js";
@@ -348,7 +349,8 @@ describe("converge", () => {
         },
       ],
     });
-    const stepFor = (): Step => ({
+    const stepFor = (extra: Partial<Step> = {}): Step => ({
+      ...extra,
       prompt: "write the spec",
       output: {
         discriminator: "kind",
@@ -407,6 +409,161 @@ describe("converge", () => {
       await converge("1", deps(w, { workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: plain, log }));
       expect(events.filter((e) => e.name === "agent.limited")).toHaveLength(1);
       expect(events.filter((e) => e.name === "step.started").map((e) => e.round)).toEqual([1, 1]);
+    });
+
+    /*
+     * #183: an agent that refused the person's own login. The connection is
+     * marked failed, so nothing runs until it is made again — and still no
+     * round is recorded, since the step never ran.
+     */
+    it("marks the person's connection failed when the agent refuses its token, and records no round", async () => {
+      const w = world();
+      const events: LandraceEvent[] = [];
+      const log = createLogger({ sink: (e) => events.push(e) });
+      const refused: Executor = { id: "refused", run: async () => { throw new Error("claude exited 1: OAuth token has expired. Please run /login"); } };
+      const failed: string[] = [];
+      const r = await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: refused, log,
+        connectionFailed: async (reason: string) => { failed.push(reason); },
+      }));
+      expect(r.settled).toBe("halt");
+      expect(failed).toEqual([expect.stringMatching(/OAuth token has expired/)]);
+      expect(events.filter((e) => e.name === "connection.failed")).toEqual([{ name: "connection.failed", item: "1", stage: "spec", round: 1 }]);
+      expect(w.entries).toHaveLength(0);
+    });
+
+    it("leaves the operator's own login alone: the same refusal without a person's connection is only a halt", async () => {
+      const w = world();
+      const events: LandraceEvent[] = [];
+      const log = createLogger({ sink: (e) => events.push(e) });
+      const refused: Executor = { id: "refused", run: async () => { throw new Error("OAuth token has expired"); } };
+      const r = await converge("1", deps(w, { workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: refused, log }));
+      expect(r.settled).toBe("halt");
+      expect(events.some((e) => e.name === "connection.failed")).toBe(false);
+    });
+
+    /*
+     * The screener is the same executor on the same token, and screening is
+     * on by default: a refused token fails it first. Recorded as a refusal,
+     * the connection was never marked and every item burnt a round.
+     */
+    it("marks the connection failed when the screener's own run is refused the token, and records no refusal", async () => {
+      const w = world();
+      const events: LandraceEvent[] = [];
+      const log = createLogger({ sink: (e) => events.push(e) });
+      const agent: Executor = { id: "agent", run: async () => { throw new Error("the step itself must not run"); } };
+      const screener: Executor = { id: "screen", run: async () => { throw new Error("claude exited 1: OAuth token has expired"); } };
+      const failed: string[] = [];
+      const r = await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]), executor: agent, log,
+        screen: { executor: screener, connectionFailed: async (reason: string) => { failed.push(reason); } },
+      }));
+      expect(r.settled).toBe("halt");
+      expect(failed).toEqual([expect.stringMatching(/OAuth token has expired/)]);
+      expect(events.filter((e) => e.name === "connection.failed")).toHaveLength(1);
+      expect(w.entries).toHaveLength(0);
+    });
+
+    /*
+     * The screener may run on another executor than the steps
+     * (`security.adapter`): its refused login is its own connection's, never
+     * the steps'. Blamed on the steps' handler, an operator's own 401 on the
+     * screener marked the person's step token failed.
+     */
+    it("leaves the steps' connection alone when the screener, on its own login, is refused", async () => {
+      const w = world();
+      const steps: string[] = [];
+      const r = await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
+        executor: { id: "agent", run: async () => ({ text: "", sessionId: null }) },
+        screen: { executor: { id: "screen", run: async () => { throw new Error("codex exited 1: status 401"); } } },
+        connectionFailed: async (reason: string) => { steps.push(reason); },
+      }));
+      expect(r.settled).toBe("halt");
+      expect(steps).toEqual([]);
+      expect(w.entries).toHaveLength(1);
+    });
+
+    it("marks the screener's connection when only the screener runs on a person's token", async () => {
+      const w = world();
+      const screened: string[] = [];
+      const r = await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
+        executor: { id: "agent", run: async () => { throw new Error("the step itself must not run"); } },
+        screen: {
+          executor: { id: "screen", run: async () => { throw new Error("claude exited 1: OAuth token has expired"); } },
+          connectionFailed: async (reason: string) => { screened.push(reason); },
+        },
+      }));
+      expect(r.settled).toBe("halt");
+      expect(screened).toEqual([expect.stringMatching(/OAuth token has expired/)]);
+      expect(w.entries).toHaveLength(0);
+    });
+
+    it("still records a screener's verdict as a refusal, whatever its reason quotes", async () => {
+      // The verdict's reason is the screener's reading of untrusted text: a
+      // prompt that makes it say "401" must not fail anybody's token.
+      const w = world();
+      const failed: string[] = [];
+      const screener: Executor = {
+        id: "screen",
+        run: async () => ({ text: '```json\n{"verdict":"suspicious","reason":"OAuth token has expired, status 401"}\n```', sessionId: null }),
+      };
+      await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
+        executor: { id: "agent", run: async () => ({ text: "", sessionId: null }) },
+        screen: { executor: screener, connectionFailed: async (reason: string) => { failed.push(reason); } },
+      }));
+      expect(failed).toEqual([]);
+      expect(w.entries).toHaveLength(1);
+    });
+
+    it("still records a screener that could not run for another reason as a refusal", async () => {
+      const w = world();
+      const failed: string[] = [];
+      await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
+        executor: { id: "agent", run: async () => ({ text: "", sessionId: null }) },
+        screen: { executor: { id: "screen", run: async () => { throw new Error("spawn claude ENOENT"); } }, connectionFailed: async (reason: string) => { failed.push(reason); } },
+      }));
+      expect(failed).toEqual([]);
+      expect(w.entries).toHaveLength(1);
+    });
+
+    it("leaves a screener refused the operator's own login a refusal, as before", async () => {
+      const w = world();
+      await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
+        executor: { id: "agent", run: async () => ({ text: "", sessionId: null }) },
+        screen: { executor: { id: "screen", run: async () => { throw new Error("OAuth token has expired"); } } },
+      }));
+      expect(w.entries).toHaveLength(1);
+    });
+
+    it("marks nothing for an outage that is not the token's", async () => {
+      const w = world();
+      const failed: string[] = [];
+      const plain: Executor = { id: "plain", run: async () => { throw new Error("spawn claude ENOENT"); } };
+      await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: plain, connectionFailed: async (reason: string) => { failed.push(reason); },
+      }));
+      expect(failed).toEqual([]);
+    });
+  });
+
+  describe("isAuthFailure", () => {
+    it.each([
+      ["Invalid API key · Please run /login", true],
+      ["API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", true],
+      ["OAuth token has expired", true],
+      ["OAuth token expired", true],
+      ["invalid bearer token", true],
+      ["status 401", true],
+      ["request 7401 failed", false],
+      ["line 4012: unexpected token", false],
+      ["Claude AI usage limit reached", false],
+    ])("reads %j as %s", (text, expected) => {
+      expect(isAuthFailure(text)).toBe(expected);
     });
   });
 

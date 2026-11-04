@@ -20,8 +20,10 @@ import {
   browserCommand,
   buildWorkspaceRuntime,
   childServerCommand,
+  connectionFailedFor,
   createInterrupt,
   executorFor,
+  expiryWarner,
   screenerFor,
   gotoFor,
   loop,
@@ -37,6 +39,11 @@ import {
   startUi,
 } from "#cli/start.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
+import { createCredentialStore } from "#people/store.js";
+import { connectionStatus } from "#people/resolve.js";
+import { createLogger } from "#runner/events.js";
+import type { ConnectionDef, CredentialStore, ExecutorFactory, PersonCredentials } from "#namespace.js";
+
 
 afterAll(removeRepos);
 
@@ -958,5 +965,127 @@ describe("loop", () => {
     resolveManual();
     await p;
     expect(resolved).toBe(true);
+  });
+});
+
+/*
+ * #183: a person's own connections, as `start` watches them.
+ */
+describe("expiryWarner", () => {
+  const DAY = 86_400_000;
+  it("says a connection with 30 days or fewer left is expiring, once a day however many ticks ask", () => {
+    const events: LandraceEvent[] = [];
+    let now = Date.parse("2026-11-04T00:00:00.000Z");
+    const warn = expiryWarner(createLogger({ sink: (e) => events.push(e) }), () => new Date(now));
+    // Judged from what the store holds, as the gate does: made 340 days ago,
+    // lasting 365, is 25 days left; made 325 days ago, 40.
+    const made = (id: string, daysAgo: number) => ({ fields: { token: `tok-${id}` }, source: "paste" as const, connectedAt: new Date(now - daysAgo * DAY).toISOString() });
+    const creds: PersonCredentials = { person: { id: "local" }, connections: { claude: made("claude", 340), forge: made("forge", 325) } };
+    const lasting = (id: string): ConnectionDef => ({ id, label: id, kind: "credential", fields: ["token"], lifetimeDays: 365 });
+    const statuses = [connectionStatus(lasting("claude"), creds, now), connectionStatus(lasting("forge"), creds, now)];
+    for (let tick = 0; tick < 2 * 24 * 12; tick++) {
+      warn(statuses);
+      now += 5 * 60_000;
+    }
+    const expiring = events.filter((e) => e.name === "connection.expiring");
+    expect(expiring.map((e) => [e.connection, e.daysLeft])).toEqual([["claude", 25], ["claude", 24]]);
+  });
+
+  it("says nothing of one already expired or not working, which the tab and the gate already say", () => {
+    const events: LandraceEvent[] = [];
+    const warn = expiryWarner(createLogger({ sink: (e) => events.push(e) }), () => new Date("2026-11-04T00:00:00.000Z"));
+    warn([{ id: "claude", label: "Claude", kind: "credential", state: "failed", expiresAt: "2026-11-10T00:00:00.000Z" }]);
+    expect(events).toEqual([]);
+  });
+});
+
+describe("connectionFailedFor", () => {
+  const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "agent" } });
+  const factory: ExecutorFactory = {
+    id: "agent", connection: { id: "agent", env: { AGENT_TOKEN: "token" } }, create: async () => ({ run: async () => ({ text: "", sessionId: null }) }),
+  };
+  const registry = { executors: new Map([["agent", factory]]) } as unknown as Registry;
+  const def = { id: "agent", label: "Agent", kind: "credential" as const, fields: ["token"] };
+  const connections = new Map([["agent", def]]);
+  const ME = { id: "local" };
+  const at = "2026-11-01T00:00:00.000Z";
+  const credsWith = (token: string): PersonCredentials => ({ person: ME, connections: { agent: { fields: { token }, source: "paste", connectedAt: at } } });
+
+  async function storeWith(token: string | null) {
+    const store = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-failed-")), "credentials"));
+    if (token !== null) await store.put("local", ME, "agent", { fields: { token }, source: "paste", connectedAt: at });
+    return store;
+  }
+
+  it("marks the run's own token failed, with the reason scrubbed, then reloads", async () => {
+    const store = await storeWith("tok-person-123456");
+    const log = createLogger({ sink: () => {} });
+    log.redact(["tok-person-123456"]);
+    let reloads = 0;
+    const failed = connectionFailedFor(config, registry, { credentials: credsWith("tok-person-123456"), connections }, {
+      store, person: ME, log, then: async () => { reloads++; }, now: () => new Date("2026-11-04T00:00:00.000Z"),
+    });
+    await failed?.("401 Unauthorized for tok-person-123456");
+    expect((await store.read("local")).connections["agent"]).toEqual({
+      fields: { token: "tok-person-123456" }, source: "paste", connectedAt: at, failedAt: "2026-11-04T00:00:00.000Z", failure: "401 Unauthorized for [redacted]",
+    });
+    expect(reloads).toBe(1);
+  });
+
+  it("says which step failed: a reload that throws after the mark is stored is not a mark that failed", async () => {
+    const store = await storeWith("tok-person-123456");
+    const events: LandraceEvent[] = [];
+    const failed = connectionFailedFor(config, registry, { credentials: credsWith("tok-person-123456"), connections }, {
+      store, person: ME, log: createLogger({ sink: (e) => events.push(e) }), then: async () => { throw new Error("hook no longer loads"); },
+    });
+    await failed?.("OAuth token has expired");
+    expect((await store.read("local")).connections["agent"]).toHaveProperty("failedAt");
+    expect(events.filter((e) => e.name === "connection.failed").map((e) => e.error)).toEqual(["marked it failed, but could not reload: hook no longer loads"]);
+  });
+
+  it("says the mark failed when the store refuses it, and never reloads", async () => {
+    const store = await storeWith("tok-person-123456");
+    const refusing: CredentialStore = { ...store, put: async () => { throw new Error("disk full"); } };
+    const events: LandraceEvent[] = [];
+    let reloads = 0;
+    const failed = connectionFailedFor(config, registry, { credentials: credsWith("tok-person-123456"), connections }, {
+      store: refusing, person: ME, log: createLogger({ sink: (e) => events.push(e) }), then: async () => { reloads++; },
+    });
+    await failed?.("OAuth token has expired");
+    expect(events.filter((e) => e.name === "connection.failed").map((e) => e.error)).toEqual(["could not mark it failed: disk full"]);
+    expect(reloads).toBe(0);
+  });
+
+  it("is nothing when the person stored no connection, or the executor takes none", async () => {
+    const log = createLogger({ sink: () => {} });
+    const opts = { store: await storeWith(null), person: ME, log };
+    expect(connectionFailedFor(config, registry, { credentials: { person: ME, connections: {} }, connections }, opts)).toBeUndefined();
+    const bare: ExecutorFactory = { id: factory.id, create: factory.create };
+    const plain = { executors: new Map([["agent", bare]]) } as unknown as Registry;
+    expect(connectionFailedFor(config, plain, { credentials: credsWith("tok-person-123456"), connections }, opts)).toBeUndefined();
+  });
+
+  it("takes the connection of the executor it is asked for, not always agent.adapter's", async () => {
+    const plainStep = { id: "step", create: async () => ({ run: async () => ({ text: "", sessionId: null }) }) } as ExecutorFactory;
+    const split = { executors: new Map<string, ExecutorFactory>([["agent", factory], ["step", plainStep]]) } as unknown as Registry;
+    const stepsOnPlain = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "step" } });
+    const store = await storeWith("tok-person-123456");
+    const opts = { store, person: ME, log: createLogger({ sink: () => {} }) };
+    const logins = { credentials: credsWith("tok-person-123456"), connections };
+    expect(connectionFailedFor(stepsOnPlain, split, logins, opts)).toBeUndefined();
+    const screener = connectionFailedFor(stepsOnPlain, split, logins, { ...opts, adapter: "agent" });
+    await screener?.("OAuth token has expired");
+    expect((await store.read("local")).connections["agent"]).toHaveProperty("failedAt");
+  });
+
+  it("leaves a token pasted again while the run ran alone", async () => {
+    const store = await storeWith("tok-new-pasted-99");
+    let reloads = 0;
+    const failed = connectionFailedFor(config, registry, { credentials: credsWith("tok-person-123456"), connections }, {
+      store, person: ME, log: createLogger({ sink: () => {} }), then: async () => { reloads++; },
+    });
+    await failed?.("OAuth token has expired");
+    expect((await store.read("local")).connections["agent"]).not.toHaveProperty("failure");
+    expect(reloads).toBe(0);
   });
 });

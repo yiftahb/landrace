@@ -1,10 +1,11 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { redactionValues } from "#config/load.js";
-import { assertLocalUsable, loadLocalConfig } from "#people/resolve.js";
-import { credentialValues } from "#people/store.js";
+import { localPerson } from "#people/person.js";
+import { assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
+import { createCredentialStore, credentialValues } from "#people/store.js";
 import { mayCreateItems, itemIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
-import type { ChildBinding, ChildTool, ExecutorContext, LoadedWorkflow, Registry, RuntimeContext, Tools, ToolWorkflow } from "#namespace.js";
+import type { ChildBinding, ChildTool, CredentialStore, ExecutorContext, LoadedWorkflow, PersonLogins, Registry, RuntimeContext, Tools, ToolWorkflow } from "#namespace.js";
 import { frontDoorOrigins } from "#front/hosts.js";
 import { createChildMcpServer, createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
@@ -32,9 +33,9 @@ import { childServerCommand, sandboxFor, screenerFor, stepExecutorFor } from "#c
  * workflow's claim can say. `scope` is `--workflow`, the server a pairing hands
  * the person's session, which acts for that one workflow alone.
  */
-export async function buildMcpTools(dir: string, scope?: string): Promise<Tools> {
+export async function buildMcpTools(dir: string, scope?: string, store: CredentialStore = createCredentialStore()): Promise<Tools> {
   // With the local person's stored values merged in, as the loop reads it.
-  const local = await loadLocalConfig(dir);
+  const local = await loadLocalConfig(dir, store);
   const { loaded } = local;
   // The same refusal the loop makes, from the same place: a conversation turn
   // runs the same workflow under the same configuration.
@@ -74,6 +75,17 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
   });
   // What the person's store holds is kept out of the log as a secret is.
   events.redact(credentialValues(local.credentials));
+  // A turn runs on the person's own agent login when they stored one, as the
+  // loop's steps do: the same executor, handed the same `personEnv`.
+  const people = connectionsOf(hooked.map(({ w, registry }) => ({ id: w.id, registry })));
+  const person = localPerson(loaded);
+  const stored = await localCredentials(local, person, people.connections, store);
+  if (stored !== local.credentials) events.redact(credentialValues(stored));
+  // Judged as `start` judges them: `personEnvOf` hands over whatever is
+  // stored, so without this a token the agent already refused, or one past
+  // its lifetime, ran every turn into the agent's auth error.
+  assertPersonReady(resolvePerson(local.configured, people, person, stored, { remote: false }), people.problems);
+  const logins: PersonLogins = { credentials: stored, connections: people.connections };
   // This server runs until its client closes stdin, with no `finally` of its
   // own to flush from; the event loop draining is the one moment it has.
   if (telemetry) process.once("beforeExit", () => void telemetry.shutdown());
@@ -162,7 +174,7 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
      * this process ever naming them: that resolution belongs to the executor
      * factory itself, which this call reaches exactly as `start` does.
      */
-    const executor = await stepExecutorFor(loaded.config, registry, ectx);
+    const executor = await stepExecutorFor(loaded.config, registry, ectx, logins);
     /*
      * And the screener, resolved exactly as the loop's runtime resolves it. §15 screens every agent
      * invocation before it runs, and a conversation turn is one: a person's
@@ -177,7 +189,8 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
      * the frame they will be read in — which is the screening §15 describes and
      * the only kind the screener's own prompt is written to do.
      */
-    const screener = await screenerFor(loaded.config, registry, ectx);
+    const screener = await screenerFor(loaded.config, registry, ectx, logins);
+
     workflows.push({
       ...w, registry, executor,
       ...(screener ? { screen: screener } : {}),

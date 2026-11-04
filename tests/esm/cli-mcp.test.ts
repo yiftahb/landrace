@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { buildChildTool, buildMcpTools } from "#cli/mcp.js";
+import type { CredentialStore } from "#namespace.js";
+import { createCredentialStore } from "#people/store.js";
 import { createActivityLog } from "#runner/activity.js";
 import { sandboxRoot } from "#sandbox.js";
 import { release } from "#runner/lock.js";
@@ -631,6 +633,44 @@ describe("buildMcpTools and the servers a turn is handed", () => {
       mcpJson: { mcpServers: { items: { command: "node", args: ["dist/cli.js", "mcp"] } } },
     });
     await expect(buildMcpTools(dir)).rejects.toThrow(/"items"[\s\S]*operator tools must never reach a step agent/);
+  });
+});
+
+/*
+ * A turn runs on the person's stored agent login, so the stored one is judged
+ * here as `start` judges it: a token the agent refused, or one past its
+ * lifetime, must stop the server, never run turns that fail on the agent's
+ * auth error.
+ */
+describe("buildMcpTools and the person's stored connections", () => {
+  const CLAUDE_CONNECTION = `
+export const claudeLogin = brand("connection", { id: "claude", label: "Claude", kind: "credential", fields: ["token"], lifetimeDays: 365 });
+`;
+  const daysAgo = (n: number): string => new Date(Date.now() - n * 86_400_000).toISOString();
+  async function storeOf(claude: Record<string, unknown>): Promise<CredentialStore> {
+    const root = join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials");
+    await mkdir(root, { recursive: true });
+    await writeFile(join(root, "local.json"), JSON.stringify({ person: { id: "local" }, connections: { claude } }));
+    return createCredentialStore(root);
+  }
+  const token = { token: "sk-ant-oat01-a-person-token-long-enough" };
+
+  it("refuses a stored token the agent already refused", async () => {
+    const { dir } = await fixture({ screen: false, hookExtra: CLAUDE_CONNECTION });
+    const store = await storeOf({ fields: token, source: "paste", connectedAt: daysAgo(1), failedAt: daysAgo(0), failure: "claude exited 1: OAuth token has expired" });
+    await expect(buildMcpTools(dir, undefined, store)).rejects.toThrow(/connection\.failed: .*"claude" connection \(Claude\) is failed: claude exited 1: OAuth token has expired/);
+  });
+
+  it("refuses a stored token past its lifetime", async () => {
+    const { dir } = await fixture({ screen: false, hookExtra: CLAUDE_CONNECTION });
+    const store = await storeOf({ fields: token, source: "paste", connectedAt: daysAgo(366) });
+    await expect(buildMcpTools(dir, undefined, store)).rejects.toThrow(/connection\.expired: .*365 days/);
+  });
+
+  it("assembles on a stored token that is still good", async () => {
+    const { dir } = await fixture({ screen: false, hookExtra: CLAUDE_CONNECTION });
+    const store = await storeOf({ fields: token, source: "paste", connectedAt: daysAgo(1) });
+    await expect(buildMcpTools(dir, undefined, store)).resolves.toBeDefined();
   });
 });
 
