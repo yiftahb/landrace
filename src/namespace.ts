@@ -1758,7 +1758,8 @@ export type EventName =
   | "source.failed"
   | "wake.failed"
   | "notify.sent" | "notify.failed"
-  | "agent.limited" | "integration.limited";
+  | "agent.limited" | "integration.limited"
+  | "person.connected" | "person.disconnected";
 
 export interface LandraceEvent {
   name: EventName;
@@ -1938,6 +1939,41 @@ export interface LocalConfig {
   loaded: LoadedConfig;
   credentials: PersonCredentials | null;
   problems: Problem[];
+}
+
+/**
+ * What the Integrations tab shows a person: every connection the hooks
+ * define, its state, and whether nothing stops their runs. `hints` is each
+ * pasted credential's `paste.hint`, by connection id. Never a value.
+ */
+export interface MeView {
+  person: Person;
+  connections: ConnectionStatus[];
+  ready: boolean;
+  hints: Record<string, string>;
+}
+
+/**
+ * The Integrations tab's reads and writes for one caller. `connect` takes a
+ * credential's fields exactly as its connection defines them, checks them,
+ * stores them and reloads; a refusal — an unknown id, an identity, a field
+ * missing or extra, a failing check — is a `Refusal` and stores nothing.
+ */
+export interface PeoplePanel {
+  me(caller: Person): Promise<MeView>;
+  connect(caller: Person, id: string, fields: Record<string, string>): Promise<ConnectionStatus>;
+  disconnect(caller: Person, id: string): Promise<void>;
+}
+
+/**
+ * The runtime the loop and the front door use now, rebuilt on a connect or a
+ * disconnect. `reload` swaps only when the build succeeds — null, a person
+ * not ready, is a success — and a build that throws keeps the previous one
+ * and rejects with why. Reloads run one at a time, in the order asked.
+ */
+export interface RuntimeSlot<T = WorkspaceRuntime> {
+  current(): T | null;
+  reload(): Promise<void>;
 }
 
 /** Which limit an agent's failure says it hit: its plan's usage, a rate, or the provider being overloaded. */
@@ -2762,6 +2798,8 @@ export interface StartOptions {
   open?: BrowserOpener;
   /** See BuildOptions.otel. */
   otel?: readonly string[];
+  /** See BuildOptions.credentials. */
+  credentials?: CredentialStore;
 }
 
 export interface BuildOptions {
@@ -2786,6 +2824,14 @@ export interface BuildOptions {
   port?: number;
   /** Where the local person's connections are read from. Absent, `~/.landrace/credentials`. */
   credentials?: CredentialStore;
+  /**
+   * The process's one logger, when the caller made it: `start`, whose
+   * runtime is rebuilt on a connect and whose events and telemetry must
+   * outlive each build. Absent, the build makes its own, and its telemetry.
+   */
+  log?: RedactingLogger;
+  /** The process's one Ctrl-C, for the same reason: one stop ends every runtime it built. Absent, the build makes its own. */
+  stop?: AbortController;
 }
 
 /* ------------------------------------------------------- sandbox (§15) -- */
@@ -3317,6 +3363,18 @@ export interface UiOptions {
    * arrives. Absent, its route is 404.
    */
   admit?: (item: string, workflow: string) => Promise<AdmitResult>;
+  /**
+   * The Integrations tab: `GET /people/me`, `POST /connect/:id` and
+   * `POST /disconnect/:id`, each for whoever `caller` says asked — locally,
+   * always the one local person. Absent, the three are 404.
+   */
+  people?: { panel: PeoplePanel; caller(req: IncomingMessage): Person };
+  /**
+   * Whether the board has a runtime behind it. False, `/board.json` answers
+   * `{ ready: false }` and every write but the Integrations tab's is refused
+   * with 409. Absent, always ready.
+   */
+  ready?: () => boolean;
 }
 
 /**
