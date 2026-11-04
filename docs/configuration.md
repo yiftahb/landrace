@@ -31,6 +31,8 @@ Every key, with its default:
 | `secrets.*` | `{}` | Values handed to hooks, usually `$VAR` references resolved from [`.env`](#env) |
 | `workflows` | by each workflow's `name`, then folder id, by code point | The order the MCP lists workflows in, and the board's sidebar and `/board` tabs show them in. Display only. When given, it must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
 | `vars.*` | `{}` | Values substituted into the workflow files — see [vars](#vars) |
+| `people.local.email` | none | Your email, stamped on every event `landrace start` logs as `personEmail` — see [people](#people) |
+| `people.local.name` | none | Your name. Read and resolved, but stamped on nothing yet |
 | `notify.on` | none | The events to tell a person about. There is one: `needs-you` |
 | `notify.via` | none | Notifier ids, each registered by a hook with `defineNotifier`. The shipped one is `slack` |
 
@@ -132,6 +134,20 @@ The message reads `#29 needs you in <workflow> — <title> · <why>`, where `<wo
 
 `start` refuses, and `validate` reports, a `via` id no loaded notifier answers to. Writing a notifier is in [Writing an integration](hooks.md#notifiers); Slack's setup is in [Integrations](integrations.md#slack).
 
+### people
+
+`landrace start` runs for one person, `local`. Every event it logs carries `person: "local"`: its own, every hook's, and each workflow's. A workflow's events also carry `workflow`, its folder id. To put your email on them too, name it under `people.local`:
+
+```yaml
+people:
+  local:
+    email: $LANDRACE_EMAIL
+```
+
+Each value is written literally or as a `$VAR` or `${VAR}` reference, resolved at load from `.env` first and then your shell, as [`agent.git`](#who-commits)'s is. Every event then carries `personEmail` as well. A reference set nowhere, or set to an empty value, is reported by `validate` under `people.local.email` (or `people.local.name`), naming the variable, and `landrace start`, `landrace status` and `landrace mcp` refuse to start over it. Without a `people` block, events carry `person` and no email. Any key other than `email` and `name` is refused.
+
+`landrace status` stamps its events the same way. `landrace mcp` stamps nothing.
+
 ### vars
 
 `vars` lets one workflow serve several instances — say, one per developer, each working the items assigned to them:
@@ -202,11 +218,17 @@ The reference is resolved at load, from `.env` first and then your shell — a p
 
 ## Telemetry
 
-Telemetry is off by default. When it is on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, `notify.*`, `worktree.setup.*`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to an OpenTelemetry collector as a **log record**, the way Claude Code exports its own events.
+Telemetry is off by default. When it is on, every event — `tick.*`, `step.*`, `effect.*`, `lock.*`, `screen.*`, `notify.*`, `worktree.setup.*`, `agent.limited`, `integration.limited`, and `agent.event` and `snapshot.built` whether or not `--debug` is on — is sent to an OpenTelemetry collector as a **log record**, the way Claude Code exports its own events.
 
 - The record's body and its `event.name` attribute are the event's name.
 - Every other field becomes an attribute prefixed `landrace.` (`landrace.item`; an agent's parsed output in `landrace.event`, and a line of it that was not JSON in `landrace.raw`), JSON-encoded unless it is a string, number or boolean.
-- `*.failed`, `*.denied`, `*.blocked` and `lock.stolen` are `WARN`; everything else is `INFO`.
+- Every event `landrace start` logs carries `landrace.person` (`local`), and `landrace.personEmail` when [`people.local.email`](#people) is set. A workflow's events carry `landrace.workflow` too.
+- `*.failed`, `*.denied`, `*.blocked`, `*.limited` and `lock.stolen` are `WARN`; everything else is `INFO`.
+
+Two events say a limit was hit:
+
+- **`agent.limited`** — `{ item, workflow, stage, round, kind }`. A step's agent failed with text naming a limit. `kind` is `usage` (the plan's usage limit or quota), `rate` (a rate limit, or a 429) or `overloaded` (the provider is overloaded, or a 529). The step is unavailable as before, after its `step.rejected`: it writes no record and counts no round, and the next tick runs it again.
+- **`integration.limited`** — `{ integration, status, where, retryAfter? }`. A tracker, forge, docs or notifier integration got a 429 — or, from GitHub, a 403 with `x-ratelimit-remaining: 0`. `where` is the API path it was refused on; Slack's is `webhook`, since its URL is the credential. `retryAfter` is the `Retry-After` header as sent, when there is one. Notion logs every 429 it waits out, not only the last.
 - Records carry the same redaction as the console. Traces and metrics are not exported.
 
 | Variable | Meaning | Default |
