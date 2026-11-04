@@ -1913,8 +1913,12 @@ export interface PersonResolution {
  * is per-person, so nothing was read), and each key nothing answered.
  */
 export interface LocalConfig {
+  /** The directory `landrace.yaml` and `.env` are in, for a refusal to say where to set a variable. */
+  dir: string;
   loaded: LoadedConfig;
   credentials: PersonCredentialsRead | null;
+  /** The per-person keys their variable answered, as `<section>.<name>`: those need no connection locally. */
+  fromEnv: ReadonlySet<string>;
   problems: Problem[];
 }
 
