@@ -6,7 +6,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { buildWorkspaceRuntime, childServerCommand, runStart } from "#cli/start.js";
+import { buildWorkspaceRuntime, childServerCommand, localGate, runStart } from "#cli/start.js";
+import { createLogger } from "#runner/events.js";
 import { runStatus } from "#cli/status.js";
 import { portCommand, readInstance, writeInstance } from "#cli/port.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -2142,5 +2143,107 @@ describe("runStart while the local person is not ready", () => {
       await running;
       [console.log, console.error] = [log, error];
     }
+  }, 30_000);
+});
+
+/*
+ * #183: a person's own connections through `start`'s gate and build — the
+ * Claude login a step runs on, the identity looked up by email, and a token
+ * the agent refused. A temporary store throughout.
+ */
+describe("a person's own connections, through start", () => {
+  const PERSON_TOKEN = "sk-ant-oat01-person-token-for-e2e";
+  const LOOKED_UP = "U0LOOKEDUP42";
+  const CLAUDE_CONNECTION = `
+export const claudeLogin = brand("connection", { id: "claude", label: "Claude", kind: "credential", fields: ["token"], lifetimeDays: 365 });
+`;
+  const CHAT_IDENTITY = `
+export const chatIdentity = brand("connection", {
+  id: "chat", label: "Chat", kind: "identity", fields: ["user"],
+  resolve: async (email: string): Promise<Record<string, string> | null> => (email === "dev1@example.invalid" ? { user: ${JSON.stringify(LOOKED_UP)} } : null),
+});
+`;
+  const EMAIL = "people: { local: { email: dev1@example.invalid } }\n";
+
+  async function storeOf(connections: Record<string, unknown> | null): Promise<CredentialStore> {
+    const root = join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials");
+    if (connections !== null) {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, "local.json"), JSON.stringify({ person: { id: "local" }, connections }));
+    }
+    return createCredentialStore(root);
+  }
+  const claudeStored = { claude: { fields: { token: PERSON_TOKEN }, source: "paste", connectedAt: new Date(Date.now() - 86_400_000).toISOString() } };
+
+  /** The fake agent on PATH as `claude`, so the runtime's own executor spawns it. */
+  async function onPath<T>(body: () => Promise<T>): Promise<T> {
+    const binDir = await mkdtemp(join(tmpdir(), "fake-claude-bin-"));
+    await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(binDir, "claude"));
+    await chmod(join(binDir, "claude"), 0o755);
+    const saved = { PATH: process.env.PATH, KEY: process.env.ANTHROPIC_API_KEY };
+    process.env.PATH = `${binDir}:${saved.PATH ?? ""}`;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-api03-operator-key";
+    try {
+      return await body();
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (saved.KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = saved.KEY;
+    }
+  }
+
+  const envOfRun = async (rt: WorkflowRuntime): Promise<string> => {
+    const cwd = await mkdtemp(join(tmpdir(), "fake-agent-"));
+    await writeFile(join(cwd, "fake.json"), JSON.stringify({ out: "[{{ENV:CLAUDE_CODE_OAUTH_TOKEN}}|{{ENV:ANTHROPIC_API_KEY}}]" }));
+    const r = await rt.deps.executor.run("p", { round: 1, signal: new AbortController().signal, cwd, capabilities: ["repo:read"] });
+    return r.text;
+  };
+
+  it("runs a step on the person's stored Claude token, and on the operator's login with none stored", async () => {
+    const { dir } = await fixture({ hookExtra: CLAUDE_CONNECTION });
+    await onPath(async () => {
+      const mine = await buildMain(dir, { credentials: await storeOf(claudeStored) });
+      expect(await envOfRun(mine)).toBe(`[${PERSON_TOKEN}|]`);
+      const none = await buildMain(dir, { credentials: await storeOf(null) });
+      expect(await envOfRun(none)).toBe("[|]");
+      expect(none.deps.connectionFailed).toBeUndefined();
+    });
+  }, 30_000);
+
+  it("marks a refused token failed and reloads, and the next build finds the person not ready", async () => {
+    const { dir } = await fixture({ hookExtra: CLAUDE_CONNECTION });
+    const credentials = await storeOf(claudeStored);
+    let reloads = 0;
+    const rt = await buildMain(dir, { credentials, onConnectionFailed: async () => { reloads++; } });
+    await rt.deps.connectionFailed?.("claude exited 1: OAuth token has expired");
+    const stored = (await credentials.read("local")).connections["claude"];
+    expect(stored).toMatchObject({ fields: { token: PERSON_TOKEN }, failedAt: expect.any(String), failure: "claude exited 1: OAuth token has expired" });
+    expect(reloads).toBe(1);
+    await expect(buildWorkspaceRuntime(dir, { credentials })).rejects.toThrow(/connection\.failed: .*"claude" connection \(Claude\) is failed: claude exited 1: OAuth token has expired/);
+  }, 30_000);
+
+  it("looks the person's identity up by their email at the gate, stores it, and keeps it out of every log line and telemetry record", async () => {
+    const { dir } = await fixture({ hookExtra: CHAT_IDENTITY, configExtra: EMAIL });
+    const credentials = await storeOf(null);
+    const printed: LandraceEvent[] = [];
+    const exported: LandraceEvent[] = [];
+    const log = createLogger({ sink: (e) => printed.push(e), exporter: (e) => exported.push(e) });
+    const gate = await localGate(dir, credentials, { log });
+    expect(gate.lookups).toEqual(new Map());
+    expect((await credentials.read("local")).connections["chat"]).toMatchObject({ fields: { user: LOOKED_UP }, source: "lookup" });
+    expect(gate.resolution.statuses).toEqual([expect.objectContaining({ id: "chat", state: "connected" })]);
+    log("step.invoked", { said: `posting to ${LOOKED_UP}` });
+    const rt = await buildMain(dir, { credentials, log });
+    rt.deps.log("step.invoked", { said: `again to ${LOOKED_UP}` });
+    expect(printed.length).toBeGreaterThan(0);
+    expect(JSON.stringify([...printed, ...exported])).not.toContain(LOOKED_UP);
+  }, 30_000);
+
+  it("says why a lookup found nobody, and asks again at the next gate", async () => {
+    const { dir } = await fixture({ hookExtra: CHAT_IDENTITY, configExtra: "people: { local: { email: other@example.invalid } }\n" });
+    const credentials = await storeOf(null);
+    const gate = await localGate(dir, credentials);
+    expect(gate.lookups).toEqual(new Map([["chat", "Chat found nobody with your email"]]));
+    expect((await credentials.read("local")).connections).toEqual({});
   }, 30_000);
 });
