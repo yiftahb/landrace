@@ -1,3 +1,5 @@
+import type { HttpLimit } from "#namespace.js";
+
 /*
  * What a vendor API's refusal says, short enough to log. A gateway's 504 once
  * reached `landrace start`'s output as its whole error page — styles, markup
@@ -76,6 +78,18 @@ export function httpReason(body: string): string {
   } catch {
     return cut(fromMarkup(text));
   }
+}
+
+/**
+ * A response refused for a rate limit — a 429 — with its `Retry-After` as the
+ * vendor sent it, or null for any other response. Pure, so it logs nothing:
+ * an integration hands it to whatever logs for it, under its own name, and
+ * adds a vendor's own rule beside it — a 403 that says no requests are left.
+ */
+export function httpLimit(status: number, headers: Pick<Headers, "get">): HttpLimit | null {
+  if (status !== 429) return null;
+  const retryAfter = headers.get("retry-after");
+  return retryAfter === null ? { status } : { status, retryAfter };
 }
 
 /**

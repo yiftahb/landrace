@@ -6,7 +6,8 @@
  * goes out until this token's own login is known.
  */
 import type { RuntimeContext } from "landrace/hooks";
-import { EffectRefused, httpError } from "landrace/kit";
+import { EffectRefused, httpError, httpLimit } from "landrace/kit";
+import type { HttpLimit } from "landrace/kit";
 
 /**
  * The most a GitHub comment body may carry: 65,536 characters, for an issue
@@ -24,7 +25,22 @@ export interface GitHubOptions {
   /** Overrides the login resolved from the token, for a GitHub App posting under a bot name. */
   bot?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
+  /** Told of each response refused for a limit, with the path below the API it was refused on. */
+  onLimit?: ((where: string, limit: HttpLimit) => void) | undefined;
 }
+
+/**
+ * A 429, or GitHub's own way of saying the hourly budget is spent: a 403 with
+ * no requests remaining. A 403 with requests left is a permission, not a limit.
+ */
+function githubLimit(res: Response): HttpLimit | null {
+  const limit = httpLimit(res.status, res.headers);
+  if (limit !== null || res.status !== 403 || res.headers.get("x-ratelimit-remaining") !== "0") return limit;
+  const retryAfter = res.headers.get("retry-after");
+  return retryAfter === null ? { status: 403 } : { status: 403, retryAfter };
+}
+
+const API = "https://api.github.com";
 
 /** An issue as REST answers it: read for the id a sub-issue or a dependency is linked by. */
 interface Issue {
@@ -168,6 +184,11 @@ export function tokenRejected(e: unknown): Error | null {
 export function createClient(opts: GitHubOptions) {
   const { repo, token } = opts;
   const doFetch = opts.fetchImpl ?? fetch;
+  // Said by the path below the API, which holds no credential: the token rides in a header.
+  const said = (url: string, res: Response): void => {
+    const limit = githubLimit(res);
+    if (limit !== null) opts.onLimit?.(url.startsWith(API) ? url.slice(API.length) : url, limit);
+  };
   // [^/] admitted "?", "#", "%2F" and "@", so `repo: "o/n#x"` silently
   // retargeted every request at /repos/o/n; allowing "." anywhere then left
   // the ".." segment, which WHATWG URL normalisation collapses before the
@@ -202,6 +223,7 @@ export function createClient(opts: GitHubOptions) {
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     onResponse?.(res);
+    said(url, res);
     // The status rides on the error rather than only in its text. "Is this a
     // 404?" answered by searching the message finds the *path* on an item
     // numbered 404 — `/contents/specs/404/index.md` — and a caller that reads
@@ -464,6 +486,7 @@ export function createClient(opts: GitHubOptions) {
         headers: { Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "landrace" },
         redirect: "follow",
       });
+      said(`${API}/repos/${repo}/actions/jobs/${id}/logs`, res);
       if (!res.ok) throw Object.assign(new Error(`GET /actions/jobs/${id}/logs → ${res.status}`), { status: res.status });
       return res.text();
     },
@@ -661,7 +684,10 @@ export function clientFor(ctx: RuntimeContext): Client {
   const token = ctx.secrets.get("githubToken");
   if (!token) throw new Error('the GitHub integration needs a "githubToken" secret declared in landrace.yaml');
 
-  const client = createClient({ repo, token, ...(typeof tracker?.bot === "string" ? { bot: tracker.bot } : {}) });
+  const client = createClient({
+    repo, token, ...(typeof tracker?.bot === "string" ? { bot: tracker.bot } : {}),
+    onLimit: (where, limit) => ctx.log("integration.limited", { integration: "github", where, ...limit }),
+  });
   clients.set(ctx.config, client);
   return client;
 }

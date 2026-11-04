@@ -8,7 +8,8 @@
  * could read differently from how it reads here.
  */
 import type { RuntimeContext } from "landrace/hooks";
-import { httpError } from "landrace/kit";
+import { httpError, httpLimit } from "landrace/kit";
+import type { HttpLimit } from "landrace/kit";
 
 export const DEFAULT_BASE_URL = "https://gitlab.com";
 
@@ -22,6 +23,8 @@ export interface GitLabClientOptions {
   /** `https://host[:port]`; gitlab.com when absent. */
   baseUrl?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
+  /** Told of each response refused for a limit, with the path below the API it was refused on. */
+  onLimit?: ((where: string, limit: HttpLimit) => void) | undefined;
 }
 
 const BASE_URL = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?\/?$/;
@@ -61,6 +64,8 @@ export function createClient(opts: GitLabClientOptions) {
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
+    const limit = httpLimit(res.status, res.headers);
+    if (limit !== null) opts.onLimit?.(path, limit);
     // The body rides too, for a caller that wants GitLab's own `message`.
     if (!res.ok) throw httpError(method, path, res.status, await res.text());
     if (as === "text") return (await res.text()) as T;
@@ -147,7 +152,10 @@ export function clientFor(ctx: RuntimeContext, project: string, fetchImpl?: type
   const token = ctx.secrets.get("gitlabToken");
   if (!token) throw new Error('the GitLab integration needs a "gitlabToken" secret declared in landrace.yaml');
   // An empty value is an unset one: the variable it names was blank.
-  const client = createClient({ project, token, baseUrl: ctx.secrets.get("gitlabBaseUrl") || undefined, fetchImpl });
+  const client = createClient({
+    project, token, baseUrl: ctx.secrets.get("gitlabBaseUrl") || undefined, fetchImpl,
+    onLimit: (where, limit) => ctx.log("integration.limited", { integration: "gitlab", where, ...limit }),
+  });
   byProject.set(project, client);
   return client;
 }

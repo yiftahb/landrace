@@ -7,6 +7,7 @@
  * (`U…`) mentioned so the post pings you.
  */
 import { defineNotifier } from "landrace/hooks";
+import { httpLimit } from "landrace/kit";
 
 /** Slack's own three: `<` and `>` make a mention or a link, and `&` starts an entity. */
 const escape = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -41,6 +42,9 @@ export const slack = defineNotifier({
     } catch (e) {
       throw new Error(`could not reach Slack: ${(e instanceof Error ? e.message : String(e)).split(url).join("<slackWebhookUrl>")}`);
     }
+    // Where is "webhook", never the URL: the URL is the credential.
+    const limit = httpLimit(res.status, res.headers);
+    if (limit !== null) ctx.log("integration.limited", { integration: "slack", where: "webhook", ...limit });
     // The status and Slack's own reply: "no_service", "invalid_payload".
     if (!res.ok) throw new Error(`Slack answered ${res.status}: ${(await res.text()).slice(0, 200)}`);
   },
