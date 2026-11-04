@@ -11,7 +11,7 @@
  * Configured by the `gitlabToken` secret and, off gitlab.com, `gitlabBaseUrl`.
  */
 import { defineConnection } from "landrace/hooks";
-import { createClient, DEFAULT_BASE_URL, statusOf, tokenRejected } from "./client.js";
+import { BASE_URL, createClient, DEFAULT_BASE_URL, statusOf, tokenRejected } from "./client.js";
 
 export { createClient } from "./client.js";
 export { GitLab, type GitLabOptions } from "./forge.js";
@@ -32,12 +32,19 @@ export const gitlabConnection = defineConnection({
   paste: { hint: "A personal access token with the api scope (GitLab → Preferences → Access tokens)" },
   oauth(ctx) {
     // An empty value is an unset one, as the client reads it.
-    const base = (ctx.secrets.get("gitlabBaseUrl") || DEFAULT_BASE_URL).replace(/\/$/, "");
+    const raw = ctx.secrets.get("gitlabBaseUrl") || DEFAULT_BASE_URL;
+    const base = raw.replace(/\/$/, "");
+    // The exchange and every renewal post the client secret and a code or
+    // refresh token to this base, so it is held to the client's own rule. A
+    // base the client refuses answers no app — the paste form, never a
+    // Connect link that would send them over plain HTTP — and the client's
+    // refusal of it at start says why.
+    const usable = BASE_URL.test(raw);
     return {
       authorizeUrl: `${base}/oauth/authorize`,
       tokenUrl: `${base}/oauth/token`,
-      clientId: ctx.secrets.get("gitlabOauthClientId") ?? "",
-      clientSecret: ctx.secrets.get("gitlabOauthClientSecret") ?? "",
+      clientId: usable ? ctx.secrets.get("gitlabOauthClientId") ?? "" : "",
+      clientSecret: usable ? ctx.secrets.get("gitlabOauthClientSecret") ?? "" : "",
       scope: "api",
     };
   },

@@ -28,7 +28,8 @@ export interface GitLabClientOptions {
   onLimit?: ((where: string, limit: HttpLimit) => void) | undefined;
 }
 
-const BASE_URL = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?\/?$/;
+/** `https://host[:port]` and nothing more: the token never crosses cleartext, nor a path or credentials the base could smuggle in. */
+export const BASE_URL = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?\/?$/;
 
 /** Segments that never start with a dot, so no ".." can retarget a request after URL normalisation. */
 const PROJECT_PATH = /^[A-Za-z0-9_][A-Za-z0-9._-]*(?:\/[A-Za-z0-9_][A-Za-z0-9._-]*)+$/;

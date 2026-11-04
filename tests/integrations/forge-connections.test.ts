@@ -1,5 +1,6 @@
 import { githubConnection, GitHubPages } from "landrace/integrations/github";
 import { gitlabConnection } from "landrace/integrations/gitlab";
+import { beginConnect, createPendingConnects, oauthOf } from "#people/oauth.js";
 import type { ConnectionValue, RuntimeConfig, RuntimeContext } from "#namespace.js";
 
 /*
@@ -59,6 +60,36 @@ describe.each([
 
   it("answers empty values when the instance has none, which offers the paste form instead", () => {
     expect(connection.oauth?.(ctx(base))).toMatchObject({ clientId: "", clientSecret: "" });
+  });
+});
+
+/*
+ * #184 review: the forge client refuses a base that is not https://host[:port],
+ * so its token never crosses cleartext. The OAuth exchange posts the client
+ * secret, the code and the verifier — then every refresh, the refresh token —
+ * to that same base, so it holds the base to the same rule: none is offered.
+ */
+describe("GitLab's OAuth app on a base the client refuses", () => {
+  const app = { gitlabOauthClientId: "id-1", gitlabOauthClientSecret: "secret-1" };
+
+  it.each([
+    "http://gitlab.internal",
+    "http://gitlab.internal:8080/",
+    "https://gitlab.internal/sub/path",
+    "https://user:pw@gitlab.internal",
+  ])("offers none for %s, and nothing is posted there", (gitlabBaseUrl) => {
+    const live = ctx({ ...app, gitlabBaseUrl });
+    expect(gitlabConnection.oauth?.(live)).toMatchObject({ clientId: "", clientSecret: "" });
+    expect(oauthOf(gitlabConnection, live)).toBeNull();
+    const pending = createPendingConnects();
+    expect(() => beginConnect(gitlabConnection, live, { person: "local", redirectUri: "http://127.0.0.1:4100/connect/gitlab/callback", pending }))
+      .toThrow(/no GitLab OAuth app/);
+    expect(pending.size).toBe(0);
+  });
+
+  it("still offers one on an https base with a port and a trailing slash", () => {
+    expect(oauthOf(gitlabConnection, ctx({ ...app, gitlabBaseUrl: "https://git.acme.example:8443/" })))
+      .toMatchObject({ tokenUrl: "https://git.acme.example:8443/oauth/token", clientId: "id-1" });
   });
 });
 
