@@ -41,7 +41,7 @@ import {
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
 import { createCredentialStore } from "#people/store.js";
 import { createLogger } from "#runner/events.js";
-import type { ConnectionStatus, ExecutorFactory, PersonCredentials } from "#namespace.js";
+import type { ConnectionStatus, CredentialStore, ExecutorFactory, PersonCredentials } from "#namespace.js";
 
 
 afterAll(removeRepos);
@@ -1026,6 +1026,30 @@ describe("connectionFailedFor", () => {
       fields: { token: "tok-person-123456" }, source: "paste", connectedAt: at, failedAt: "2026-11-04T00:00:00.000Z", failure: "401 Unauthorized for [redacted]",
     });
     expect(reloads).toBe(1);
+  });
+
+  it("says which step failed: a reload that throws after the mark is stored is not a mark that failed", async () => {
+    const store = await storeWith("tok-person-123456");
+    const events: LandraceEvent[] = [];
+    const failed = connectionFailedFor(config, registry, { credentials: credsWith("tok-person-123456"), connections }, {
+      store, person: ME, log: createLogger({ sink: (e) => events.push(e) }), then: async () => { throw new Error("hook no longer loads"); },
+    });
+    await failed?.("OAuth token has expired");
+    expect((await store.read("local")).connections["agent"]).toHaveProperty("failedAt");
+    expect(events.filter((e) => e.name === "connection.failed").map((e) => e.error)).toEqual(["marked it failed, but could not reload: hook no longer loads"]);
+  });
+
+  it("says the mark failed when the store refuses it, and never reloads", async () => {
+    const store = await storeWith("tok-person-123456");
+    const refusing: CredentialStore = { ...store, put: async () => { throw new Error("disk full"); } };
+    const events: LandraceEvent[] = [];
+    let reloads = 0;
+    const failed = connectionFailedFor(config, registry, { credentials: credsWith("tok-person-123456"), connections }, {
+      store: refusing, person: ME, log: createLogger({ sink: (e) => events.push(e) }), then: async () => { reloads++; },
+    });
+    await failed?.("OAuth token has expired");
+    expect(events.filter((e) => e.name === "connection.failed").map((e) => e.error)).toEqual(["could not mark it failed: disk full"]);
+    expect(reloads).toBe(0);
   });
 
   it("is nothing when the person stored no connection, or the executor takes none", async () => {

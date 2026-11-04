@@ -534,9 +534,17 @@ export function connectionFailedFor(
       if (stored === undefined || JSON.stringify(stored.fields) !== used) return;
       const failure = opts.log.scrub(oneLine(reason)).slice(0, 500);
       await opts.store.put(opts.person.id, opts.person, connection.id, { ...stored, failedAt: now().toISOString(), failure });
-      await opts.then?.();
     } catch (e) {
       opts.log("connection.failed", { connection: connection.id, error: `could not mark it failed: ${messageOf(e)}` });
+      return;
+    }
+    // Apart from the mark: a reload that throws (a hook that no longer loads)
+    // leaves the old runtime current, still on the refused token, and saying
+    // the mark failed would send the operator after the wrong cause.
+    try {
+      await opts.then?.();
+    } catch (e) {
+      opts.log("connection.failed", { connection: connection.id, error: `marked it failed, but could not reload: ${messageOf(e)}` });
     }
   };
 }
