@@ -52,6 +52,8 @@ describe("the people panel", () => {
     expect(me.ready).toBe(false);
     expect(me.connections.map((c) => [c.id, c.kind, c.state])).toEqual([["chat", "identity", "missing"], ["forge", "credential", "missing"]]);
     expect(me.hints).toEqual({ forge: "a personal access token, repo scope" });
+    // What the paste form asks for, a credential's alone: an identity has none.
+    expect(me.fields).toEqual({ forge: ["token"] });
   });
 
   it("connects a pasted credential: stored as paste, logged by id alone, reloaded, and then ready", async () => {

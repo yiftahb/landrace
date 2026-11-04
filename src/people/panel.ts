@@ -40,12 +40,18 @@ export function createPeoplePanel(opts: {
       const at = now();
       const defs = [...opts.registry.connections.values()].sort(byId);
       const hints: Record<string, string> = {};
-      for (const def of defs) if (def.kind === "credential" && def.paste) hints[def.id] = def.paste.hint;
+      const fields: Record<string, string[]> = {};
+      for (const def of defs) {
+        if (def.kind !== "credential") continue;
+        fields[def.id] = [...def.fields];
+        if (def.paste) hints[def.id] = def.paste.hint;
+      }
       return {
         person: caller,
         connections: defs.map((def) => connectionStatus(def, creds, at.getTime())),
         ready: resolvePerson(opts.loaded, opts.registry, caller, creds, opts.mode, at).ready,
         hints,
+        fields,
       };
     },
 

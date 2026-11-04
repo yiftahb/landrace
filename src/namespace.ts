@@ -1944,13 +1944,15 @@ export interface LocalConfig {
 /**
  * What the Integrations tab shows a person: every connection the hooks
  * define, its state, and whether nothing stops their runs. `hints` is each
- * pasted credential's `paste.hint`, by connection id. Never a value.
+ * pasted credential's `paste.hint`, and `fields` the names its paste form
+ * asks for, both by connection id. Never a value.
  */
 export interface MeView {
   person: Person;
   connections: ConnectionStatus[];
   ready: boolean;
   hints: Record<string, string>;
+  fields: Record<string, string[]>;
 }
 
 /**

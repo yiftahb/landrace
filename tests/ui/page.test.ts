@@ -1568,9 +1568,9 @@ describe("the page", () => {
     // pairingSectionOf). And the bell's: its own click, its note's ✕, the
     // browser's permission change (defined once, in followPermission), and a
     // notification's (defined once, in notifyOf). And the message box's
-    // Ctrl/⌘+Enter.
+    // Ctrl/⌘+Enter. And the Integrations tab's: one submit and one click, each on its list.
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(30);
+    expect(listeners).toHaveLength(32);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -1626,7 +1626,7 @@ describe("the page", () => {
     expect(APP_JS).toContain("let openMenuKey = null;");
     expect(APP_JS).not.toContain("pendingView");
     // No stashed view: pollOnce() renders unconditionally now.
-    expect(APP_JS).toContain("render(withMoves(await res.json(), moves));");
+    expect(APP_JS).toContain("render(withMoves(view, moves));");
   });
 
   it("keys every trigger and its menu by node id (data-key), so the live element is always one lookup away", () => {
@@ -1696,6 +1696,71 @@ describe("the page", () => {
 
   it("has no inline event handlers anywhere in the markup", () => {
     expect(PAGE_HTML).not.toMatch(/\son[a-z]+=/i);
+  });
+});
+
+/*
+ * #182: the Integrations tab. One row per connection the hooks define; a
+ * credential not connected gets a paste form, an identity only its state.
+ */
+describe("the Integrations tab", () => {
+  interface Conn { id: string; label: string; kind: "credential" | "identity"; state: string; detail?: string; expiresAt?: string }
+  const build = (conn: Conn, hint = "", fields: string[] = []): FakeElement => runInNewContext(`
+    ${constSource("STATE_TEXT")}${constSource("CONNECT_BUTTON")}${constSource("DISCONNECT_BUTTON")}
+    ${["el", "integrationRow"].map(fnSource).join("")}
+    integrationRow(CONN, HINT, FIELDS)`, { CONN: conn, HINT: hint, FIELDS: fields, document: fakeDocument }) as FakeElement;
+  const all = (e: FakeElement, tag: string): FakeElement[] => descendants(e).filter((d) => d.tag === tag);
+  const texts = (e: FakeElement): string[] => descendants(e).map((d) => d.text).filter(Boolean);
+  const forge: Conn = { id: "forge", label: "Forge", kind: "credential", state: "missing" };
+
+  it("has its own section beside the board, hidden until it is shown", () => {
+    expect(PAGE_HTML).toMatch(/<section id="integrations" hidden[^>]*>[\s\S]*<h2 id="integrations-title"[^>]*>Integrations<\/h2>/);
+    expect(PAGE_HTML).toMatch(/<div id="board">\n<div id="filters"/);
+    expect(PAGE_HTML.indexOf('id="integrations"')).toBeGreaterThan(PAGE_HTML.indexOf('id="board"'));
+  });
+
+  it("gives a credential not connected a paste form: its hint, one masked input per field, and Connect", () => {
+    const row = build(forge, "a personal access token", ["login", "token"]);
+    expect(texts(row)).toEqual(expect.arrayContaining(["Forge", "Not connected", "a personal access token", "Connect"]));
+    const form = all(row, "form")[0];
+    expect(form?.getAttribute("data-connect")).toBe("forge");
+    const inputs = all(row, "input");
+    expect(inputs.map((i) => [i.type, i.getAttribute("name"), i.getAttribute("autocomplete")])).toEqual([["password", "login", "off"], ["password", "token", "off"]]);
+    expect(all(row, "button").map((b) => [b.type, b.text])).toEqual([["submit", "Connect"]]);
+  });
+
+  it("gives a connected credential Disconnect and no form", () => {
+    const row = build({ ...forge, state: "connected", expiresAt: "2027-11-04T00:00:00.000Z" }, "hint", ["token"]);
+    expect(all(row, "input")).toEqual([]);
+    expect(all(row, "button").map((b) => [b.text, b.getAttribute("data-disconnect")])).toEqual([["Disconnect", "forge"]]);
+    expect(texts(row)).toEqual(expect.arrayContaining(["Connected", "Lasts until 2027-11-04"]));
+  });
+
+  it("says why one does not work, and offers both a fresh paste and Disconnect", () => {
+    const row = build({ ...forge, state: "expired", detail: "made 2025-01-01, it lasts 365 days" }, "", ["token"]);
+    expect(texts(row)).toEqual(expect.arrayContaining(["Expired", "made 2025-01-01, it lasts 365 days"]));
+    expect(all(row, "button").map((b) => b.text)).toEqual(["Connect", "Disconnect"]);
+  });
+
+  it("shows the tab alone while nothing runs, whatever the hash, and the board otherwise unless the hash names the tab", () => {
+    const shown = (ready: boolean, hash: string): Record<string, boolean> => {
+      const els: Record<string, { hidden: boolean }> = { board: { hidden: false }, integrations: { hidden: true }, schedule: { hidden: false }, panel: { hidden: false } };
+      let loaded = 0;
+      runInNewContext(`${constSource("INTEGRATIONS")}${["onIntegrationsRoute", "showView"].map(fnSource).join("")} showView()`, {
+        boardReady: ready, location: { hash }, loadMe: () => { loaded++; }, document: { getElementById: (id: string) => els[id] },
+      });
+      return { board: !els["board"]?.hidden, tab: !els["integrations"]?.hidden, tick: !els["schedule"]?.hidden, panel: !els["panel"]?.hidden, asked: loaded > 0 };
+    };
+    expect(shown(false, "#/w/main?item=12")).toEqual({ board: false, tab: true, tick: false, panel: false, asked: true });
+    expect(shown(true, "#/")).toEqual({ board: true, tab: false, tick: true, panel: true, asked: false });
+    expect(shown(true, "#/integrations")).toEqual({ board: false, tab: true, tick: true, panel: true, asked: true });
+  });
+
+  it("shows an identity's state only: nothing to paste and nothing to press", () => {
+    const row = build({ id: "chat", label: "Chat", kind: "identity", state: "missing" });
+    expect(all(row, "input")).toEqual([]);
+    expect(all(row, "button")).toEqual([]);
+    expect(texts(row)).toEqual(expect.arrayContaining(["Chat", "Not connected"]));
   });
 });
 
@@ -1837,7 +1902,7 @@ describe("the Escape key and the panel", () => {
     runInNewContext(`${fnSource("isTypingTarget")}${fnSource("onKeydown")}onKeydown({ key: "Escape" })`, {
       openMenuKey: opts.menuOpen ? "19:menu" : null, panelId: opts.panelId,
       closeMenu: () => { seen.menus++; }, closePanel: () => { seen.panels++; },
-      resetIdleTimer: () => {}, toggleAll: { click: () => {} }, document: { activeElement: null },
+      resetIdleTimer: () => {}, toggleAll: { click: () => {} }, showView: () => {}, document: { activeElement: null },
     });
     return seen;
   };
@@ -1903,7 +1968,7 @@ describe("the item panel with nothing selected", () => {
       history: { replaceState: (_a: unknown, _b: string, url: string) => { location.hash = url.slice(url.indexOf("#")); } },
       messageBox: { value: "" }, setPanelNote: () => {}, closeMenu: () => {}, markSelected: () => {},
       stopPanelPoll: () => {}, renderPanel: () => {}, loadPairing: () => {}, render: () => {},
-      resetIdleTimer: () => {}, toggleAll: { click: () => {} },
+      resetIdleTimer: () => {}, toggleAll: { click: () => {} }, showView: () => {},
     };
     for (const f of ["routeOf", "hashOf", "pageOf", "pageNow", "showPanel", "closePanel", "onHashChange", "isTypingTarget", "onBoard", "onKeydown"]) {
       runInNewContext(fnSource(f), c);
@@ -3453,7 +3518,7 @@ describe("the render rules of the sidebar pages", () => {
     const setup = () => {
       const writes: FakeElement[][] = [];
       const ul = { replaceChildren: (...n: FakeElement[]) => { writes.push(n); } };
-      const c = load(["el", "hashOf", "navItem", "renderNav"], { navKey: null });
+      const c = load(["el", "hashOf", "navItem", "onIntegrationsRoute", "integrationsLink", "renderNav"], { navKey: null, INTEGRATIONS: "#/integrations", location: { hash: "#/" } });
       c.document = { createElement: fakeDocument.createElement, getElementById: () => ul };
       return { c, writes };
     };
@@ -3473,15 +3538,25 @@ describe("the render rules of the sidebar pages", () => {
       expect(writes).toHaveLength(4);
     });
 
-    it("puts Needs You first, then a divider only when there are workflows", () => {
+    it("puts Needs You first, then a divider only when there are workflows, and Integrations last", () => {
       const { c, writes } = setup();
       c.V = view(0); c.P = null;
       run(c, "renderNav(V, P)");
-      expect(writes[0]?.map((n) => n.getAttribute("role") ?? n.tag)).toEqual(["li", "separator", "li"]);
+      expect(writes[0]?.map((n) => n.getAttribute("role") ?? n.tag)).toEqual(["li", "separator", "li", "li"]);
+      expect(writes[0]?.[3]?.textContent).toBe("Integrations");
       const none = setup();
       none.c.V = view(0, []); none.c.P = null;
       run(none.c, "renderNav(V, P)");
-      expect(none.writes[0]).toHaveLength(1);
+      expect(none.writes[0]?.map((n) => n.textContent)).toEqual(["Needs You", "Integrations"]);
+    });
+
+    it("marks Integrations, and not Needs You, as the page while the tab is open", () => {
+      const { c, writes } = setup();
+      (c.location as { hash: string }).hash = "#/integrations";
+      c.V = view(0, []); c.P = null;
+      run(c, "renderNav(V, P)");
+      const current = (li: FakeElement | undefined): string | null => li?.children[0]?.getAttribute("aria-current") ?? null;
+      expect(writes[0]?.map(current)).toEqual([null, "page"]);
     });
   });
 
