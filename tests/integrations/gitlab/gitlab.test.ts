@@ -45,6 +45,13 @@ describe("check", () => {
     await expect(forgeOver(narrow).check(narrow.ctx())).rejects.toThrow(/needs the "api" scope; it has read_user/);
   });
 
+  /* A personal access token GitLab refuses the introspection to is not an OAuth token: what it said is the reason, not the token info's 401. */
+  it("names the token's own refusal when the token info cannot answer either", async () => {
+    const gl = createFakeGitLab();
+    gl.breakNext((r) => r.path === "/personal_access_tokens/self", 403);
+    await expect(forgeOver(gl).check(gl.ctx())).rejects.toThrow(/scope check failed: .*403/);
+  });
+
   /*
    * #184: a renewed OAuth token is written into the live secrets, and the
    * client — one per configuration, kept — must send the new one, or every

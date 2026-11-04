@@ -520,14 +520,16 @@ A refusal is a plain-text page saying why, with every secret taken out: `409` fo
 - Renewed: the new token is stored and written into the secrets every hook already holds, for each per-person secret that names the connection and whose variable is unset, so the runs going on and the clients they keep send it without a reload. `connection.refreshed` is logged. A secret whose variable is set is answered by the variable locally, as before, and is left alone. If a connect stored a new token while the provider answered, the renewal is dropped and the connect's token stays.
 - Refused — a `4xx`, or an answer carrying `error`: the row becomes Not working with the provider's reason, `connection.failed` is logged, and nothing runs until you connect again.
 - Not answered — a network error or a `5xx`: `connection.failed` is logged, the token stays, and the next pass tries again.
+- Not due: the stored token is handed to the running hooks all the same. A token another `start` renewed in the same credentials file, or one renewed while the runtime was being rebuilt, reaches them within a minute.
 
 A GitHub OAuth app's token does not expire, and gives no `expires_in`, so it is never renewed. Both an access token and a refresh token join the log's redaction set before they are checked or stored, as a pasted value does. `connection.expiring` is not logged for a connection that holds a refresh token. The events are described in [Telemetry](configuration.md#telemetry).
 
-**GitLab's preflight.** An OAuth token is not a personal access token, so GitLab answers its `/personal_access_tokens/self` with nothing. The forge's preflight then reads the token's scopes from GitLab's `/oauth/token/info`, and still refuses a token without `api`.
+**GitLab's preflight.** An OAuth token is not a personal access token, so `/personal_access_tokens/self` cannot say its scopes. When that answers `404` or `403`, the forge's preflight reads them from GitLab's `/oauth/token/info` instead, and still refuses a token without `api`. When that fails too, the preflight reports the first answer. Which status GitLab gives an OAuth token there is not yet checked against a real instance: a `401` would refuse the start as a rejected token.
 
 **Limits.**
 
 - Checked against stub providers in the test suite only: no live run against a real GitLab or GitHub app is part of this repository's scripts yet.
+- Only `start` renews. `landrace mcp`, a separate process, reads the stored token once, when it starts: after a GitLab token's 2 hours its GitLab calls are refused, until it is restarted.
 - GitHub is asked for `repo` alone. A build that changes `.github/workflows/` needs `workflow` too, which this connect does not ask for: paste a classic token with `workflow` instead.
 
 ## Slack

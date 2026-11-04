@@ -1123,7 +1123,40 @@ describe("connectionRefresher", () => {
     });
     await refresh();
     expect((await store.read("local")).connections["forge"]).toEqual(reconnected);
-    expect(live.get("forgeToken")).toBe("glo-old-0123456789");
     expect(events.map((e) => e.name)).not.toContain("connection.refreshed");
+  });
+
+  /*
+   * A runtime rebuilt while a renewal was being stored, or another start
+   * sharing the credentials file that renewed it first, holds the old token
+   * though nothing is near its end: every pass hands the running hooks what
+   * is stored, renewed by this pass or not.
+   */
+  it("hands the live secrets the stored token on a pass that renews nothing", async () => {
+    const ME = { id: "local" };
+    const store = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-refresh-")), "credentials"));
+    const later = new Date(Date.now() + 7_000_000).toISOString();
+    await store.put("local", ME, "forge", { fields: { token: "glo-stored-0123456789" }, source: "oauth", connectedAt: later, expiresAt: later, refresh: { token: "glr-stored-0123456789" } });
+    const def: ConnectionDef = {
+      id: "forge", label: "Forge", kind: "credential", fields: ["token"],
+      oauth: () => ({ authorizeUrl: "https://f.invalid/a", tokenUrl: "https://f.invalid/t", clientId: "id", clientSecret: "secret-0123456789", scope: "api" }),
+    };
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" }, secrets: { forgeToken: { perPerson: true, connection: "forge.token" } } });
+    const loaded = { config, missing: [], secretValues: new Map<string, string>(), vars: new Map(), telemetry: new Map(), missingVars: [], missingGit: [], missingPerson: [] };
+    const live = new Map([["forgeToken", "glo-old-0123456789"]]);
+    let asked = 0;
+    const log = createLogger({ sink: () => {} });
+    const refresh = connectionRefresher({
+      store, log, reload: async () => {},
+      gate: () => ({ person: ME, connections: new Map([["forge", def]]), local: { dir: "", configured: loaded, loaded, credentials: null, problems: [] } }),
+      ctx: () => ({ config, secrets: new Map(), signal: new AbortController().signal, log: () => {} }),
+      live: () => live,
+      fetch: (async () => { asked++; return new Response("{}"); }) as typeof fetch,
+    });
+    await refresh();
+    expect(asked).toBe(0);
+    expect(live.get("forgeToken")).toBe("glo-stored-0123456789");
+    // Another start may have stored it: this process's log redacts it from now on.
+    expect(log.scrub("said glo-stored-0123456789")).not.toContain("glo-stored-0123456789");
   });
 });

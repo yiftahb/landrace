@@ -572,6 +572,8 @@ export function connectionFailedFor(
  *   the person not ready: runs stop, and the row is Not working.
  * - Anything else (a network error, a 5xx): `connection.failed`, and the
  *   next pass asks again.
+ * - Not due: what is stored is handed to the live map all the same, for a
+ *   runtime that was rebuilt from the store just before a renewal landed.
  *
  * A pass still running when the next is due is not overlapped.
  */
@@ -594,6 +596,17 @@ export function connectionRefresher(opts: {
       opts.log("connection.failed", { connection, error: `${what}, but could not reload: ${opts.log.scrub(messageOf(e))}` });
     }
   };
+  /** The stored value into the live secret map, for each per-person secret naming it that the environment did not set. */
+  const handOver = (def: ConnectionDef, value: ConnectionValue, gate: Pick<LocalGate, "local">, runtime: Map<string, string> | null): void => {
+    const { configured, loaded } = gate.local;
+    const keys = perPersonKeys(loaded.config).filter((k) => k.kind === "secret" && k.connection.id === def.id && !configured.secretValues.has(k.name));
+    for (const map of [runtime, loaded.secretValues]) {
+      for (const k of keys) {
+        const field = value.fields[k.connection.field];
+        if (map !== null && field !== undefined && map.get(k.name) !== field) map.set(k.name, field);
+      }
+    }
+  };
   const one = async (def: ConnectionDef, stored: ConnectionValue, gate: Pick<LocalGate, "person" | "connections" | "local">): Promise<void> => {
     const { person } = gate;
     let next: ConnectionValue | null;
@@ -613,22 +626,23 @@ export function connectionRefresher(opts: {
       await reload(def.id, "marked it failed");
       return;
     }
-    if (next === null) return;
+    // Nothing to renew, but a runtime rebuilt while a renewal was being
+    // stored, or another start sharing this file that renewed it first, can
+    // still hold the old token: hand the running hooks what is stored.
+    if (next === null) {
+      // Another start may have stored it: this process's log has not met it yet.
+      opts.log.redact([...Object.values(stored.fields), ...(stored.refresh === undefined ? [] : [stored.refresh.token])]);
+      handOver(def, stored, gate, opts.live());
+      return;
+    }
     opts.log.redact([...Object.values(next.fields), ...(next.refresh === undefined ? [] : [next.refresh.token])]);
     // Asked again just before the write: a connect made while the provider
     // answered holds a refresh token of its own, and this would drop it.
     const again = (await opts.store.read(person.id)).connections[def.id];
     if (again === undefined || again.refresh?.token !== stored.refresh?.token) return;
     await opts.store.put(person.id, person, def.id, next);
-    const { configured, loaded } = gate.local;
-    const keys = perPersonKeys(loaded.config).filter((k) => k.kind === "secret" && k.connection.id === def.id && !configured.secretValues.has(k.name));
     const runtime = opts.live();
-    for (const map of [runtime, loaded.secretValues]) {
-      for (const k of keys) {
-        const value = next.fields[k.connection.field];
-        if (map !== null && value !== undefined) map.set(k.name, value);
-      }
-    }
+    handOver(def, next, gate, runtime);
     opts.log("connection.refreshed", { connection: def.id, ...(next.expiresAt === undefined ? {} : { expiresAt: next.expiresAt }) });
     if (runtime === null) await reload(def.id, "renewed it");
   };

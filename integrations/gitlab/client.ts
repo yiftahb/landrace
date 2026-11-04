@@ -111,13 +111,17 @@ export function createClient(opts: GitLabClientOptions) {
      */
     scopes: async (): Promise<string[]> => {
       const strings = (list: unknown): string[] => (Array.isArray(list) ? list.filter((s): s is string => typeof s === "string") : []);
+      let refused: unknown;
       try {
         const self = await request<{ scopes?: unknown } | null>("GET", "/personal_access_tokens/self");
         return strings(self?.scopes);
       } catch (e) {
         if (statusOf(e) !== 404 && statusOf(e) !== 403) throw e;
+        refused = e;
       }
-      const info = await request<{ scope?: unknown; scopes?: unknown } | null>("GET", "/token/info", undefined, "json", `${baseUrl}/oauth`);
+      // Not an OAuth token either: what GitLab said of it first is the reason.
+      const info = await request<{ scope?: unknown; scopes?: unknown } | null>("GET", "/token/info", undefined, "json", `${baseUrl}/oauth`)
+        .catch(() => { throw refused; });
       return strings(info?.scopes ?? info?.scope);
     },
 
