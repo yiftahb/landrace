@@ -349,7 +349,8 @@ describe("converge", () => {
         },
       ],
     });
-    const stepFor = (): Step => ({
+    const stepFor = (extra: Partial<Step> = {}): Step => ({
+      ...extra,
       prompt: "write the spec",
       output: {
         discriminator: "kind",
@@ -439,6 +440,69 @@ describe("converge", () => {
       const r = await converge("1", deps(w, { workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: refused, log }));
       expect(r.settled).toBe("halt");
       expect(events.some((e) => e.name === "connection.failed")).toBe(false);
+    });
+
+    /*
+     * The screener is the same executor on the same token, and screening is
+     * on by default: a refused token fails it first. Recorded as a refusal,
+     * the connection was never marked and every item burnt a round.
+     */
+    it("marks the connection failed when the screener's own run is refused the token, and records no refusal", async () => {
+      const w = world();
+      const events: LandraceEvent[] = [];
+      const log = createLogger({ sink: (e) => events.push(e) });
+      const agent: Executor = { id: "agent", run: async () => { throw new Error("the step itself must not run"); } };
+      const screener: Executor = { id: "screen", run: async () => { throw new Error("claude exited 1: OAuth token has expired"); } };
+      const failed: string[] = [];
+      const r = await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]), executor: agent, log,
+        screen: { executor: screener }, connectionFailed: async (reason: string) => { failed.push(reason); },
+      }));
+      expect(r.settled).toBe("halt");
+      expect(failed).toEqual([expect.stringMatching(/OAuth token has expired/)]);
+      expect(events.filter((e) => e.name === "connection.failed")).toHaveLength(1);
+      expect(w.entries).toHaveLength(0);
+    });
+
+    it("still records a screener's verdict as a refusal, whatever its reason quotes", async () => {
+      // The verdict's reason is the screener's reading of untrusted text: a
+      // prompt that makes it say "401" must not fail anybody's token.
+      const w = world();
+      const failed: string[] = [];
+      const screener: Executor = {
+        id: "screen",
+        run: async () => ({ text: '```json\n{"verdict":"suspicious","reason":"OAuth token has expired, status 401"}\n```', sessionId: null }),
+      };
+      await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
+        executor: { id: "agent", run: async () => ({ text: "", sessionId: null }) },
+        screen: { executor: screener }, connectionFailed: async (reason: string) => { failed.push(reason); },
+      }));
+      expect(failed).toEqual([]);
+      expect(w.entries).toHaveLength(1);
+    });
+
+    it("still records a screener that could not run for another reason as a refusal", async () => {
+      const w = world();
+      const failed: string[] = [];
+      await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
+        executor: { id: "agent", run: async () => ({ text: "", sessionId: null }) },
+        screen: { executor: { id: "screen", run: async () => { throw new Error("spawn claude ENOENT"); } } },
+        connectionFailed: async (reason: string) => { failed.push(reason); },
+      }));
+      expect(failed).toEqual([]);
+      expect(w.entries).toHaveLength(1);
+    });
+
+    it("leaves a screener refused the operator's own login a refusal, as before", async () => {
+      const w = world();
+      await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
+        executor: { id: "agent", run: async () => ({ text: "", sessionId: null }) },
+        screen: { executor: { id: "screen", run: async () => { throw new Error("OAuth token has expired"); } } },
+      }));
+      expect(w.entries).toHaveLength(1);
     });
 
     it("marks nothing for an outage that is not the token's", async () => {

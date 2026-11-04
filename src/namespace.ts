@@ -2068,7 +2068,16 @@ export interface LockOptions {
  */
 export type StepResult =
   | { ok: true; effects: Effect[]; sessionId: string | null; model: string | null }
-  | { ok: false; kind: "contract" | "unavailable" | "refused"; reason: string };
+  | {
+    ok: false; kind: "contract" | "unavailable" | "refused"; reason: string;
+    /**
+     * A refusal because the screener itself threw: what it threw, apart from
+     * any verdict. The screener runs on the step's own login, so a refused
+     * token fails it first; this, and never a verdict's reason — the
+     * screener's reading of untrusted text — is what is judged for one.
+     */
+    outage?: string;
+  };
 
 export interface ConvergeDeps {
   workflow: Workflow;

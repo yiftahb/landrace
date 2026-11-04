@@ -104,7 +104,7 @@ export async function screenPrompt(
   // forgetting it would silently screen on whatever an executor defaults to,
   // and naming none is a decision, not an omission.
   opts: { executor: Executor; model: string | undefined; timeoutMs: number; signal: AbortSignal; log?: Logger },
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+): Promise<{ ok: true } | { ok: false; reason: string; outage?: string }> {
   const mark = nonce();
   // A fence inside a piece is struck out, whatever nonce it guessed: a forged
   // close puts what follows in the operator's voice, and haiku does not check
@@ -128,7 +128,7 @@ export async function screenPrompt(
     // never has to handle a throw, so a message is derived either way.
     const message = messageOf(e);
     opts.log?.("screen.blocked", { reason: message });
-    return { ok: false, reason: `the screener could not run: ${message}` };
+    return { ok: false, reason: `the screener could not run: ${message}`, outage: message };
   }
 
   // The trailing-marker rule (conventions.ts), applied to a fenced json
