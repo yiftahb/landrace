@@ -1344,10 +1344,16 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   try {
     const { folder, workspace } = await repoWorkspace(dir);
     const inFlight = new Set<Promise<void>>();
+    // The last judging of the person, which the Integrations tab lists, gates
+    // on and takes a paste by: a reload re-reads the hooks lists and
+    // `landrace.yaml`, and a tab still judged by the start's would call a
+    // person ready the runtime is not, and refuse the paste that would fix it.
+    let latest = first;
     // The build reads `schedule`, made below: no reload runs before it is.
     const slot = createRuntimeSlot<ServedRuntime>(async () => {
       // Judged afresh: the connection just made or removed is in the store now.
       const gate = await localGate(dir, store);
+      latest = gate;
       if (!gate.resolution.ready) return null;
       const rt = await buildWorkspaceRuntime(dir, {
         log, stop, running: runs, credentials: store,
@@ -1387,14 +1393,18 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     await slot.reload();
     const current = (): ServedRuntime | null => slot.current();
 
-    // The Integrations tab. A paste is checked against the instance's own
-    // configuration and secrets, which are the same in every runtime.
+    // The Integrations tab. A paste is checked against the configuration and
+    // secrets of the same judging, so a reload that re-read them checks by them.
     const people = createPeoplePanel({
-      store, registry: { connections: first.connections }, loaded: first.local.configured, mode: { remote: false }, log,
-      ctx: {
-        config, secrets: secretValues, signal: stop.signal,
-        log: (event, data) => log(event as EventName, data),
-      },
+      store, mode: { remote: false }, log,
+      gate: () => ({
+        registry: { connections: latest.connections },
+        loaded: latest.local.configured,
+        ctx: {
+          config: latest.local.loaded.config, secrets: latest.local.loaded.secretValues, signal: stop.signal,
+          log: (event, data) => log(event as EventName, data),
+        },
+      }),
       onChange: async () => {
         await slot.reload();
         schedule.wake();
@@ -1408,7 +1418,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       board: { view: () => current()?.board.view() ?? Promise.reject(new Error(NOT_RUNNING)) },
       tick: schedule.wake,
       ready: () => current() !== null,
-      people: { panel: people, caller: () => first.person },
+      people: { panel: people, caller: () => latest.person },
       mcp: serves ? {
         handle: (req, res) => {
           const mcp = current()?.mcp;

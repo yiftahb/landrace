@@ -9,26 +9,28 @@ const byId = (a: ConnectionDef, b: ConnectionDef): number => (a.id < b.id ? -1 :
 /**
  * The Integrations tab over a person's credentials file.
  *
- * `loaded` is the configuration before the store, as `resolvePerson` takes
- * it, so `ready` here is the same answer `start` gates on. `onChange` is the
+ * `gate` answers what the latest judging of the person learned — the
+ * connections its hooks define, the configuration before the store as
+ * `resolvePerson` takes it, and the context a check runs in — asked afresh on
+ * every call, so after a reload that re-read the hooks lists and
+ * `landrace.yaml` the tab lists, gates on and takes a paste for what the
+ * runtime gates on, never what the process started with. `onChange` is the
  * reload: a connection stored and a reload that failed leaves the connection
  * stored and rejects with why, since the paste itself was good.
  */
 export function createPeoplePanel(opts: {
   store: CredentialStore;
-  registry: Pick<Registry, "connections">;
-  loaded: LoadedConfig;
+  gate: () => { registry: Pick<Registry, "connections">; loaded: LoadedConfig; ctx: RuntimeContext };
   mode: { remote: boolean };
-  ctx: RuntimeContext;
   onChange: (personId: string) => Promise<void>;
   log: RedactingLogger;
   now?: () => Date;
 }): PeoplePanel {
   const now = opts.now ?? (() => new Date());
-  const defOf = (id: string): ConnectionDef => {
-    const def = opts.registry.connections.get(id);
+  const defOf = (registry: Pick<Registry, "connections">, id: string): ConnectionDef => {
+    const def = registry.connections.get(id);
     if (def === undefined) {
-      const known = [...opts.registry.connections.keys()].sort();
+      const known = [...registry.connections.keys()].sort();
       throw new Refusal(`no connection "${id}" is defined${known.length ? ` — defined: ${known.join(", ")}` : ""}`);
     }
     return def;
@@ -36,9 +38,10 @@ export function createPeoplePanel(opts: {
 
   return {
     me: async (caller): Promise<MeView> => {
+      const { registry, loaded } = opts.gate();
       const creds = await opts.store.read(caller.id);
       const at = now();
-      const defs = [...opts.registry.connections.values()].sort(byId);
+      const defs = [...registry.connections.values()].sort(byId);
       const hints: Record<string, string> = {};
       const fields: Record<string, string[]> = {};
       for (const def of defs) {
@@ -49,14 +52,15 @@ export function createPeoplePanel(opts: {
       return {
         person: caller,
         connections: defs.map((def) => connectionStatus(def, creds, at.getTime())),
-        ready: resolvePerson(opts.loaded, opts.registry, caller, creds, opts.mode, at).ready,
+        ready: resolvePerson(loaded, registry, caller, creds, opts.mode, at).ready,
         hints,
         fields,
       };
     },
 
     connect: async (caller: Person, id: string, fields: Record<string, string>): Promise<ConnectionStatus> => {
-      const def = defOf(id);
+      const { registry, ctx } = opts.gate();
+      const def = defOf(registry, id);
       // Who a person is on a system is looked up from their email, never
       // taken from them: pasting one would let anyone claim to be anyone.
       if (def.kind === "identity") throw new Refusal(`"${id}" is an identity, which is looked up rather than pasted`);
@@ -74,7 +78,7 @@ export function createPeoplePanel(opts: {
       const value: ConnectionValue = { fields: Object.fromEntries(wanted.map((f) => [f, fields[f] ?? ""])), source: "paste", connectedAt: now().toISOString() };
       let problem: string | null = null;
       try {
-        problem = def.check ? await def.check(value, opts.ctx) : null;
+        problem = def.check ? await def.check(value, ctx) : null;
       } catch (e) {
         throw new Error(opts.log.scrub(`checking "${id}" failed: ${messageOf(e)}`, values));
       }
@@ -86,7 +90,7 @@ export function createPeoplePanel(opts: {
     },
 
     disconnect: async (caller, id) => {
-      defOf(id);
+      defOf(opts.gate().registry, id);
       await opts.store.remove(caller.id, id);
       opts.log("person.disconnected", { connection: id });
       await reload(caller.id, `"${id}" is disconnected`);

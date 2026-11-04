@@ -21,7 +21,7 @@ const loaded: LoadedConfig = {
   config, missing: [], secretValues: new Map(), vars: new Map(), telemetry: new Map(), missingVars: [], missingGit: [], missingPerson: [],
 };
 
-async function panelOf(defs: ConnectionDef[], opts: { onChange?: (id: string) => Promise<void> } = {}) {
+async function panelOf(defs: ConnectionDef[], opts: { onChange?: (id: string) => Promise<void>; later?: { defs: ConnectionDef[]; loaded: LoadedConfig } } = {}) {
   const root = join(await mkdtemp(join(tmpdir(), "lr-panel-")), "credentials");
   const store = createCredentialStore(root);
   const events: LandraceEvent[] = [];
@@ -30,9 +30,14 @@ async function panelOf(defs: ConnectionDef[], opts: { onChange?: (id: string) =>
   const changes: string[] = [];
   const checked: ConnectionValue[] = [];
   const ctx = { config, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+  // What the slot's latest gate learned: swapped by a reload, as `start`'s is.
+  let gate = { registry: { connections: new Map(defs.map((d) => [d.id, d])) }, loaded, ctx };
   const panel = createPeoplePanel({
-    store, registry: { connections: new Map(defs.map((d) => [d.id, d])) }, loaded, mode: { remote: false }, ctx, log,
-    onChange: opts.onChange ?? (async (id) => { changes.push(id); }),
+    store, gate: () => gate, mode: { remote: false }, log,
+    onChange: async (id) => {
+      if (opts.later) gate = { registry: { connections: new Map(opts.later.defs.map((d) => [d.id, d])) }, loaded: opts.later.loaded, ctx };
+      await (opts.onChange ?? (async (who) => { changes.push(who); }))(id);
+    },
     now: () => NOW,
   });
   return { panel, store, events, printed, changes, checked, root, log };
@@ -135,5 +140,21 @@ describe("the people panel", () => {
     expect(changes).toEqual(["local", "local"]);
     expect((await panel.me(ME)).ready).toBe(false);
     await expect(panel.disconnect(ME, "nope")).rejects.toBeInstanceOf(Refusal);
+  });
+
+  it("judges by the latest gate a reload ran: a required connection the hooks gained is listed, gates, and takes a paste", async () => {
+    const chat = defineConnection({ id: "chat", label: "Chat", kind: "credential", fields: ["key"], paste: { hint: "a chat key" } });
+    const later = runtimeConfigSchema.parse({
+      version: 1, agent: { adapter: "claude" },
+      secrets: { forgeToken: { perPerson: true, connection: "forge.token" }, chatKey: { perPerson: true, connection: "chat.key" } },
+    });
+    const { panel } = await panelOf([forge()], { later: { defs: [forge(), chat], loaded: { ...loaded, config: later } } });
+    await panel.connect(ME, "forge", { token: TOKEN });
+    const me = await panel.me(ME);
+    expect(me.connections.map((c) => [c.id, c.state])).toEqual([["chat", "missing"], ["forge", "connected"]]);
+    expect(me.ready).toBe(false);
+    expect(me.hints).toEqual({ chat: "a chat key", forge: "a personal access token, repo scope" });
+    await expect(panel.connect(ME, "chat", { key: "chat_pasted_key_long_enough" })).resolves.toMatchObject({ id: "chat", state: "connected" });
+    expect((await panel.me(ME)).ready).toBe(true);
   });
 });

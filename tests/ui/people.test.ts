@@ -56,7 +56,7 @@ async function world(opts: { check?: ConnectionDef["check"]; reload?: () => Prom
   let ready = false;
   const ctx = { config, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
   const panel = createPeoplePanel({
-    store, registry: { connections: new Map(defs.map((d) => [d.id, d])) }, loaded, mode: { remote: false }, ctx, log,
+    store, gate: () => ({ registry: { connections: new Map(defs.map((d) => [d.id, d])) }, loaded, ctx }), mode: { remote: false }, log,
     onChange: async () => {
       await opts.reload?.();
       ready = (await store.read("local")).connections["x"] !== undefined;
