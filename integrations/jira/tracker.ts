@@ -634,15 +634,19 @@ export async function assigneeOf(jira: Client, ctx: RuntimeContext): Promise<str
 }
 
 /** Why a user lookup found no one account: a refusal of the value, told apart from Jira failing to answer. */
-class NoAccount extends Error {}
+export class NoAccount extends Error {}
+
+/** The one refusal that is an answer: Jira looked, with the permission to see users, and nobody has that email. */
+export class NoUser extends NoAccount {}
 
 /**
  * The one account an email or an account id is, as `jiraAssignee` and a
  * `tracker.field`'s user value are resolved: refused when it matches no user
  * or several, `what` naming the value in each refusal. An account id is asked
- * after too, so a typo is refused rather than written.
+ * after too, so a typo is refused rather than written. A person's identity is
+ * looked up through it too (`jiraConnection`).
  */
-async function accountFor(jira: Client, value: string, what: string): Promise<string> {
+export async function accountFor(jira: Client, value: string, what: string): Promise<string> {
   if (!value.includes("@") && !ACCOUNT_ID.test(value)) throw new NoAccount(`${what} is neither an email nor a Jira account id`);
   let users: User[];
   if (value.includes("@")) {
@@ -666,7 +670,8 @@ async function accountFor(jira: Client, value: string, what: string): Promise<st
         "without which Jira finds no user; grant it",
       );
     }
-    throw new NoAccount(`${what} matches no Jira user`);
+    throw new NoUser(`${what} matches no Jira user`);
+
   }
   if (users.length > 1) {
     throw new NoAccount(`${what} matches ${users.length} Jira users: ${users.map((u) => u.displayName ?? u.accountId).join(", ")}; name one by its account id`);
