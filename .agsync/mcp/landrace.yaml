@@ -5,4 +5,4 @@ description: >-
   Served by `landrace start` beside its board, so start it first; change the
   port here if serve.port or --ui-port moves it.
 type: http
-url: http://127.0.0.1:4545/mcp
+url: http://127.0.0.1:4546/mcp

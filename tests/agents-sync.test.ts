@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { parse } from "yaml";
+import { runtimeConfigSchema } from "#config/schema.js";
 
 /*
  * AGENTS.md (CLAUDE.md links to it) is generated from .agsync/instructions.md
@@ -23,5 +25,15 @@ describe("AGENTS.md", () => {
     const skill = readFileSync(".agsync/skills/agsync/SKILL.md", "utf8");
     const frontmatter = skill.split(/^---$/m)[1] ?? "";
     expect(frontmatter).not.toMatch(/^source:/m);
+  });
+
+  // This checkout's engine serves on 4546, since another checkout's holds
+  // 4545 on the same machine; an editor pointed at the default port would
+  // talk to the other repository's engine.
+  it("points the landrace MCP server at this repository's own serve.port", () => {
+    const loaded = runtimeConfigSchema.parse(parse(readFileSync(".landrace/landrace.yaml", "utf8")));
+    const server = parse(readFileSync(".agsync/mcp/landrace.yaml", "utf8")) as { url?: string };
+    expect(loaded.serve.port).toBe(4546);
+    expect(server.url).toBe(`http://127.0.0.1:${loaded.serve.port}/mcp`);
   });
 });

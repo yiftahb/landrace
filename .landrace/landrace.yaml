@@ -46,6 +46,11 @@ branchVariants: [retro]
 tracker:
   repo: yiftahb/landrace
 
+# Another checkout's engine holds the default 4545 on the same machine, so
+# this one serves its board and MCP on 4546 (.agsync/mcp/landrace.yaml).
+serve:
+  port: 4546
+
 tick:
   interval: 2m
   concurrency: 3
