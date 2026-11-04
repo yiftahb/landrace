@@ -227,7 +227,7 @@ Any other key is refused. For the one local person, `local`, the value comes fro
 1. `env`, when the variable is set to something, from `.env` first and then your shell, as a `$VAR` resolves. The key then needs no stored connection, so a setup that already sets the variable runs as before, even when no hook defines its `connection` yet.
 2. Otherwise, the connection's field in `~/.landrace/credentials/local.json`.
 
-A key neither answers is reported by `validate` as `connection.missing`, naming the variable and the connection. `landrace start`, `landrace status` and `landrace mcp` refuse to start over it in the same words. A credentials file that cannot be read, or is not the shape below, is `connection.failed`, with the reason. Once the hooks load, `validate` reports and `start` and `status` refuse:
+A key neither answers is reported by `validate` as `connection.missing`, naming the variable and the connection. `landrace status` and `landrace mcp` refuse to start over it in the same words, and so does `landrace start` with `--once` or `--headless`. A `start` that serves a board runs nothing and serves only its Integrations tab, where you paste the value — see [A connection not made](cli.md#landrace-start). A credentials file that cannot be read, or is not the shape below, is `connection.failed`, with the reason. Once the hooks load, `validate` reports and `status` refuses each of the problems below. A `start` that serves a board refuses `connection.unknown` and `connection.duplicate`, and serves only its Integrations tab for the rest:
 
 - `connection.unknown`: a key its variable left unset naming a connection no hook defines, or a field the connection does not list;
 - `connection.expired`: a connection older than its `lifetimeDays`, or past its `expiresAt`;
@@ -252,7 +252,7 @@ The credentials file is JSON, mode 0600, in a directory of mode 0700. Replace `y
 - Each connection holds `fields`, `source` (`paste`, `oauth`, `lookup` or `override`) and `connectedAt`, an ISO 8601 time.
 - A connection may also hold `expiresAt`, `failedAt`, `failure` and `refresh: { token }`. Any other key makes the file unreadable.
 
-Nothing in Landrace writes this file yet. A later release adds the flow that connects an account; until then, write it by hand, or set the variable. Every value in the file is cut from the log once it is read, if it is 8 characters or longer; a per-person secret is also handed to hooks and scrubbed as any secret is (see [.env](#env)). A per-person var is still a var: it reaches comments and prompts unredacted. How runs are kept from reading the file is in [Security](security.md#stored-credentials).
+The board's [Integrations tab](cli.md#the-board) writes a credential you paste into it, with `source: paste`, and removes one you disconnect. An identity cannot be pasted: until a later release looks identities up, write its connection by hand, or set the variable. Every value in the file is cut from the log once it is read, if it is 8 characters or longer, and a pasted one before its connection's `check` runs; a per-person secret is also handed to hooks and scrubbed as any secret is (see [.env](#env)). A per-person var is still a var: it reaches comments and prompts unredacted. How runs are kept from reading the file is in [Security](security.md#stored-credentials).
 
 ### Durations
 

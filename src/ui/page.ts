@@ -132,6 +132,7 @@ ${MARK}
 <div id="content" class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 sm:flex-row sm:px-6" inert>
 <nav id="sidebar" aria-label="Pages" class="sm:sticky sm:top-[calc(var(--header-h)+1.5rem)] sm:max-h-[calc(100vh-var(--header-h)-3rem)] sm:w-48 sm:shrink-0 sm:self-start sm:overflow-y-auto"><ul id="nav" class="flex flex-wrap gap-2 sm:flex-col sm:gap-1"></ul></nav>
 <main class="min-w-0 flex-1">
+<div id="board">
 <div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
 <input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
 <div class="flex items-center gap-2">
@@ -186,6 +187,13 @@ ${lane("elsewhere", "Held elsewhere", " border-l-4 border-l-amber-500 [&_h2]:tex
 ${lane("waiting", "Waiting", " border-l-4 border-l-neutral-300 dark:border-l-neutral-700 [&_h2]:text-neutral-500 dark:[&_h2]:text-neutral-400 [&_.lane-count]:bg-neutral-100 [&_.lane-count]:text-neutral-600 dark:[&_.lane-count]:bg-neutral-800 dark:[&_.lane-count]:text-neutral-300")}
 ${collapsedLane("not-admitted", "Not admitted")}
 ${collapsedLane("discharged", "Done")}
+</div>
+<section id="integrations" hidden aria-labelledby="integrations-title" class="rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+<h2 id="integrations-title" class="text-sm font-semibold">Integrations</h2>
+<p id="integrations-note" class="mt-1 text-xs text-neutral-500 dark:text-neutral-400"></p>
+<ul id="integrations-list" class="mt-3 flex flex-col divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
+<p id="integrations-status" role="status" aria-live="polite" class="mt-2 text-xs text-neutral-500 empty:hidden dark:text-neutral-400"></p>
+</section>
 </main>
 </div>
 ${PANEL}
@@ -1401,19 +1409,188 @@ function navItem(entry, selected) {
 
 function renderNav(view, page) {
   const entries = [{ id: null, name: "Needs You", needsYou: view.needsYou }, ...view.workflows];
-  const key = JSON.stringify([page, entries]);
+  const onTab = onIntegrationsRoute(location.hash);
+  const key = JSON.stringify([page, onTab, entries]);
   if (key === navKey) return;
   navKey = key;
   const items = entries.map((e) => {
     const li = el("li");
-    li.append(navItem(e, e.id === page));
+    li.append(navItem(e, e.id === page && !onTab));
     return li;
   });
   const rule = el("li", "my-1 hidden border-t border-neutral-200 dark:border-neutral-800 sm:block");
   rule.setAttribute("role", "separator");
+  const tab = el("li");
+  tab.append(integrationsLink(onTab));
   // A divider with nothing under it would only be a stray line.
-  document.getElementById("nav").replaceChildren(...(items.length > 1 ? [items[0], rule, ...items.slice(1)] : items));
+  document.getElementById("nav").replaceChildren(...(items.length > 1 ? [items[0], rule, ...items.slice(1)] : items), tab);
 }
+
+// The Integrations tab: what the person has connected, and a paste form for
+// each credential they have not. While nothing runs for want of one, it is
+// the whole page; otherwise it is one more entry in the sidebar.
+const INTEGRATIONS = "#/integrations";
+function onIntegrationsRoute(hash) { return (hash || "").startsWith(INTEGRATIONS); }
+// False while /board.json answers { ready: false }: no runtime stands behind the board.
+let boardReady = true;
+// The /people/me last drawn, so a poll that changed nothing redraws nothing.
+let meKey = null;
+
+const STATE_TEXT = { connected: "Connected", missing: "Not connected", expired: "Expired", failed: "Not working" };
+const CONNECT_BUTTON = ${JSON.stringify(PRIMARY_BUTTON)};
+const DISCONNECT_BUTTON = ${JSON.stringify(BUTTON)};
+
+function integrationsLink(selected) {
+  const a = el("a", "flex min-w-0 items-center justify-between gap-2 rounded-md px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800" + (selected ? " bg-neutral-100 font-medium dark:bg-neutral-800" : ""));
+  a.href = INTEGRATIONS;
+  a.setAttribute("data-key", "nav:" + INTEGRATIONS);
+  if (selected) a.setAttribute("aria-current", "page");
+  a.append(el("span", "truncate", "Integrations"));
+  return a;
+}
+
+// One connection's row. Never a value: the server sends states, hints and
+// field names only. An identity is looked up, so it has nothing to paste.
+function integrationRow(conn, hint, fields) {
+  const muted = "text-xs text-neutral-500 dark:text-neutral-400";
+  const li = el("li", "flex flex-col gap-2 py-3");
+  li.setAttribute("data-key", "integration:" + conn.id);
+  const head = el("div", "flex flex-wrap items-center justify-between gap-2");
+  head.append(el("span", "text-sm font-medium", conn.label));
+  const good = conn.state === "connected";
+  const state = el("span", "rounded-full px-2 text-xs " + (good
+    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+    : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"), STATE_TEXT[conn.state] || conn.state);
+  state.setAttribute("data-state", conn.state);
+  head.append(state);
+  li.append(head);
+  if (conn.detail) li.append(el("p", muted, conn.detail));
+  if (conn.expiresAt) li.append(el("p", muted, "Lasts until " + conn.expiresAt.slice(0, 10)));
+  if (conn.kind === "identity") return li;
+  if (!good) {
+    const form = el("form", "flex flex-col gap-2");
+    form.setAttribute("data-connect", conn.id);
+    if (hint) form.append(el("p", muted, hint));
+    for (const field of fields) {
+      const input = el("input", "block w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 font-mono text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500");
+      input.type = "password";
+      input.setAttribute("name", field);
+      input.setAttribute("autocomplete", "off");
+      input.setAttribute("spellcheck", "false");
+      input.setAttribute("required", "");
+      input.setAttribute("placeholder", field);
+      input.setAttribute("aria-label", conn.label + ": " + field);
+      input.setAttribute("data-key", "integration:" + conn.id + ":" + field);
+      form.append(input);
+    }
+    const connect = el("button", CONNECT_BUTTON + " self-start", "Connect");
+    connect.type = "submit";
+    form.append(connect);
+    li.append(form);
+  }
+  if (conn.state !== "missing") {
+    const off = el("button", DISCONNECT_BUTTON + " self-start", "Disconnect");
+    off.type = "button";
+    off.setAttribute("data-disconnect", conn.id);
+    li.append(off);
+  }
+  return li;
+}
+
+// A person part-way through a paste keeps it: a poll redraws nothing then.
+function integrationsBusy() {
+  const inputs = document.getElementById("integrations-list").querySelectorAll("input");
+  return Array.prototype.some.call(inputs, (i) => i.value !== "" || i === document.activeElement);
+}
+
+async function loadMe() {
+  const status = document.getElementById("integrations-status");
+  try {
+    const res = await fetch("/people/me", { cache: "no-store" });
+    if (!res.ok) throw new Error(String(res.status));
+    const me = await res.json();
+    const key = JSON.stringify(me);
+    if (key === meKey || integrationsBusy()) return;
+    meKey = key;
+    document.getElementById("integrations-note").textContent = me.ready
+      ? "Everything Landrace needs from you is connected."
+      : "Landrace runs nothing until each connection it needs is made.";
+    document.getElementById("integrations-list").replaceChildren(
+      ...(me.connections.length
+        ? me.connections.map((c) => integrationRow(c, me.hints[c.id] || "", me.fields[c.id] || []))
+        : [el("li", "py-3 text-sm italic text-neutral-400 dark:text-neutral-600", "No hook defines a connection")]),
+    );
+  } catch (e) {
+    status.textContent = "Could not read your connections; the terminal running landrace start says why";
+  }
+}
+
+// The board or the tab, by the hash and by whether anything runs. While
+// nothing does, the tick button and the item panel have nothing to act on.
+function showView() {
+  const tab = !boardReady || onIntegrationsRoute(location.hash);
+  document.getElementById("board").hidden = tab;
+  document.getElementById("integrations").hidden = !tab;
+  document.getElementById("schedule").hidden = !boardReady;
+  document.getElementById("panel").hidden = !boardReady;
+  if (tab) loadMe();
+}
+
+// /board.json said { ready: false }: the sidebar holds the tab alone.
+function showUnready() {
+  boardReady = false;
+  loading.done = true;
+  syncLoading(null);
+  if (navKey !== "unready") {
+    navKey = "unready";
+    const li = el("li");
+    li.append(integrationsLink(true));
+    document.getElementById("nav").replaceChildren(li);
+  }
+  document.getElementById("meta").textContent = "";
+  showView();
+}
+
+// Connect and Disconnect, under their own headers like every write here.
+// The answer is said in the tab's status line; a refusal in the server's words.
+function connectionWrite(action, id, body, control) {
+  const status = document.getElementById("integrations-status");
+  const buttons = control.tagName === "FORM" ? control.querySelectorAll("button") : [control];
+  status.textContent = action === "connect" ? "Checking…" : "Disconnecting…";
+  for (const b of buttons) b.disabled = true;
+  const init = { method: "POST", headers: { "x-landrace-action": action, "content-type": "application/json" } };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  fetch("/" + action + "/" + encodeURIComponent(id), init)
+    .then(async (res) => {
+      const said = await res.text();
+      if (res.ok && control.tagName === "FORM") {
+        control.reset();
+        // Submitted with Enter, the focus is still in an input the reset just
+        // emptied, and a focused input keeps every poll from redrawing the row.
+        const focused = document.activeElement;
+        if (focused && control.contains(focused) && focused.blur) focused.blur();
+      }
+      status.textContent = res.ok ? (action === "connect" ? "Connected." : "Disconnected.") : said;
+      meKey = null;
+      await loadMe();
+      schedulePoll(0);
+    })
+    .catch(() => { status.textContent = "landrace is not responding"; })
+    .finally(() => { for (const b of buttons) b.disabled = false; });
+}
+
+const integrationsList = document.getElementById("integrations-list");
+integrationsList.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const fields = {};
+  for (const input of form.querySelectorAll("input")) fields[input.getAttribute("name")] = input.value;
+  connectionWrite("connect", form.getAttribute("data-connect"), { fields }, form);
+});
+integrationsList.addEventListener("click", (e) => {
+  const button = e.target.closest ? e.target.closest("[data-disconnect]") : null;
+  if (button) connectionWrite("disconnect", button.getAttribute("data-disconnect"), undefined, button);
+});
 
 // The box sits outside every lane, so no render ever replaces it: its text,
 // focus and caret survive each poll untouched, and render() reads the query
@@ -1529,10 +1706,18 @@ async function pollOnce() {
   try {
     const res = await fetch("/board.json", { cache: "no-store" });
     if (!res.ok) throw new Error(String(res.status));
+    const view = await res.json();
+    if (view.ready === false) return showUnready();
+    if (!boardReady) {
+      boardReady = true;
+      showView();
+    } else if (onIntegrationsRoute(location.hash)) {
+      loadMe();
+    }
     // Renders unconditionally, menu open or not: render() itself restores
     // the open menu and the focused control by key (see its own comment),
     // so a poll landing mid-read costs nothing — no held view, no freeze.
-    render(withMoves(await res.json(), moves));
+    render(withMoves(view, moves));
     // After the render, so a click on a notification opens a panel over the
     // board it was raised from — which render() just kept as lastView.
     const step = bellStep(lastView, neededYou);
@@ -2398,6 +2583,7 @@ resolveButton.addEventListener("click", () => panelWrite("resolve"));
 // too, which is harmless (same page, same rows).
 function onHashChange() {
   showPanel(routeOf(location.hash).item);
+  showView();
   if (lastView) render(lastView);
 }
 window.addEventListener("hashchange", onHashChange);

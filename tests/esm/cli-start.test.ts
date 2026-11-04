@@ -9,7 +9,10 @@ import { promisify } from "node:util";
 import { buildWorkspaceRuntime, childServerCommand, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
 import { portCommand, readInstance, writeInstance } from "#cli/port.js";
-import type { BoardView, BuildOptions, CredentialStore, LandraceEvent, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
+import type { BoardView, BuildOptions, CredentialStore, FrontDoorOptions, LandraceEvent, RunningItem, StartOptions, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
+import { frontDoorListener } from "#front/server.js";
 import { runValidate } from "#cli/validate.js";
 import { createCredentialStore } from "#people/store.js";
 import { repositoryRoot } from "#agent/worktree.js";
@@ -677,6 +680,29 @@ ${EXECUTOR}`);
 
     await until(async () => (await applied(record)).length > 0, "the notification");
     expect(await applied(record)).toEqual([{ notified: ITEM, workflow: "main", stage: "reviewing", why: "waiting on you" }]);
+  });
+
+  /*
+   * #182: `start` rebuilds its runtime on a connect, and the replaced one
+   * never ticks again. A run it left in flight must still stop when its item
+   * closes, so the new runtime's ticks judge the runs of the one map handed in.
+   */
+  it("stops, on its own tick, a closed item's run that a runtime it replaced started", async () => {
+    const { dir } = await fixture({ items: [{ id: ITEM, labels: ["lr:auto"], closed: "done" }] });
+    const controller = new AbortController();
+    const running = new Map<string, RunningItem>([[ITEM, { controller, workflow: "main", done: Promise.resolve(), closed: false }]]);
+    const events: LandraceEvent[] = [];
+    const rt = await buildWorkspaceRuntime(dir, { running, sink: (e) => events.push(e) });
+
+    expect(rt.running).toBe(running);
+    await tickWorkspace({ runtime: rt });
+    expect(controller.signal.aborted).toBe(true);
+    expect(events.filter((e) => e.name === "item.aborted")).toEqual([
+      expect.objectContaining({ item: ITEM, reason: "the item was closed" }),
+    ]);
+
+    const own = await buildWorkspaceRuntime(dir, {});
+    expect(own.running).not.toBe(running);
   });
 
   /**
@@ -1874,4 +1900,247 @@ export const forge = brand("connection", { id: "forge", label: "Forge", kind: "c
     const rt = await buildMain(dir, { credentials });
     expect(rt.deps.workflow.stages[0]?.on_enter?.[0]).toMatchObject({ body: "Writing the spec for dev2, round {round}." });
   });
+});
+
+/*
+ * #182: a start whose local person is missing a connection serves the front
+ * door, shows only the Integrations tab and ticks nothing; a paste there
+ * rebuilds the runtime and the next wake ticks. A temporary store throughout.
+ */
+const PASTED = "ghp_pasted_through_the_tab_long";
+const FORGE_CONNECTION = `
+export const forge = brand("connection", { id: "forge", label: "Forge", kind: "credential", fields: ["token"], paste: { hint: "a token" } });
+`;
+const PER_PERSON_SECRET = "secrets: { githubToken: $LR_TEST_TOKEN, forgeToken: { perPerson: true, connection: forge.token } }";
+
+async function unready(perPerson: "secret" | "var"): Promise<Fixture & { credentials: CredentialStore }> {
+  const f = perPerson === "secret"
+    ? await fixture({ hookExtra: FORGE_CONNECTION })
+    : await fixture({
+      hookExtra: FORGE_CONNECTION,
+      configExtra: "vars: { assignee: { perPerson: true, env: LR_TEST_ASSIGNEE, connection: forge.token } }\n",
+      workflow: WORKFLOW.replace("Writing the spec, round {round}.", "Writing the spec for {vars.assignee}, round {round}."),
+    });
+  if (perPerson === "secret") {
+    const yaml = join(f.dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("secrets: { githubToken: $LR_TEST_TOKEN }", PER_PERSON_SECRET));
+  }
+  return { ...f, credentials: createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials")) };
+}
+
+describe("runStart --once while the local person is not ready", () => {
+  it("refuses with connection.missing, since there is no door to connect through", async () => {
+    const { dir, credentials } = await unready("secret");
+    await expect(runStart(dir, { once: true, credentials })).rejects.toThrow(/connection\.missing: secrets entry "forgeToken" has no value/);
+  });
+});
+
+/**
+ * `runStart`'s front door with no socket: `serve` keeps the options it was
+ * handed and the test drives the front door's own listener over them, so
+ * what is proved is the wiring `runStart` hands the door, Host checks and all.
+ */
+const DOOR_PORT = 4545;
+function inProcessDoor(): { serve: NonNullable<StartOptions["serve"]>; drive: (path: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{ status: number; body: string }> } {
+  let door: FrontDoorOptions | null = null;
+  const serve: NonNullable<StartOptions["serve"]> = async (opts) => {
+    door = opts;
+    return { url: `http://127.0.0.1:${DOOR_PORT}/`, port: DOOR_PORT, host: "127.0.0.1", close: async () => { await opts.mcp?.close(); } };
+  };
+  const drive = (path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<{ status: number; body: string }> =>
+    new Promise((resolve, reject) => {
+      if (door === null) return reject(new Error("runStart has not served its door yet"));
+      const req = Object.assign(Readable.from(init.body === undefined ? [] : [Buffer.from(init.body)]), {
+        method: init.method ?? "GET", url: path, headers: { host: `127.0.0.1:${DOOR_PORT}`, ...init.headers },
+      });
+      let status = 0;
+      const res = {
+        writeHead(s: number) { status = s; return res; },
+        end(b?: string) { resolve({ status, body: String(b ?? "") }); },
+      };
+      frontDoorListener(door, DOOR_PORT)(req as unknown as IncomingMessage, res as unknown as ServerResponse);
+    });
+  return { serve, drive };
+}
+
+describe("runStart while the local person is not ready", () => {
+  it.each(["secret", "var"] as const)("serves only the Integrations tab for a missing per-person %s, ticks once it is connected, and stops on a disconnect", async (kind) => {
+    const { dir, record, credentials } = await unready(kind);
+    const { serve, drive } = inProcessDoor();
+    const printed: string[] = [];
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (line: unknown): void => { printed.push(String(line)); };
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    const ticks = (): number => printed.filter((l) => l.includes('"name":"tick.started"')).length;
+    const post = (path: string, action: string, body?: unknown) =>
+      drive(path, { method: "POST", headers: { "x-landrace-action": action }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const board = async (): Promise<unknown> => JSON.parse((await drive("/board.json")).body) as unknown;
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      expect(said.join("\n")).toMatch(/nothing runs until these are connected in the board's Integrations tab:\n {2}connection\.missing: /);
+      expect(await board()).toEqual({ ready: false });
+      expect((await drive("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(503);
+      expect((await post("/tick", "tick")).status).toBe(409);
+      const me = JSON.parse((await drive("/people/me")).body) as { ready: boolean; connections: Array<{ id: string; state: string }>; hints: Record<string, string> };
+      expect(me).toMatchObject({ ready: false, hints: { forge: "a token" } });
+      expect(me.connections).toEqual([expect.objectContaining({ id: "forge", state: "missing" })]);
+      touchWake(wakePath(dir));
+      await new Promise((r) => setTimeout(r, 300));
+      expect(ticks()).toBe(0);
+
+      const connected = await post("/connect/forge", "connect", { fields: { token: PASTED } });
+      expect([connected.status, JSON.parse(connected.body)]).toEqual([200, expect.objectContaining({ id: "forge", state: "connected" })]);
+      await until(async () => ticks() > 0 && (await applied(record)).length === 1, "the next wake to tick");
+      await until(async () => (await board() as { listed?: boolean }).listed === true, "the board to list");
+      expect(JSON.parse((await drive("/people/me")).body)).toMatchObject({ ready: true });
+
+      expect((await post("/disconnect/forge", "disconnect")).status).toBe(200);
+      expect(await board()).toEqual({ ready: false });
+      // Whatever pass was in flight has finished; no new one starts.
+      await new Promise((r) => setTimeout(r, 300));
+      const before = ticks();
+      touchWake(wakePath(dir));
+      expect((await post("/tick", "tick")).status).toBe(409);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(ticks()).toBe(before);
+      expect(printed.some((l) => l.includes('"name":"person.connected"') && l.includes('"connection":"forge"'))).toBe(true);
+      expect([...printed, ...said].join("\n")).not.toContain(PASTED);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  it("keeps the previous runtime when the reload after a connect fails, answering 502", async () => {
+    const { dir, record, credentials } = await unready("secret");
+    const { serve, drive } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    const post = (path: string, action: string, body?: unknown) =>
+      drive(path, { method: "POST", headers: { "x-landrace-action": action }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      expect((await post("/connect/forge", "connect", { fields: { token: PASTED } })).status).toBe(200);
+      await until(async () => (await applied(record)).length === 1, "the first tick");
+      // A workflow that no longer validates: the rebuild a disconnect asks for fails.
+      await writeFile(join(workflowIn(dir), "workflow.yaml"), "version: 1\nname: broken\ndescription: test\nstages:\n  - id: only\n    triggers: [{ when: { \"run.stage\": null } }]\n");
+      const res = await post("/connect/forge", "connect", { fields: { token: `${PASTED}-2` } });
+      expect(res.status).toBe(502);
+      expect(res.body).toMatch(/"forge" is connected, but Landrace could not reload with it: .*does not validate/);
+      expect(res.body).not.toContain(PASTED);
+      expect(JSON.parse((await drive("/board.json")).body)).toMatchObject({ listed: true });
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  /*
+   * The thread on #182: `seen` is what tells that an item placed by its own
+   * state has already been told of. A connect rebuilds the runtime, and a
+   * rebuild that started from an empty one told everyone again.
+   */
+  it("tells once of an item waiting on you, however many connects rebuild the runtime", async () => {
+    const review = (await readFile("tests/fixtures/review/workflow.yaml", "utf8"))
+      .replace("eligible:", "hooks: [../../hooks/fake.ts, ../../hooks/claude.ts]\neligible:");
+    const { dir, record } = await fixture({
+      workflow: review, items: [{ id: ITEM, labels: ["review-requested"] }],
+      hookExtra: FORGE_CONNECTION + RECORDING_NOTIFIER, configExtra: "notify: { on: [needs-you], via: [chat] }\n",
+    });
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("secrets: { githubToken: $LR_TEST_TOKEN }", PER_PERSON_SECRET));
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials"));
+    const { serve, drive } = inProcessDoor();
+    const printed: string[] = [];
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (line: unknown): void => { printed.push(String(line)); };
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    const finished = (): number => printed.filter((l) => l.includes('"name":"tick.finished"')).length;
+    const connect = (token: string) =>
+      drive("/connect/forge", { method: "POST", headers: { "x-landrace-action": "connect" }, body: JSON.stringify({ fields: { token } }) });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      expect((await connect(PASTED)).status).toBe(200);
+      await until(async () => (await applied(record)).length > 0, "the notification");
+      const before = finished();
+      expect((await connect(`${PASTED}-2`)).status).toBe(200);
+      await until(() => finished() > before, "a tick under the rebuilt runtime");
+      await new Promise((r) => setTimeout(r, 300));
+      expect(await applied(record)).toEqual([{ notified: ITEM, workflow: "main", stage: "reviewing", why: "waiting on you" }]);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  /*
+   * The thread on #182: a `log.redact` entry that means nothing is a config
+   * problem, and refuses the start, unready or not, rather than waiting for
+   * the first connect to 502 on it. A per-person secret nobody has answered
+   * yet is not one: the build judges it once it is.
+   */
+  it.each([
+    ["names no secret", (y: string) => y.replace("log: { redact: [githubToken] }", "log: { redact: [githubToken, nope] }"), /log\.redact names "nope", which no secret defines/],
+    ["names a secret too short to redact by", (y: string) => y.replace("$LR_TEST_TOKEN,", "$LR_TEST_SHORT,"), /secret\(s\) "githubToken" resolve to fewer than/],
+  ])("refuses an unready start whose log.redact %s", async (_, edit, refusal) => {
+    const { dir, credentials } = await unready("secret");
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, edit(await readFile(yaml, "utf8")));
+    await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\nLR_TEST_SHORT=abc\n`);
+    const { serve } = inProcessDoor();
+    await expect(runStart(dir, { interactive: false, credentials, serve })).rejects.toThrow(refusal);
+  });
+
+  it("serves an unready start whose log.redact names the per-person secret not yet connected", async () => {
+    const { dir, credentials } = await unready("secret");
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("log: { redact: [githubToken] }", "log: { redact: [githubToken, forgeToken] }"));
+    const { serve, drive } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    const failed = running.then(() => null, (e: unknown) => e as Error);
+    try {
+      await Promise.race([
+        until(() => said.some((l) => l.includes("triage page at ")), "the page to start"),
+        failed.then((e) => { if (e) throw e; }),
+      ]);
+      expect(JSON.parse((await drive("/board.json")).body)).toEqual({ ready: false });
+    } finally {
+      process.emit("SIGINT");
+      await running.catch(() => undefined);
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  it("keeps a .env-only setup starting and ticking as it did", async () => {
+    const { dir, record } = await fixture();
+    const { serve, drive } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, serve });
+    try {
+      await until(async () => (await applied(record)).length === 1, "the first tick");
+      expect(said.join("\n")).not.toMatch(/Integrations tab/);
+      await until(async () => (JSON.parse((await drive("/board.json")).body) as { listed?: boolean }).listed === true, "the board to list");
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
 });

@@ -128,8 +128,8 @@ export async function localCredentials(
   return required ? store.read(person.id) : { person, connections: {} };
 }
 
-/** A connection's status for one person, out of what their file holds. */
-function statusOf(def: ConnectionDef, credentials: PersonCredentials, now: number): ConnectionStatus {
+/** A connection's status for one person, out of what their file holds: the Integrations tab's row, and what `resolvePerson` judges. */
+export function connectionStatus(def: ConnectionDef, credentials: PersonCredentials, now: number): ConnectionStatus {
   const base = { id: def.id, label: def.label, kind: def.kind };
   if (credentials.problem !== undefined) return { ...base, state: "failed", detail: credentials.problem };
   const stored = credentials.connections[def.id];
@@ -172,7 +172,7 @@ export function resolvePerson(
   const problems: Problem[] = [];
   const statuses = new Map<string, ConnectionStatus>();
   const judge = (def: ConnectionDef): ConnectionStatus => {
-    const known = statuses.get(def.id) ?? statusOf(def, creds, at);
+    const known = statuses.get(def.id) ?? connectionStatus(def, creds, at);
     statuses.set(def.id, known);
     return known;
   };

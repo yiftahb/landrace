@@ -99,14 +99,17 @@ const PANEL_PATH = /^\/items\/([^/]+)\/(activity|conversation|reply|ask|resolve|
 /** Far past what a record carries (conventions' own cap is 32 KiB): the post's own check words the limit. */
 const MAX_BODY_BYTES = 256 * 1024;
 
-/** A write's text, or null when it runs past MAX_BODY_BYTES. */
-function bodyOf(req: IncomingMessage): Promise<string | null> {
+/** A connect's body: a few fields of a token each, so anything near this is not one. */
+const MAX_CONNECT_BYTES = 16 * 1024;
+
+/** A write's text, or null when it runs past `limit` bytes. */
+function bodyOf(req: IncomingMessage, limit: number = MAX_BODY_BYTES): Promise<string | null> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) resolve(null);
+      if (size > limit) resolve(null);
       else chunks.push(chunk);
     });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
@@ -245,6 +248,74 @@ function serveAdmit(opts: UiOptions, req: IncomingMessage, res: ServerResponse, 
   );
 }
 
+/** Where the Integrations tab's writes post: the write, and the connection it names. */
+const CONNECT_PATH = /^\/(connect|disconnect)\/([^/]+)$/;
+
+/** A connect's body, `{ fields: { <name>: <text> } }`, or null when it is not one. */
+function fieldsOf(body: string): Record<string, string> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  const fields = (parsed as { fields?: unknown } | null)?.fields;
+  if (typeof fields !== "object" || fields === null || Array.isArray(fields)) return null;
+  const entries = Object.entries(fields as Record<string, unknown>);
+  return entries.every(([, v]) => typeof v === "string") ? Object.fromEntries(entries) as Record<string, string> : null;
+}
+
+/**
+ * The Integrations tab. Its read is a local file, open like /board.json,
+ * and holds states and hints, never a value. Connect and Disconnect are
+ * writes like every other here, each under its own header; a connect's body
+ * is capped far below a comment's. A refusal — an unknown id, an identity, a
+ * failing check — is 409 in its own scrubbed sentence; a reload that failed
+ * after the value was stored is 502, in the panel's scrubbed sentence.
+ */
+function servePeople(opts: UiOptions, req: IncomingMessage, res: ServerResponse, path: string): void {
+  const text = "text/plain; charset=utf-8";
+  const people = opts.people;
+  if (!people) return send(res, 404, text, "not found");
+  const json = (value: unknown): void => send(res, 200, "application/json; charset=utf-8", JSON.stringify(value));
+  const failed = (what: string) => (e: unknown): void => {
+    if (e instanceof Refusal) return send(res, 409, text, oneLine(e.message));
+    // The panel has already taken every secret out.
+    console.error(`landrace: ${what} failed: ${oneLine(messageOf(e))}`);
+    send(res, 502, text, oneLine(messageOf(e)));
+  };
+  if (path === "/people/me") {
+    if (req.method !== "GET") return send(res, 405, text, "method not allowed");
+    people.panel.me(people.caller(req)).then(json, failed("reading the connections"));
+    return;
+  }
+  const [, action = "", raw = ""] = CONNECT_PATH.exec(path) ?? [];
+  if (req.method !== "POST") return send(res, 405, text, "method not allowed");
+  const foreign = foreignWrite(req, action, opts.origins);
+  if (foreign) return send(res, 403, text, foreign);
+  let id: string;
+  try {
+    id = decodeURIComponent(raw);
+  } catch {
+    return send(res, 400, text, "that is not a connection");
+  }
+  if (id === "" || UNPRINTABLE.test(id)) return send(res, 400, text, "that is not a connection");
+  const caller = people.caller(req);
+  if (action === "disconnect") {
+    people.panel.disconnect(caller, id).then(() => send(res, 200, text, `disconnected ${id}`), failed(`disconnecting ${id}`));
+    return;
+  }
+  bodyOf(req, MAX_CONNECT_BYTES).then((body) => {
+    if (body === null) return send(res, 413, text, "that is far longer than a credential can be");
+    const fields = fieldsOf(body);
+    if (fields === null) return send(res, 400, text, "send a JSON object whose fields holds each field's text");
+    people.panel.connect(caller, id, fields).then(json, failed(`connecting ${id}`));
+  }, () => send(res, 400, text, "the request could not be read"));
+}
+
+/** What every board write answers while no runtime stands behind it: the page shows it beside the control. */
+const UNREADY = "refused: Landrace is not running yet; connect what the Integrations tab lists first";
+
 /**
  * The page's request listener, apart from the socket it is served on, so a
  * test can drive it in-process. Its hosts and origins are the ones the front
@@ -262,6 +333,21 @@ export function boardListener(opts: UiOptions): (req: IncomingMessage, res: Serv
       return;
     }
     const path = (req.url ?? "/").split("?")[0] ?? "/";
+
+    // Ahead of the board's routes: the Integrations tab is how a person who
+    // is not ready becomes ready, so nothing below may stand in its way.
+    if (path === "/people/me" || CONNECT_PATH.test(path)) {
+      servePeople(opts, req, res, path);
+      return;
+    }
+
+    // No runtime: no tick to wake, no source to read, no item to write to.
+    // Refused before any of them is looked at, since none is there to answer.
+    const unready = opts.ready !== undefined && !opts.ready();
+    if (unready && (path === "/tick" || path === "/refresh" || path.startsWith("/items/"))) {
+      send(res, 409, "text/plain; charset=utf-8", UNREADY);
+      return;
+    }
 
     // The page's one write. Checked ahead of the blanket "GET only" rule
     // below, which would otherwise answer POST /tick with the same 405 it
@@ -416,6 +502,11 @@ export function boardListener(opts: UiOptions): (req: IncomingMessage, res: Serv
       return;
     }
     if (path === "/board.json") {
+      // The page shows only the Integrations tab on this.
+      if (unready) {
+        send(res, 200, "application/json; charset=utf-8", JSON.stringify({ ready: false }));
+        return;
+      }
       opts.view().then(
         (view) => send(res, 200, "application/json; charset=utf-8", JSON.stringify(view)),
         // Fixed text: the error may quote tracker content, and this page is

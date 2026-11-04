@@ -188,9 +188,9 @@ A connection is `{ id, label, kind, fields, required?, paste?, lifetimeDays?, re
 
 - `label` is the name a person sees. `kind` is `credential`, something they hold such as a token, or `identity`, who they are on a system such as a login.
 - `fields` lists what a stored connection holds, such as `["login", "token"]`. A key naming a field not listed is `connection.unknown`.
-- A connection a per-person key names is required. `required: always` makes it required even when no key names it, and `required: remote` only on a remote instance. A required connection that is missing, expired or failed stops `start`.
-- `paste: { hint }` tells a person what to paste to connect it.
-- `lifetimeDays`, when set, is how long a stored connection lasts from its `connectedAt`. An older one is `connection.expired`, and `start` refuses until it is made again.
+- A connection a per-person key names is required. `required: always` makes it required even when no key names it, and `required: remote` only on a remote instance. While a required connection is missing, expired or failed, `start` runs nothing: it serves only the board's [Integrations tab](cli.md#the-board), or with `--once` or `--headless` refuses.
+- `paste: { hint }` tells a person what to paste to connect it. The Integrations tab shows it above the paste form.
+- `lifetimeDays`, when set, is how long a stored connection lasts from its `connectedAt`. An older one is `connection.expired`, and nothing runs until it is made again.
 - `resolve(email, ctx)` looks a person's fields up by their email, using the instance's own secrets in `ctx`, a `RuntimeContext`. It returns `null` when it finds nobody. `check(value, ctx)` returns `null` when a stored connection still works, and the reason when it does not.
 
-Landrace calls neither `resolve` nor `check` yet. The flow that connects an account will call them. Until then, the stored values come from the file described in [Per-person keys](configuration.md#per-person-keys).
+The Integrations tab calls `check` on a pasted credential before storing it. Every pasted value of 8 characters or more is already in the log's redaction set when `check` runs; a shorter one is not, so a `check` must not log what it is handed. Its reason is shown with every pasted value cut out, whatever its length. A reason refuses the paste, and nothing is stored. A `check` that throws refuses it too. Landrace does not call `resolve` yet: an identity cannot be pasted, and the tab shows only its state. Until a lookup flow exists, an identity's fields come from the file described in [Per-person keys](configuration.md#per-person-keys).
