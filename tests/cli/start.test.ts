@@ -42,7 +42,7 @@ import { gitRepo, removeRepos } from "#tests/support/repo.js";
 import { createCredentialStore } from "#people/store.js";
 import { connectionStatus } from "#people/resolve.js";
 import { createLogger } from "#runner/events.js";
-import type { ConnectionDef, ConnectionStatus, CredentialStore, ExecutorFactory, PersonCredentials } from "#namespace.js";
+import type { ConnectionDef, CredentialStore, ExecutorFactory, PersonCredentials } from "#namespace.js";
 
 
 afterAll(removeRepos);
