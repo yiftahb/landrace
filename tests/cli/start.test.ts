@@ -1032,7 +1032,7 @@ describe("connectionFailedFor", () => {
     const log = createLogger({ sink: () => {} });
     const opts = { store: await storeWith(null), person: ME, log };
     expect(connectionFailedFor(config, registry, { credentials: { person: ME, connections: {} }, connections }, opts)).toBeUndefined();
-    const { connection: _none, ...bare } = factory;
+    const bare: ExecutorFactory = { id: factory.id, create: factory.create };
     const plain = { executors: new Map([["agent", bare]]) } as unknown as Registry;
     expect(connectionFailedFor(config, plain, { credentials: credsWith("tok-person-123456"), connections }, opts)).toBeUndefined();
   });

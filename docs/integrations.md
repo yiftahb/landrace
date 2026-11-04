@@ -258,6 +258,8 @@ secrets:
   jiraAssignee: $JIRA_ASSIGNEE  # optional: an account id or an email; see "One developer's issues"
 ```
 
+`jiraConnection`, exported from the hook file, is who you are on Jira: your account id, looked up by your email with these secrets, the way `jiraAssignee` resolves an email. It needs the global "Browse users and groups" permission. When no account has your email, the tab says so; when several do, or the permission is missing, it shows Jira's reason. See [Connections](#connections).
+
 | Option | Default | What it is |
 |---|---|---|
 | `project` | — | The project's key. Only its `KEY-<n>` issues are items |
@@ -461,6 +463,27 @@ pnpm build && JIRA_BASE_URL=https://your-site.atlassian.net JIRA_EMAIL=… JIRA_
 pnpm build && NOTION_TOKEN=… NOTION_PARENT=0123456789abcdef0123456789abcdef node scripts/notion-check.mjs
 ```
 
+## Connections
+
+Some integrations define a [connection](hooks.md#connections): an account each person connects once in the board's Integrations tab, or one Landrace looks up for them. A project offers one by exporting it from a hook file, beside the integration's other hooks:
+
+```ts
+// .landrace/hooks/claude.ts
+import { Claude } from "landrace/integrations/claude";
+export { claudeConnection } from "landrace/integrations/claude";
+export const claude = new Claude();
+```
+
+| Integration | Export | Kind | Fields | How it is made |
+|---|---|---|---|---|
+| Claude Code | `claudeConnection` (id `claude`) | credential | `token` | Pasted: the output of `claude setup-token`. It lasts 365 days. Every step and turn runs on it — see [Claude Code](#claude-code) |
+| Slack | `slackConnection` (id `slack`) | identity | `userId` | Looked up by your email with `slackBotToken` — see [Slack](#slack) |
+| Jira | `jiraConnection` (id `jira`) | identity | `accountId` | Looked up by your email with the Jira secrets, as `jiraAssignee` is — see [Jira](#jira) |
+| GitHub | `githubConnection` (id `github`) | credential | `token` | Pasted: a personal access token, checked with `GET /user` |
+| GitLab | `gitlabConnection` (id `gitlab`) | credential | `token` | Pasted: a personal access token, checked with `GET /user` on `gitlabBaseUrl`, or gitlab.com |
+
+An identity is looked up by [`people.local.email`](configuration.md#people), so set it. Each looked-up value shows, as plain text, in your own Integrations tab, so you can see whether the lookup matched your account. A forge token answers a [per-person key](configuration.md#per-person-keys) that names it, such as `githubToken: { perPerson: true, env: GITHUB_TOKEN, connection: github.token }`. Nothing else uses it yet. Notion and Codex define no connection.
+
 ## Slack
 
 `landrace/integrations/slack` is a notifier: it tells a person when an item needs them. This repository's `.landrace/hooks/slack.ts` re-exports it:
@@ -485,14 +508,35 @@ log:
 
 It posts `{ text }` to the webhook, mentioning that user and linking the item, with the title and the reason escaped (`&`, `<`, `>`) so a title cannot mention or link anyone. It gives up after five seconds, and a refusal reports Slack's status and reply — never the webhook's URL. A webhook cannot reply to its own post, so there is no threading. When and how often it is told is in [Configuration](configuration.md#notify).
 
+**As a bot.** With a `slackBotToken` secret, the notifier posts as a Slack app instead, and the webhook is not used even when it is set:
+
+```yaml
+secrets:
+  slackBotToken: $SLACK_BOT_TOKEN
+  slackNotifyUser: { perPerson: true, env: SLACK_NOTIFY_USER, connection: slack.userId }
+log:
+  redact: [slackBotToken]
+```
+
+- `SLACK_BOT_TOKEN` is the app's bot token (`xoxb-…`, from the app's OAuth & Permissions page). Give the app the `chat:write`, `users:read` and `users:read.email` scopes, and install it to the workspace.
+- It posts the same text with `chat.postMessage` to `slackNotifyUser`, which is your direct message with the app. Without `slackNotifyUser` it refuses, since it has nowhere to post. Slack's own refusal is the error, as `slack: <error>`, such as `slack: channel_not_found`.
+- `slackConnection` looks your member id up by your email with `users.lookupByEmail`. Export it from the hook file (`export { slack, slackConnection } from "landrace/integrations/slack";`), and the per-person `slackNotifyUser` above is answered by it. When no Slack user has your email, the tab says so. Without `slackBotToken` it cannot look anyone up, and the tab names the secret. Any other refusal is Slack's own words, with the scope it needed when it names one.
+
 ## Claude Code
 
-`landrace/integrations/claude` runs Claude Code's CLI. This repository's `.landrace/hooks/claude.ts` is two lines:
+`landrace/integrations/claude` runs Claude Code's CLI. This repository's `.landrace/hooks/claude.ts` is three lines:
 
 ```ts
 import { Claude } from "landrace/integrations/claude";
+export { claudeConnection } from "landrace/integrations/claude";
 export const claude = new Claude();
 ```
+
+**Your own Claude login.** `claudeConnection` puts a Claude row in the board's Integrations tab. Run `claude setup-token`, sign in, and paste the token it prints (`sk-ant-oat01-…`). From then on, every step and turn runs with that token as `CLAUDE_CODE_OAUTH_TOKEN`, and uses your Claude subscription's limits rather than the operator's. Without it, steps run on the operator's own `claude` login, as before. No run is handed `ANTHROPIC_API_KEY`, and no run passes `--bare`, which would ignore the token.
+
+- The token lasts a year. From 30 days before its end, `start` logs `connection.expiring` once a day. After it, the row is Expired, and nothing runs until you paste a new one.
+- When Claude refuses the token — its text says an invalid API key or bearer token, `authentication_error`, an expired OAuth token, or `401` — the step is unavailable and records no round, the row is Not working with Claude's reason, `connection.failed` is logged, and nothing runs until you paste a new one. It never falls back to the operator's login. See [Telemetry](configuration.md#telemetry).
+- The token reaches each step's environment — see [Security](security.md#stored-credentials). Checked against the CLI's documented `CLAUDE_CODE_OAUTH_TOKEN`; a live run on a real token is not part of `claude-check.mjs` yet.
 
 ```yaml
 agent:
