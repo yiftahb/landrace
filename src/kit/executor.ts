@@ -18,6 +18,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { CAPABILITIES, CHILD_SERVER_NAME, INHERITED_ENV_KEYS, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
+import { isLoopback } from "#kit/http.js";
 import type {
   AgentSettings,
   AllowedTools,
@@ -26,6 +27,7 @@ import type {
   ExecutorContext,
   HookContext,
   ExecutorFactory,
+  FrontDoor,
   GitIdentity,
   HandoffArg,
   HandoffPlan,
@@ -42,7 +44,7 @@ import type {
 } from "#namespace.js";
 
 export type {
-  AgentSettings, EventReading, HandoffPlan, HookLog, KitSettings, McpEntry, McpServerConfig, PairingKind, ResolvedMcp, RunPlan, SandboxSettings, StepKey, Tier,
+  AgentSettings, EventReading, FrontDoor, HandoffPlan, HookLog, KitSettings, McpEntry, McpServerConfig, PairingKind, ResolvedMcp, RunPlan, SandboxSettings, StepKey, Tier,
 } from "#namespace.js";
 
 /** A thrown value's message, whatever was thrown. */
@@ -203,6 +205,39 @@ const RUNS_OPERATOR =
 const runsOperator = (server: McpServerConfig): boolean =>
   RUNS_OPERATOR.test([server.command ?? "", ...(server.args ?? [])].join(" "));
 
+/** No door to keep a run from: what a settings object built by hand, outside `create`, holds. */
+const NO_DOOR: FrontDoor = { hosts: [], origins: [] };
+
+/** An origin's port, its scheme's default filled in. */
+const portOf = (url: URL): string => url.port || (url.protocol === "https:" ? "443" : "80");
+
+/**
+ * Whether a server's `url` is the operator's front door, whose `/mcp` serves
+ * the tools that move items: one of its origins, or any loopback address on
+ * a loopback origin's port, since 127.0.0.2 or [::1] reaches the same socket.
+ */
+function reachesDoor(server: McpServerConfig, door: FrontDoor): boolean {
+  if (typeof server["url"] !== "string") return false;
+  let url: URL;
+  try {
+    url = new URL(server["url"]);
+  } catch {
+    return false;
+  }
+  if (door.origins.includes(url.origin.toLowerCase())) return true;
+  if (!isLoopback(url.hostname)) return false;
+  return door.origins.some((o) => {
+    const origin = new URL(o);
+    return isLoopback(origin.hostname) && portOf(origin) === portOf(url);
+  });
+}
+
+/** Whether a sandbox host, `*.` or not, matches one of the door's own names. */
+const coversDoor = (host: string, door: FrontDoor): string | undefined => {
+  const h = host.toLowerCase();
+  return door.hosts.find((name) => h === name || (h.startsWith("*.") && name.endsWith(h.slice(1))));
+};
+
 /** Said once, because both ways of naming the operator server are refused for the same reason. */
 const operatorProblem = (name: string, how: string): Problem => ({
   rule: "mcp",
@@ -253,6 +288,7 @@ export async function resolveStepServers(
   dir: string,
   entries: readonly McpEntry[],
   fileOf: (root: string) => string = (root) => join(root, ".mcp.json"),
+  door: FrontDoor = NO_DOOR,
 ): Promise<ResolvedMcp> {
   if (entries.length === 0) return { servers: {}, tools: {}, problems: [] };
 
@@ -344,6 +380,9 @@ export async function resolveStepServers(
       });
     } else if (runsOperator(server)) {
       problems.push(operatorProblem(name, "whose command runs"));
+    } else if (reachesDoor(server, door)) {
+      // The URL is never quoted: a query string can carry a credential.
+      problems.push(operatorProblem(name, "whose URL is"));
     } else {
       servers[name] = server;
     }
@@ -568,13 +607,13 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    * `agent:` as this integration reads it, or every reason it cannot be used —
    * in one error, one line each, so an operator fixes them in one pass.
    */
-  readSettings(agent: Record<string, unknown>): AgentSettings<E> {
-    const { settings, problems } = this.read(agent);
+  readSettings(agent: Record<string, unknown>, door: FrontDoor = NO_DOOR): AgentSettings<E> {
+    const { settings, problems } = this.read(agent, door);
     if (problems.length) throw new Error(problems.join("\n"));
     return settings;
   }
 
-  private read(agent: Record<string, unknown>): { settings: AgentSettings<E>; problems: string[] } {
+  private read(agent: Record<string, unknown>, door: FrontDoor): { settings: AgentSettings<E>; problems: string[] } {
     const { extras, problems: extraProblems } = this.extrasOf(agent);
     const known = new Set([...KIT_KEYS, ...Object.keys(extras)]);
     const problems: string[] = [];
@@ -625,6 +664,19 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       );
       // Only a sandbox that reads as meant can be asked whether it is kept.
       if (shaped.length === 0) shaped.push(...(this.sandboxProblems?.({ hosts: hosts as string[], deny: deny as string[] }) ?? []));
+      // Whatever the agent keeps: a write step's commands that reach the door
+      // reach its MCP endpoint, whose tools move items.
+      if (Array.isArray(hosts)) {
+        hosts.forEach((h: unknown, i) => {
+          const name = typeof h === "string" ? coversDoor(h, door) : undefined;
+          if (name !== undefined) {
+            shaped.push(
+              `agent.sandbox.hosts[${i}] is ${JSON.stringify(h)}, which reaches landrace's own front door at ${name}: ` +
+              "a write step's commands could move items through its MCP endpoint; leave it out",
+            );
+          }
+        });
+      }
       problems.push(...shaped);
     }
 
@@ -662,12 +714,12 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     // `security.model`, and it gets no server whatever the block says.
     if (ctx.config.agent.adapter !== this.id) {
       const screener = this.build({
-        servers: {}, tools: {}, sandbox: { hosts: [], deny: [...DEFAULT_DENY] }, log: ctx.log, ...this.extrasOf({}).extras,
+        servers: {}, tools: {}, sandbox: { hosts: [], deny: [...DEFAULT_DENY] }, log: ctx.log, frontDoor: ctx.frontDoor, ...this.extrasOf({}).extras,
       });
       return { run: screener.run };
     }
 
-    const { settings, problems } = this.read(ctx.config.agent as Record<string, unknown>);
+    const { settings, problems } = this.read(ctx.config.agent as Record<string, unknown>, ctx.frontDoor);
     // What `agent.mcp` allows, from its entries as written: a step's own is
     // checked against it here whether or not `.mcp.json` resolves.
     const known: AllowedTools = Object.fromEntries((Array.isArray(settings.mcp) ? settings.mcp as unknown[] : []).flatMap((e): Array<[string, readonly string[] | null]> =>
@@ -707,10 +759,12 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     if (problems.length) throw new Error(problems.join("\n"));
 
     const { mcp, ...rest } = settings;
-    const resolved = await resolveStepServers(ctx.dir, mcp, (root) => this.mcpFile(root));
+    const resolved = await resolveStepServers(ctx.dir, mcp, (root) => this.mcpFile(root), ctx.frontDoor);
     if (resolved.problems.length) throw new Error(resolved.problems.map((p) => `${p.rule}: ${p.message}`).join("\n"));
     ctx.redact(mcpRedactionValues(resolved.servers));
-    const executor = this.build({ ...(rest as unknown as KitSettings & E), servers: resolved.servers, tools: resolved.tools, log: ctx.log });
+    const executor = this.build({
+      ...(rest as unknown as KitSettings & E), servers: resolved.servers, tools: resolved.tools, log: ctx.log, frontDoor: ctx.frontDoor,
+    });
     // Pairing only here, where `agent:` is this integration's: a screener
     // built from another agent's block is never the one a person pairs with.
     return { run: executor.run, ...(executor.handoff ? { handoff: executor.handoff } : {}) };
@@ -723,7 +777,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    */
   build(settings: KitSettings & E): Executor {
     const {
-      model, effort, servers: mcpServers, tools: mcpTools, sandbox, git, log, timeoutMs = FALLBACK_TIMEOUT_MS,
+      model, effort, servers: mcpServers, tools: mcpTools, sandbox, git, log, timeoutMs = FALLBACK_TIMEOUT_MS, frontDoor = NO_DOOR,
     } = settings;
     const extras = settings as unknown as E;
 
@@ -819,7 +873,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
         [name, name === server?.name ? server.tools : stepAllowed[name] ?? null]));
 
       const plan: RunPlan<E> = {
-        tier, fork: fork === true, servers, allowed, sandbox, extras,
+        tier, fork: fork === true, servers, allowed, sandbox, extras, frontDoor,
         ...(declared && skills !== undefined ? { skills } : {}),
         ...(declared && plugins !== undefined ? { plugins } : {}),
         ...(chosenModel === undefined ? {} : { model: chosenModel }),

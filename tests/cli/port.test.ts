@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { instancePath, portCommand, readInstance, removeInstance, writeInstance } from "#cli/port.js";
 import type { BoardInstance, BoardView, UiServer } from "#namespace.js";
 import { sandboxRoot } from "#sandbox.js";
-import { serveBoard } from "#ui/server.js";
+import { serveBoard } from "#tests/support/board.js";
 import { describeLoopback } from "#tests/support/loopback.js";
 
 const dirs: string[] = [];

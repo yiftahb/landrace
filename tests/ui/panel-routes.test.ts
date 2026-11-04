@@ -2,13 +2,16 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { ActivityPage, BoardView, ConversationLine, ItemPanel, UiOptions, WakeResult } from "#namespace.js";
 import { boardListener } from "#ui/server.js";
+import { allowedHosts, frontDoorOrigins } from "#front/hosts.js";
 
 /*
  * The item panel's routes, driven through the server's own request
- * listener in-process: the same function serveBoard hands createServer, with
+ * listener in-process: the same function the front door routes the board to, with
  * no socket in between, so what is pinned here is what the page reaches.
  */
 const PORT = 4545;
+/** What the front door hands the page on PORT. */
+const DOOR = { allowedHosts: allowedHosts({ host: "127.0.0.1" }, PORT), origins: frontDoorOrigins({ host: "127.0.0.1" }, PORT).origins };
 const empty: BoardView = { generatedAt: 1, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace", workflows: [], needsYou: 0, listed: true };
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 
@@ -27,7 +30,7 @@ function drive(opts: UiOptions, path: string, init: { method?: string; headers?:
       writeHead(s: number, h: Record<string, unknown>) { status = s; headers = h; return res; },
       end(b?: string) { resolve({ status, headers, body: String(b ?? "") }); },
     };
-    boardListener(opts, () => PORT)(req as unknown as IncomingMessage, res as unknown as ServerResponse);
+    boardListener(opts)(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   });
 }
 
@@ -53,7 +56,7 @@ function world(over: Partial<ItemPanel> = {}) {
     release: async (...a) => { calls.push(["release", ...a]); return { stage: "spec", round: 1, next: "agent" }; },
     ...over,
   };
-  const opts: UiOptions = { port: 0, view: async () => empty, panel, tick: (): WakeResult => { wakes++; return "started"; } };
+  const opts: UiOptions = { ...DOOR, view: async () => empty, panel, tick: (): WakeResult => { wakes++; return "started"; } };
   return { opts, calls, wakes: () => wakes };
 }
 
@@ -63,7 +66,7 @@ const write = (action: string, body?: string, headers: Record<string, string> = 
 
 describe("the item panel's routes", () => {
   it("are not there at all when the server was given no panel", async () => {
-    const opts: UiOptions = { port: 0, view: async () => empty };
+    const opts: UiOptions = { ...DOOR, view: async () => empty };
     for (const [path, init] of [
       ["/items/7/activity", {}], ["/items/7/conversation", { headers: { "x-landrace-action": "conversation" } }],
       ["/items/7/reply", write("reply", "hi")], ["/items/7/ask", write("ask", "hi")], ["/items/7/resolve", write("resolve")],

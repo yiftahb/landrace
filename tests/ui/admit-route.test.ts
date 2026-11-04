@@ -3,12 +3,15 @@ import { Readable } from "node:stream";
 import type { AdmitResult, BoardView, UiOptions, WakeResult } from "#namespace.js";
 import { Refusal } from "#runner/errors.js";
 import { boardListener } from "#ui/server.js";
+import { allowedHosts, frontDoorOrigins } from "#front/hosts.js";
 
 /*
  * The page's Start work, POST /items/<id>/admit/<workflow>, driven through
  * the server's own request listener in-process, as the panel's routes are.
  */
 const PORT = 4545;
+/** What the front door hands the page on PORT. */
+const DOOR = { allowedHosts: allowedHosts({ host: "127.0.0.1" }, PORT), origins: frontDoorOrigins({ host: "127.0.0.1" }, PORT).origins };
 const empty: BoardView = { generatedAt: 1, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace", workflows: [], needsYou: 0, listed: true };
 
 function drive(opts: UiOptions, path: string, init: { method?: string; headers?: Record<string, string> } = {}): Promise<{ status: number; body: string }> {
@@ -19,7 +22,7 @@ function drive(opts: UiOptions, path: string, init: { method?: string; headers?:
       writeHead(s: number) { status = s; return res; },
       end(b?: string) { resolve({ status, body: String(b ?? "") }); },
     };
-    boardListener(opts, () => PORT)(req as unknown as IncomingMessage, res as unknown as ServerResponse);
+    boardListener(opts)(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   });
 }
 
@@ -29,7 +32,7 @@ function world(admit: (item: string, workflow: string) => Promise<AdmitResult> =
   const calls: string[][] = [];
   let wakes = 0;
   const opts: UiOptions = {
-    port: 0, view: async () => empty, tick: (): WakeResult => { wakes++; return "started"; },
+    ...DOOR, view: async () => empty, tick: (): WakeResult => { wakes++; return "started"; },
     admit: async (item, workflow) => { calls.push([item, workflow]); return admit(item, workflow); },
   };
   return { opts, calls, wakes: () => wakes };
@@ -63,7 +66,7 @@ describe("the page's Start work", () => {
   });
 
   it("is not there when the server was given no way to admit", async () => {
-    expect((await drive({ port: 0, view: async () => empty }, "/items/19/admit/fast", ours)).status).toBe(404);
+    expect((await drive({ ...DOOR, view: async () => empty }, "/items/19/admit/fast", ours)).status).toBe(404);
   });
 
   it("refuses a malformed item or workflow before asking anything", async () => {

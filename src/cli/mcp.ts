@@ -3,6 +3,7 @@ import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js
 import { mayCreateItems, itemIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import type { ChildBinding, ChildTool, ExecutorContext, LoadedWorkflow, Registry, RuntimeContext, Tools, ToolWorkflow } from "#namespace.js";
+import { frontDoorOrigins } from "#front/hosts.js";
 import { createChildMcpServer, createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
 import { createActivityLog } from "#runner/activity.js";
@@ -136,7 +137,12 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
     // An executor factory's own members, beyond what every hook gets — and
     // this workflow's steps, against which it is built: see the same
     // construction in `buildWorkspaceRuntime`.
-    const ectx: ExecutorContext = { ...ctx, dir, redact: events.redact, steps: w.steps, pairingStages: pairingStages(w.workflow) };
+    const ectx: ExecutorContext = {
+      ...ctx, dir, redact: events.redact, steps: w.steps, pairingStages: pairingStages(w.workflow),
+      // The door `landrace start` serves on this configuration: a turn asked
+      // here is held from it as the loop's own steps are.
+      frontDoor: frontDoorOrigins(loaded.config.serve, loaded.config.serve.port),
+    };
     /*
      * The same executor the loop invokes steps with, resolved the same way and
      * refused at startup for the same reason: `landrace_ask` resumes a session

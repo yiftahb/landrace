@@ -1,12 +1,9 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { itemIdProblem } from "#conventions.js";
-import type { UiOptions, UiServer } from "#namespace.js";
+import type { UiOptions } from "#namespace.js";
 import { messageOf, Refusal } from "#runner/errors.js";
 import { oneLine } from "#runner/status.js";
 import { APP_CSS, APP_JS, FAVICON_SVG, PAGE_HTML, THEME_JS } from "#ui/page.js";
-
-const HOST = "127.0.0.1";
 
 /** Even a slipped innerHTML in the page could not run a script under this. */
 const CSP = [
@@ -47,7 +44,7 @@ const ADMIT_PATH = /^\/items\/([^/]+)\/admit\/([^/]+)$/;
 /** Any Unicode control, format, or line/paragraph separator: nothing a name the page shows back may carry. */
 const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
-function send(res: ServerResponse, status: number, type: string, body: string): void {
+export function send(res: ServerResponse, status: number, type: string, body: string): void {
   res.writeHead(status, {
     "content-type": type,
     "content-security-policy": CSP,
@@ -55,6 +52,18 @@ function send(res: ServerResponse, status: number, type: string, body: string): 
     "cache-control": "no-store",
   });
   res.end(body);
+}
+
+/** Whether a request names an `Origin` other than the door's own; absent is not foreign. */
+export function foreignOrigin(req: IncomingMessage, origins: readonly string[]): boolean {
+  const origin = req.headers.origin;
+  return origin !== undefined && !origins.includes(origin.toLowerCase());
+}
+
+/** Whether a request's Host is one the door answers; DNS rebinding sends a stranger's. */
+export function knownHost(req: IncomingMessage, hosts: readonly string[]): boolean {
+  const host = req.headers.host;
+  return host !== undefined && hosts.includes(host.toLowerCase());
 }
 
 /**
@@ -73,13 +82,12 @@ function send(res: ServerResponse, status: number, type: string, body: string): 
  * script's cooperation. Sec-Fetch-Site the same way: a browser that says the
  * request came from another site is believed.
  */
-function foreignWrite(req: IncomingMessage, action: string, port: number): string | null {
+function foreignWrite(req: IncomingMessage, action: string, origins: readonly string[]): string | null {
   // One sentence for every refusal, shown as-is where the page asked: which
   // check failed is for a debugger, not for the person clicking.
   const refused = "refused: this can be asked only from the Landrace page itself";
   if (req.headers[ACTION_HEADER] !== action) return refused;
-  const origin = req.headers.origin;
-  if (origin !== undefined && origin !== `http://${HOST}:${port}` && origin !== `http://localhost:${port}`) return refused;
+  if (foreignOrigin(req, origins)) return refused;
   const site = req.headers["sec-fetch-site"];
   if (site !== undefined && site !== "same-origin") return refused;
   return null;
@@ -116,7 +124,7 @@ function bodyOf(req: IncomingMessage): Promise<string | null> {
  * every other write here; all but Reply move the item, so they wake the loop.
  */
 function servePanel(
-  opts: UiOptions, req: IncomingMessage, res: ServerResponse, port: number, id: string, what: string,
+  opts: UiOptions, req: IncomingMessage, res: ServerResponse, id: string, what: string,
 ): void {
   const text = "text/plain; charset=utf-8";
   const panel = opts.panel;
@@ -124,7 +132,7 @@ function servePanel(
   const reading = what === "activity" || what === "conversation" || what === "pairing";
   if (req.method !== (reading ? "GET" : "POST")) return send(res, 405, text, "method not allowed");
   if (what !== "activity") {
-    const foreign = foreignWrite(req, what, port);
+    const foreign = foreignWrite(req, what, opts.origins);
     if (foreign) return send(res, 403, text, foreign);
   }
   let item: string;
@@ -201,12 +209,12 @@ function servePanel(
  * the loop woken for the tick that starts it. A refusal is said in its own
  * sentence, like a refused goto; a tracker's failure in a fixed one.
  */
-function serveAdmit(opts: UiOptions, req: IncomingMessage, res: ServerResponse, port: number, id: string, wf: string): void {
+function serveAdmit(opts: UiOptions, req: IncomingMessage, res: ServerResponse, id: string, wf: string): void {
   const text = "text/plain; charset=utf-8";
   const admit = opts.admit;
   if (!admit) return send(res, 404, text, "not found");
   if (req.method !== "POST") return send(res, 405, text, "method not allowed");
-  const foreign = foreignWrite(req, "admit", port);
+  const foreign = foreignWrite(req, "admit", opts.origins);
   if (foreign) return send(res, 403, text, foreign);
   let item: string;
   let workflow: string;
@@ -239,17 +247,17 @@ function serveAdmit(opts: UiOptions, req: IncomingMessage, res: ServerResponse, 
 
 /**
  * The page's request listener, apart from the socket it is served on, so a
- * test can drive it in-process. `port` is the one the server listened on,
- * asked for per request because it is only known once listening has begun.
+ * test can drive it in-process. Its hosts and origins are the ones the front
+ * door computed once it knew the port it listened on.
  */
-export function boardListener(opts: UiOptions, portOf: () => number): (req: IncomingMessage, res: ServerResponse) => void {
+export function boardListener(opts: UiOptions): (req: IncomingMessage, res: ServerResponse) => void {
   return (req, res) => {
-    const port = portOf();
     // DNS rebinding: a page on attacker.example can point its own name at
     // 127.0.0.1, and the browser will then send its requests here with that
     // name in Host. Answering only our own names is what stops it reading
-    // private item titles through the user's browser.
-    if (req.headers.host !== `${HOST}:${port}` && req.headers.host !== `localhost:${port}`) {
+    // private item titles through the user's browser. The front door checks
+    // this before routing too; here as well, so the page never relies on it.
+    if (!knownHost(req, opts.allowedHosts)) {
       send(res, 421, "text/plain; charset=utf-8", "misdirected request");
       return;
     }
@@ -267,9 +275,7 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
         send(res, 405, "text/plain; charset=utf-8", "method not allowed");
         return;
       }
-      // The Host check already pinned the server's own name, so `port` here
-      // is the one the request actually landed on.
-      const foreign = foreignWrite(req, "tick", port);
+      const foreign = foreignWrite(req, "tick", opts.origins);
       if (foreign) {
         send(res, 403, "text/plain; charset=utf-8", foreign);
         return;
@@ -293,7 +299,7 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
         send(res, 405, "text/plain; charset=utf-8", "method not allowed");
         return;
       }
-      const foreign = foreignWrite(req, "refresh", port);
+      const foreign = foreignWrite(req, "refresh", opts.origins);
       if (foreign) {
         send(res, 403, "text/plain; charset=utf-8", foreign);
         return;
@@ -328,7 +334,7 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
         send(res, 405, "text/plain; charset=utf-8", "method not allowed");
         return;
       }
-      const foreign = foreignWrite(req, retrying ? "retry" : clearing ? "clear" : "goto", port);
+      const foreign = foreignWrite(req, retrying ? "retry" : clearing ? "clear" : "goto", opts.origins);
       if (foreign) {
         send(res, 403, "text/plain; charset=utf-8", foreign);
         return;
@@ -390,13 +396,13 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
     // offer was only its prediction.
     const admitting = ADMIT_PATH.exec(path);
     if (admitting) {
-      serveAdmit(opts, req, res, port, admitting[1] ?? "", admitting[2] ?? "");
+      serveAdmit(opts, req, res, admitting[1] ?? "", admitting[2] ?? "");
       return;
     }
 
     const panelling = PANEL_PATH.exec(path);
     if (panelling) {
-      servePanel(opts, req, res, port, panelling[1] ?? "", panelling[2] ?? "");
+      servePanel(opts, req, res, panelling[1] ?? "", panelling[2] ?? "");
       return;
     }
 
@@ -420,40 +426,4 @@ export function boardListener(opts: UiOptions, portOf: () => number): (req: Inco
     }
     send(res, 404, "text/plain; charset=utf-8", "not found");
   };
-}
-
-/**
- * The triage page, on loopback only. Every route is a GET except the page's
- * writes: POST /tick, present only when the caller hands us a schedule to
- * wake; POST /items/<id>/retry and /items/<id>/goto/<stage>, present
- * only when it hands us a way to send an item back, and which wake that
- * schedule too once they have; POST /refresh, present only when it hands us
- * a way to re-read the tracker, which starts no agent but still spends a
- * tracker read and so is guarded the same way; the item panel's
- * Reply, Ask and Resolve, present only when it hands us a panel; and
- * POST /items/<id>/admit/<workflow>, Start work, present only when it hands
- * us a way to admit, and which wakes the schedule once it has.
- */
-export function serveBoard(opts: UiOptions): Promise<UiServer> {
-  let port = 0;
-  const server = createServer(boardListener(opts, () => port));
-
-  return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(opts.port, HOST, () => {
-      server.off("error", reject);
-      port = (server.address() as AddressInfo).port;
-      // Persistent error handler to prevent uncaught errors from crashing the process
-      server.on("error", (e) => console.error(`landrace: triage page error: ${messageOf(e)}`));
-      resolve({
-        url: `http://${HOST}:${port}/`,
-        port,
-        close: () =>
-          new Promise<void>((done) => {
-            server.close(() => done());
-            server.closeAllConnections();
-          }),
-      });
-    });
-  });
 }

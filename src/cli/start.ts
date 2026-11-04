@@ -41,6 +41,8 @@ import type {
   StartOptions,
   ItemPanel,
   ItemReads,
+  McpEndpoint,
+  ToolWorkflow,
   UiServer,
   WakeResult,
   WorkflowRuntime,
@@ -48,7 +50,10 @@ import type {
   WorkspaceRuntime,
 } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
-import { admitItem, postReply } from "#mcp/tools.js";
+import { admitItem, createTools, postReply } from "#mcp/tools.js";
+import { frontDoorOrigins, serveProblems } from "#front/hosts.js";
+import { createMcpEndpoint } from "#front/mcp.js";
+import { serveFrontDoor } from "#front/server.js";
 import { createActivityLog } from "#runner/activity.js";
 import { createDispatcher } from "#runner/effects.js";
 import { messageOf, Refusal } from "#runner/errors.js";
@@ -65,7 +70,6 @@ import { listingFailures, listWorkspace, sourcesOf, tickWorkspace } from "#runne
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
-import { serveBoard } from "#ui/server.js";
 import { admitProblems, branchIsolationProblems, claimProblems, createProblems, pairingIsolationProblems, pairingStages, validate } from "#workflow/validate.js";
 import { loadWorkspace } from "#workflow/workspace.js";
 import { watchWake, wakePath } from "#wake.js";
@@ -101,30 +105,62 @@ export function parsePort(text: string): number {
  */
 export async function startUi(
   opts: {
-    board: Board; ui: boolean; once: boolean; port: number; tick?: () => WakeResult; goto?: GotoPath | undefined;
+    board: Board; ui: boolean; once: boolean; port: number; host?: string; publicUrl?: string | undefined;
+    tick?: () => WakeResult; goto?: GotoPath | undefined;
     refresh?: (() => Promise<void>) | undefined; panel?: ItemPanel | undefined;
     admit?: ((item: string, workflow: string) => Promise<AdmitResult>) | undefined;
+    /** The operator's MCP endpoint, served at `/mcp` beside the board. */
+    mcp?: McpEndpoint | undefined;
   },
 ): Promise<UiServer | null> {
   if (!opts.ui || opts.once) return null;
   let ui: UiServer;
   try {
-    ui = await serveBoard({
+    ui = await serveFrontDoor({
+      host: opts.host ?? "127.0.0.1",
       port: opts.port,
-      view: () => opts.board.view(),
-      ...(opts.tick === undefined ? {} : { tick: opts.tick }),
-      ...(opts.goto === undefined ? {} : { goto: opts.goto }),
-      ...(opts.refresh === undefined ? {} : { refresh: opts.refresh }),
-      ...(opts.panel === undefined ? {} : { panel: opts.panel }),
-      ...(opts.admit === undefined ? {} : { admit: opts.admit }),
+      ...(opts.publicUrl === undefined ? {} : { publicUrl: opts.publicUrl }),
+      ...(opts.mcp === undefined ? {} : { mcp: opts.mcp }),
+      board: {
+        view: () => opts.board.view(),
+        ...(opts.tick === undefined ? {} : { tick: opts.tick }),
+        ...(opts.goto === undefined ? {} : { goto: opts.goto }),
+        ...(opts.refresh === undefined ? {} : { refresh: opts.refresh }),
+        ...(opts.panel === undefined ? {} : { panel: opts.panel }),
+        ...(opts.admit === undefined ? {} : { admit: opts.admit }),
+      },
     });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EADDRINUSE") {
-      throw new Error(`port ${opts.port} is taken; pick another with --ui-port, or turn the page off with --headless`);
+      throw new Error(`port ${opts.port} is taken; pick another with --ui-port or serve.port, or turn the page off with --headless`);
     }
     throw e;
   }
   return ui;
+}
+
+/**
+ * The operator's MCP endpoint over the loop's own runtime: every workflow, as
+ * `landrace start` runs them, each session scoped or not as it initialized.
+ * The same sandbox and activity log the steps use, and a person's write wakes
+ * the schedule directly — this is the loop's own process, so no wake file.
+ */
+export function mcpEndpointFor(
+  rt: Pick<WorkspaceRuntime, "workflows" | "ctx" | "activity" | "toolWorkflows">, schedule: Pick<Schedule, "wake">,
+): McpEndpoint {
+  const workflows = rt.toolWorkflows ?? [];
+  const sandbox = rt.workflows.find((w) => w.deps.sandbox)?.deps.sandbox;
+  return createMcpEndpoint({
+    workflows: workflows.map((w) => w.id),
+    toolsFor: (scope) => createTools(workflows, rt.ctx, {
+      ...(sandbox ? { sandbox } : {}),
+      ...(rt.activity ? { activity: rt.activity } : {}),
+      wake: () => {
+        schedule.wake();
+      },
+      ...(scope === undefined ? {} : { scope }),
+    }),
+  });
 }
 
 /**
@@ -175,7 +211,8 @@ export function startCommand(run: (dir: string, opts: StartOptions) => Promise<v
     .option("--once", "run a single tick and exit")
     .option("--debug", "print every event, the agent's included, and the snapshot behind each decision")
     // Refused by commander as a usage error, never thrown out of the action as a stack trace.
-    .addOption(new Option("--ui-port <port>", "port for the triage page").default(DEFAULT_UI_PORT).argParser((text) => {
+    // No default here: absent, `serve.port` decides, which a default would always beat.
+    .addOption(new Option("--ui-port <port>", "port for the board and its MCP endpoint, over serve.port").argParser((text) => {
       try {
         return parsePort(text);
       } catch (e) {
@@ -192,13 +229,13 @@ export function startCommand(run: (dir: string, opts: StartOptions) => Promise<v
       [] as string[],
     )
     .action((opts: {
-      workspace: string; once?: boolean; debug?: boolean; ui: boolean; headless?: boolean; uiPort: number;
+      workspace: string; once?: boolean; debug?: boolean; ui: boolean; headless?: boolean; uiPort?: number;
       telemetry?: boolean; otel: string[];
     }) => run(opts.workspace, {
       ...(opts.once === undefined ? {} : { once: opts.once }),
       ...(opts.debug === undefined ? {} : { debug: opts.debug }),
       ui: opts.ui && opts.headless !== true,
-      uiPort: opts.uiPort,
+      ...(opts.uiPort === undefined ? {} : { uiPort: opts.uiPort }),
       otel: [...opts.otel, ...(opts.telemetry ? ["LANDRACE_ENABLE_TELEMETRY=1"] : [])],
     }));
 }
@@ -333,14 +370,16 @@ export function boardSink(
 }
 
 /**
- * This same process, started again as `landrace mcp`: the node binary, its
- * own flags (type stripping, --import), the CLI entry, and the workspace
- * directory made absolute so the agent's cwd cannot move it.
+ * This same process, started again as `landrace mcp --pairing`: the node
+ * binary, its own flags (type stripping, --import), the CLI entry, and the
+ * workspace directory made absolute so the agent's cwd cannot move it. The
+ * stdio server a pairing's session is handed, and with `--child` appended,
+ * the one a step's create_child is; a bare `landrace mcp` serves nothing.
  */
 export function childServerCommand(dir: string, workflowId: string): ServerCommand {
   return {
     command: process.execPath,
-    args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir), "--workflow", workflowId],
+    args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir), "--workflow", workflowId, "--pairing"],
   };
 }
 
@@ -570,6 +609,11 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // same three and a daemon that checked fewer of them than the CLI would run
   // a configuration the CLI rejects.
   assertConfigUsable(dir, loaded);
+  // A door nothing asks a caller about, open to the network, hands anyone who
+  // reaches it every item and the loop. `validate` reports the same words.
+  // Not for `landrace status`, which serves nothing.
+  const unserved = opts.readOnly ? [] : serveProblems(loaded.config.serve);
+  if (unserved.length) throw new Error(unserved.map((p) => `${p.rule}: ${p.message}`).join("\n"));
 
   // Before anything else can log: redactionValues throws on a name no secret
   // defines and on a value too short to redact by, and both of those are the
@@ -684,7 +728,11 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
 
   const preflights = scopedPreflights(hooked.map(({ loaded, registry }) => ({ preflights: registry.preflights, workflow: loaded })));
   const workflows: WorkflowRuntime[] = [];
-  for (const { loaded: { id, workflow, steps }, registry, source } of hooked) {
+  const toolWorkflows: ToolWorkflow[] = [];
+  // The door the page and the MCP endpoint are served at, on the port this
+  // start binds: every step's executor is held from it.
+  const frontDoor = frontDoorOrigins(loaded.config.serve, opts.port ?? loaded.config.serve.port);
+  for (const { loaded: { id, dir: workflowDir, workflow, steps }, registry, source } of hooked) {
     // An executor factory's own members, beyond what every hook gets: where its
     // repository is, a way to keep what its setup turns up out of every log
     // line from here on — an MCP server's env, say, which the configuration
@@ -692,11 +740,20 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     // steps, whose efforts it refuses now rather than at each step's first run.
     // A context of its own per workflow, so a factory two workflows share is
     // built once for each, against that workflow's steps (see `executorFor`).
-    const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps, pairingStages: pairingStages(workflow) };
+    const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps, pairingStages: pairingStages(workflow), frontDoor };
     const screener = opts.readOnly ? undefined : await screenerFor(loaded.config, registry, ectx);
     // Named on what converge and notify log for it — `agent.limited` among
     // them — without a field of its own in deps.
     const workflowLog = log.with({ workflow: id });
+    const executor = opts.readOnly
+      ? readOnlyExecutor(registeredExecutor(loaded.config, registry))
+      : await stepExecutorFor(loaded.config, registry, ectx);
+    const childServer = childServerCommand(dir, id);
+    // The same hooks, executor, screener and pairing server as the steps', so
+    // a turn asked through the front door's `/mcp` runs as one asked on the page.
+    if (!opts.readOnly) {
+      toolWorkflows.push({ id, dir: workflowDir, workflow, steps, registry, executor, server: childServer, ...(screener ? { screen: screener } : {}) });
+    }
     workflows.push({
       id, name: workflow.name, description: workflow.description, source,
       ...(registry.operator ? { operator: registry.operator } : {}),
@@ -708,10 +765,8 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
         pre: registry.pre,
         artifacts: registry.artifacts,
         dispatcher: createDispatcher(registry.post),
-        executor: opts.readOnly
-          ? readOnlyExecutor(registeredExecutor(loaded.config, registry))
-          : await stepExecutorFor(loaded.config, registry, ectx),
-        childServer: childServerCommand(dir, id),
+        executor,
+        childServer,
         ...(sandbox === null ? {} : { sandbox }),
         ...(screener ? { screen: screener } : {}),
         ctx,
@@ -749,6 +804,8 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     ctx,
     ...(activity ? { activity } : {}),
     ...(telemetry ? { telemetry } : {}),
+    ...(opts.readOnly ? {} : { toolWorkflows }),
+    port: opts.port ?? loaded.config.serve.port,
   };
 }
 
@@ -1061,6 +1118,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     ...(opts.otel === undefined ? {} : { otel: opts.otel }),
     sink: boardSink(print, boardRef),
     board: () => pageRef.url,
+    ...(opts.uiPort === undefined ? {} : { port: opts.uiPort }),
   });
 
   // Before anything else the hooks might do — including `--once`'s one tick
@@ -1110,9 +1168,13 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const { activity } = rt;
   // An unowned item's reads, by the index its source has in every listing.
   const sources = sourceReaders(rt.workflows, rt.ctx);
+  const { serve } = rt.ctx.config;
   const ui = await startUi({
-    board, ui: opts.ui ?? true, once: opts.once ?? false, port: opts.uiPort ?? DEFAULT_UI_PORT,
+    board, ui: opts.ui ?? true, once: opts.once ?? false, port: rt.port ?? serve.port, host: serve.host, publicUrl: serve.publicUrl,
     tick: schedule.wake,
+    // The operator's tools beside the board, over every workflow as this
+    // loop runs them; a write wakes the loop itself, with no wake file.
+    mcp: serves && rt.toolWorkflows ? mcpEndpointFor(rt, schedule) : undefined,
     goto: gotoByClaim(writeOwner, new Map(rt.workflows.map((w) => [w.id, gotoFor({
       source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx, workflow: w.deps.workflow,
     })]))),

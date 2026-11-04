@@ -72,6 +72,25 @@ export const runtimeConfigSchema = z.object({
   security: z
     .object({ screen: z.boolean().default(true), adapter: z.string().min(1).optional(), model: z.string().min(1).optional() })
     .default({}),
+  /**
+   * The front door: the board and the operator's MCP endpoint, on one port.
+   * `host` is what it binds; `serveProblems` refuses one that is not loopback,
+   * since nothing asks who a caller is. `publicUrl` is where a person reaches
+   * it through a proxy of their own: the URL `start` prints and notifications
+   * link to, and one more name the door answers to.
+   */
+  serve: z
+    .object({
+      host: z.string().min(1).default("127.0.0.1"),
+      port: z.number().int().min(1).max(65535).default(4545),
+      publicUrl: z
+        .string()
+        .url()
+        .refine((u) => /^https?:$/.test(new URL(u).protocol), { message: "must be an http:// or https:// URL" })
+        .optional(),
+    })
+    .strict()
+    .default({}),
   workflows: z.array(z.string().min(1)).optional(), // the sidebar's order; must name exactly the folders
   log: z.object({ redact: z.array(z.string()).default([]) }).default({}),
   secrets: z.record(z.string()).default({}),

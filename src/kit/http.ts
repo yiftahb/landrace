@@ -1,4 +1,17 @@
+import { isIPv4, isIPv6 } from "node:net";
 import type { HttpLimit } from "#namespace.js";
+
+/**
+ * A name only this machine reaches: `localhost`, `127.0.0.0/8`, or `::1`,
+ * bracketed or not. Here, in the kit, because the kit refuses a step's way to
+ * the operator's front door on loopback, and the engine binds that door.
+ */
+export function isLoopback(host: string): boolean {
+  const h = host.replace(/^\[(.*)\]$/, "$1").toLowerCase();
+  if (h === "localhost") return true;
+  if (isIPv4(h)) return h.startsWith("127.");
+  return isIPv6(h) && /^(0{0,4}:){1,7}0{0,3}1$|^::1$/.test(h);
+}
 
 /*
  * What a vendor API's refusal says, short enough to log. A gateway's 504 once

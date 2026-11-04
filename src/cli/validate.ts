@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { screenerFor, stepExecutorFor } from "#cli/start.js";
 import { configProblems, loadConfig } from "#config/load.js";
+import { frontDoorOrigins, serveProblems } from "#front/hosts.js";
 import { ITEM_BRANCH } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import { messageOf } from "#runner/errors.js";
@@ -114,6 +115,7 @@ async function executorProblems(dir: string, loaded: LoadedConfig, registry: Reg
   const ctx: ExecutorContext = {
     config: loaded.config, secrets: loaded.secretValues, signal: new AbortController().signal,
     log: () => {}, dir, redact: () => {}, steps, pairingStages: pairingStages(workflow),
+    frontDoor: frontDoorOrigins(loaded.config.serve, loaded.config.serve.port),
   };
   try {
     // Screener before executor, the same order `start` builds them in:
@@ -147,7 +149,9 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
     if ((e as { code?: unknown } | null)?.code !== "ENOENT") problems.push({ rule: "config", message: messageOf(e) });
     return null;
   });
-  if (loaded) problems.push(...configProblems(dir, loaded));
+  // `start` refuses a door it would serve to anyone; `mcp --pairing` and the
+  // child server serve none, so the rule lives here and in `start`.
+  if (loaded) problems.push(...configProblems(dir, loaded), ...serveProblems(loaded.config.serve));
 
   /*
    * A var that did not resolve stops here, and the early return is the point.

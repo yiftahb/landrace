@@ -147,7 +147,7 @@ describe("the claude executor, built from the runtime's context", () => {
   const ctxFor = (dir: string, agent: Record<string, unknown>, redacted: string[] = []): ExecutorContext => ({
     config: { agent } as unknown as ExecutorContext["config"],
     secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir,
-    redact: (values) => { redacted.push(...values); },
+    redact: (values) => { redacted.push(...values); }, frontDoor: { hosts: [], origins: [] },
   });
   const factory = claude as ExecutorFactory;
 
@@ -193,7 +193,7 @@ describe("the claude hook as the screener beside another step agent", () => {
   const ctxFor = (dir: string, agent: Record<string, unknown>): ExecutorContext => ({
     config: { agent } as unknown as ExecutorContext["config"],
     secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir,
-    redact: () => {},
+    redact: () => {}, frontDoor: { hosts: [], origins: [] },
   });
   const factory = claude as ExecutorFactory;
   const temps: string[] = [];

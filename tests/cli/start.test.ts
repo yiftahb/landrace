@@ -293,7 +293,7 @@ describe("which executor screens", () => {
   };
   const ctx = (): ExecutorContext => ({
     config: runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" } }),
-    secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: ".", redact: () => {},
+    secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: ".", redact: () => {}, frontDoor: { hosts: [], origins: [] },
   });
   const plain = (id: string): Registry => ({
     ...empty, executors: new Map([[id, defineExecutor({ id, run: async () => ({ text: "", sessionId: null }) })]]),

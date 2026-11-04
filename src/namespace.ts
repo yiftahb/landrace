@@ -19,6 +19,7 @@
  *    never exists at runtime.
  */
 
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { z } from "zod";
 import type { runtimeConfigSchema } from "#config/schema.js";
 import type { stepFrontMatterSchema } from "#workflow/schema.js";
@@ -508,6 +509,19 @@ export interface WorklogRecord {
  */
 export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>;
 
+/** `serve:`, parsed: where the front door binds, and the URL a person reaches it by. */
+export type ServeConfig = RuntimeConfig["serve"];
+
+/**
+ * The front door as a step must not reach it: the host names it answers to
+ * (no port), for a sandbox's allowed hosts and an agent's fetch rules, and
+ * the origins it is served at, for an MCP server's URL.
+ */
+export interface FrontDoor {
+  hosts: readonly string[];
+  origins: readonly string[];
+}
+
 export interface LoadedConfig {
   config: RuntimeConfig;
   /** Secret names whose reference did not resolve. */
@@ -933,6 +947,13 @@ export type ExecutorContext = RuntimeContext & {
    * refuses them at startup.
    */
   pairingStages?: readonly string[];
+  /**
+   * Where the operator's front door is — the board and its MCP endpoint, whose
+   * tools move items — so no step is handed a way to it: a server at its URL
+   * is refused, a sandbox may not allow its host, and an integration denies
+   * its agent a fetch of it. Required, so a runtime that forgot it does not compile.
+   */
+  frontDoor: FrontDoor;
 };
 
 /**
@@ -1014,6 +1035,8 @@ export interface KitSettings {
   log?: HookLog | undefined;
   /** A backstop only: the engine gives every run a limit. */
   timeoutMs?: number | undefined;
+  /** The operator's front door, which no run may reach; `create` sets it from `ExecutorContext.frontDoor`. */
+  frontDoor?: FrontDoor | undefined;
 }
 
 /**
@@ -1066,6 +1089,8 @@ export interface RunPlan<E = unknown> {
   extras: E;
   /** Where `prepare` says what it changed on the way, such as a key it dropped. */
   log?: HookLog;
+  /** The operator's front door, which no run may reach: see `ExecutorContext.frontDoor`. */
+  frontDoor: FrontDoor;
 }
 
 /**
@@ -2562,6 +2587,14 @@ export interface WorkspaceRuntime {
   activity?: ActivityLog;
   /** Present when telemetry is on. `runStart` shuts it down on the way out, flushing what is queued. */
   telemetry?: { shutdown(): Promise<void> };
+  /**
+   * Every workflow as the front door's MCP tools are built over it: its own
+   * hooks, and the same executor, screener and pairing server its steps
+   * run with. Absent for a runtime built only to read, which serves no door.
+   */
+  toolWorkflows?: ToolWorkflow[];
+  /** The front door's port, `--ui-port` over `serve.port`. */
+  port?: number;
 }
 
 /**
@@ -2623,6 +2656,8 @@ export interface BuildOptions {
   readOnly?: boolean;
   /** The board's URL once the page is up, for a notification to link to. Absent, or null, there is none. */
   board?: () => string | null;
+  /** The front door's port, `--ui-port` over `serve.port`: what every step is held from. Absent, `serve.port`. */
+  port?: number;
 }
 
 /* ------------------------------------------------------- sandbox (§15) -- */
@@ -3120,7 +3155,10 @@ export interface Board {
 }
 
 export interface UiOptions {
-  port: number;
+  /** Every Host header the page answers (`allowedHosts`); any other is answered 421. */
+  allowedHosts: readonly string[];
+  /** Every origin a write may come from (`frontDoorOrigins`); an `Origin` header naming any other is refused. */
+  origins: readonly string[];
   view: () => Promise<BoardView>;
   /**
    * The schedule's own `wake`, for "Tick now" and after a Retry or goto has
@@ -3250,7 +3288,27 @@ export interface GotoPath {
 export interface UiServer {
   url: string;
   port: number;
+  /** The host it bound, for `landrace port` to ask it on. */
+  host: string;
   close(): Promise<void>;
+}
+
+/** The operator's MCP tools over HTTP: one session per `mcp-session-id`, each scoped at its initialize. */
+export interface McpEndpoint {
+  /** One request to `/mcp`, its Host and Origin already checked. */
+  handle(req: IncomingMessage, res: ServerResponse): void;
+  /** Ends every session. */
+  close(): Promise<void>;
+}
+
+/** What `serveFrontDoor` serves: the board on its routes, and the MCP endpoint at `/mcp`. */
+export interface FrontDoorOptions {
+  host: string;
+  port: number;
+  publicUrl?: string | undefined;
+  board: Omit<UiOptions, "allowedHosts" | "origins">;
+  /** Absent, `/mcp` is 404. */
+  mcp?: McpEndpoint;
 }
 
 /**
