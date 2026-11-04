@@ -1,50 +1,52 @@
-I've finished reading the code Task 3 touches and the design is settled. Writing the spec now.
-
 ## Problem
 Secrets and vars are instance-wide only, from `.env`. Nothing marks a key personal, declares a connection or stores credentials. Case: `$LANDRACE_ASSIGNEE` must be hand-set per developer; nothing else can supply it.
 
 ## Decisions
 1. Operator writes `vars: { assignee: { perPerson: true, env: LANDRACE_ASSIGNEE, connection: github.login } }`.
 2. Env set → env value, as today. Unset → `~/.landrace/credentials/local.json`, connection `github`, field `login`. Neither → `validate` and `start` report `connection.missing`.
+- Round 2 change: credentials root denied on every declared run whatever `agent.sandbox.deny` says. Reason: a written list replaces `DEFAULT_DENY`, and this repository's `.landrace/landrace.yaml` writes one, so a default-only entry leaves the store readable (design §9).
+- Kit exports `CREDENTIALS_DENY`. `DEFAULT_DENY` includes it. Claude adds it to its deny list in `argv`, so the write tier's `denyRead` and `Read(...)` rules and the read tier's `Read(...)` rules all carry it, including runs built by `createClaudeExecutor` with a sandbox passed in.
+- Codex keeps no path deny (`deny: []`, already refused otherwise): unchanged, and `docs/security.md` says so.
 - `env` is a bare variable name: object form holds no literal.
-- Values merge before `loadWorkspace` from store alone; defs judged after hooks load. Reason: hooks come from `workflow.yaml`, which needs vars first.
+- Values merge before `loadWorkspace` from the store alone. Defs are judged after hooks load. Reason: hooks come from `workflow.yaml`, which needs vars first.
 - Local, env set → that key's connection not required: existing setups unchanged.
-- `start` refuses on local `connection.*` problems: sole person, nothing runs unready.
+- `start` refuses on local `connection.*` problems. Reason: sole person, nothing runs unready.
 - Corrupt or unreadable file → `failed` with reason, never throws. `put`/`remove` refuse it rather than drop other connections.
-- `resolve`, `check` declared only; later connect flow calls them.
-- Stored values join redaction via existing `log.redact`; `src/runner/events.ts` needs no change.
-- `src/cli/mcp.ts`, `src/cli/next.ts` merge too: else child server breaks on connection-only var.
+- `resolve`, `check` declared only; the later connect flow calls them.
+- Stored values join redaction through existing `log.redact`. `src/runner/events.ts` needs no change.
+- `src/cli/mcp.ts`, `src/cli/next.ts` merge too. Reason: else the child server breaks on a connection-only var.
 - `remote` false until `people.oidc` exists.
-- Two connection objects sharing one id across workflows → halt naming both.
+- Two connection objects with one id → halt naming both.
 
 ## Technical design
-- `src/config/schema.ts` — `secrets`/`vars` value: string or strict `{ perPerson: true, env?, connection: "<id>.<field>" }`.
+- `src/config/schema.ts` — `secrets`/`vars` value: string, or strict `{ perPerson: true, env?, connection: "<id>.<field>" }`.
 - `src/config/load.ts` — object form: non-empty `env` → value; never `missing`/`missingVars`.
 - `src/namespace.ts` — `PerPersonKey`, `ConnectionDef`, `ConnectionValue`, `ConnectionStatus`, `PersonCredentials`, `CredentialStore`, `PersonResolution`; `Registry.connections`.
 - `src/hooks/contracts.ts` — `defineConnection`; `HOOK_KINDS` gains `connection`.
 - `src/hooks/index.ts` — exports connection types.
-- `src/hooks/load.ts` — `connections` by id; duplicate throws naming both modules.
+- `src/hooks/load.ts` — `connections` by id; a duplicate throws naming both modules.
 - `src/people/keys.ts` (new) — `perPersonKeys`.
-- `src/people/store.ts` (new) — `createCredentialStore`; `credentialValues`.
+- `src/people/store.ts` (new) — `createCredentialStore`, `credentialValues`.
 - `src/people/resolve.ts` (new) — `personValues`, `loadLocalConfig(dir, store)`, `resolvePerson`.
 - `src/cli/start.ts` — `loadLocalConfig`; `resolvePerson` after hooks; refuse on problems; redact; `BuildOptions.credentials`.
-- `src/cli/validate.ts` — same; value problems return early like `missingVars`; `runValidate(dir, opts?)` takes store; abstains on def rules when hooks fail.
+- `src/cli/validate.ts` — same; value problems return early like `missingVars`; `runValidate(dir, opts?)` takes a store; abstains on def rules when hooks fail.
 - `src/cli/mcp.ts`, `src/cli/next.ts` — `loadLocalConfig`.
-- `src/kit/executor.ts` — `DEFAULT_DENY` gains `~/.landrace/credentials`.
-- `integrations/claude/index.ts` — read tier gets `permissions.deny` `Read` rules per denied path.
-- `docs/configuration.md`, `docs/hooks.md` — per-person keys, store, `defineConnection`.
+- `src/kit/executor.ts` — `CREDENTIALS_DENY`; `DEFAULT_DENY` includes it.
+- `integrations/claude/index.ts` — `argv` adds `CREDENTIALS_DENY` to the deny list; read tier gets `permissions.deny` `Read` rules for each denied path.
+- `docs/configuration.md`, `docs/hooks.md`, `docs/security.md` — per-person keys, store, `defineConnection`, always-denied credentials root, codex gap.
 
 ## Done when
 - String-form config: `LoadedConfig` unchanged.
-- Local: env wins over stored connection; env unset → connection value, `connected`.
+- Local: env wins over stored connection. Env unset → connection value, `connected`.
 - Remote, env set: connection value plus `people.env-ignored`.
 - `lifetimeDays: 365`, connected 366 days ago: `expired`, `ready` false.
 - Corrupt file: required statuses `failed` with reason; no throw.
 - `nope.token`: `connection.unknown`.
-- Neither env nor connection: `validate` exits 1 with `connection.missing`; `start` refuses, same words.
-- Store: round-trip; file 0600, dir 0700; `list()` includes corrupt file's person.
-- Read-tier claude settings deny `Read(~/.landrace/credentials)`, `Read(~/.landrace/credentials/**)`.
-- Stored token in a log line comes out redacted.
+- Neither env nor connection: `validate` exits 1 with `connection.missing`; `start` refuses with the same words.
+- Store: round-trip; file 0600, dir 0700; `list()` includes the corrupt file's person.
+- `agent.sandbox.deny: ["~/.ssh"]`: write-tier settings `denyRead` holds `~/.landrace/credentials`. Write- and read-tier settings both deny `Read(~/.landrace/credentials)` and `Read(~/.landrace/credentials/**)`.
+- Default deny: read tier denies the same two rules.
+- A stored token in a log line comes out redacted.
 - `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build` pass.
 
 // Generated by AI (claude-opus-5-5:high)
