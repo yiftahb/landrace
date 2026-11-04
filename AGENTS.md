@@ -15,7 +15,8 @@ src/kit/          `landrace/kit`: BaseExecutor, what every coding agent integrat
 src/agent/        prompt screening, worktrees, an agent's json output — never an agent itself
 src/runner/       tick, converge, step, lock, effect dispatch, events
 src/config/       landrace.yaml + .env
-src/mcp/          operator tools over stdio
+src/mcp/          the operator tools, and the stdio servers for a pairing and a child
+src/front/        the front door: the board and the operator tools on one port, and its host rules
 src/cli/          validate, next, mcp, start, status
 src/ui/           the board: the triage page, its server, and the display-only table of the systems a link points into
 src/testing/      `landrace/testing`: the in-memory tracker, forge and docs on the kit's bases, and the harness that drives a workflow over them
