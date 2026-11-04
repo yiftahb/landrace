@@ -1540,13 +1540,11 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
 
   // Whether the local person is ready, before anything is built. Without a
   // door to connect through — `--once`, `--headless` — a missing connection
-  // refuses the start, in validate's words, as it always has.
+  // refuses the start, in validate's words, as it always has — once an OAuth
+  // token past its end has been offered to its refresh token, below.
   const store = opts.credentials ?? createCredentialStore();
-  const first = await localGate(dir, store);
-  if (!first.resolution.ready && !serves) {
-    assertLocalUsable(first.local);
-    assertPersonReady(first.resolution);
-  }
+  let first = await localGate(dir, store);
+  if (!first.resolution.ready && !serves) assertLocalUsable(first.local);
   const { config } = first.local.loaded;
 
   // One logger, one telemetry sink and one stop for the process, whatever
@@ -1577,6 +1575,23 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const pageRef: { url: string | null } = { url: null };
 
   try {
+    // A headless start has no refresher running yet, and an OAuth token two
+    // hours old is judged expired though its refresh token could renew it: a
+    // start after a long stop would refuse until someone connected by the
+    // board. One pass of the refresher first — renewed, refused and marked
+    // failed, or left — then the person judged again.
+    if (!first.resolution.ready && !serves) {
+      const ctx = first.local.loaded;
+      await connectionRefresher({
+        store, log, gate: () => first,
+        ctx: () => ({ config: ctx.config, secrets: ctx.secretValues, signal: stop.signal, log: (event, data) => log(event as EventName, data) }),
+        live: () => null,
+        reload: async () => { first = await localGate(dir, store, { log, signal: stop.signal }); },
+        ...(opts.oauth?.fetch ? { fetch: opts.oauth.fetch } : {}),
+      })();
+      assertLocalUsable(first.local);
+      assertPersonReady(first.resolution);
+    }
     const { folder, workspace } = await repoWorkspace(dir);
     const inFlight = new Set<Promise<void>>();
     // The last judging of the person, which the Integrations tab lists, gates

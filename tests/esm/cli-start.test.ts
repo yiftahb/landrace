@@ -2412,6 +2412,56 @@ export const spy = brand("preflight", {
     });
   }, 30_000);
 
+  /*
+   * With no door to connect through, the gate refuses a person not ready.
+   * An OAuth token past its end is not ready, but its refresh token can mend
+   * it: the gate renews it first, as the refresher would, and judges after.
+   */
+  async function expired(): Promise<{ dir: string; credentials: CredentialStore }> {
+    const f = await oauthFixture();
+    const stored = (await f.credentials.read("local")).connections["forge"];
+    if (stored === undefined) throw new Error("fixture stored no forge connection");
+    await f.credentials.put("local", { id: "local" }, "forge", { ...stored, expiresAt: new Date(Date.now() - 3 * 3_600_000).toISOString() });
+    return f;
+  }
+  async function headless(dir: string, credentials: CredentialStore, answer: () => Response): Promise<{ printed: string[]; refused: unknown }> {
+    delete (globalThis as Record<string, unknown>).__lrLiveSecrets;
+    const printed: string[] = [];
+    const log = console.log;
+    console.log = (line: unknown): void => { printed.push(String(line)); };
+    const fetch = (async () => answer()) as typeof globalThis.fetch;
+    try {
+      await runStart(dir, { interactive: false, credentials, ui: false, once: true, oauth: { fetch } });
+      return { printed, refused: null };
+    } catch (e) {
+      return { printed, refused: e };
+    } finally {
+      console.log = log;
+    }
+  }
+
+  it("renews an expired token before a headless --once start judges the person, and starts on it", async () => {
+    const { dir, credentials } = await expired();
+    expect((await localGate(dir, credentials)).resolution.ready).toBe(false);
+    const answer = (): Response => new Response(JSON.stringify({ access_token: NEW, refresh_token: NEXT_REFRESH, expires_in: 7200 }), { status: 200 });
+    const { printed, refused } = await headless(dir, credentials, answer);
+    expect(refused).toBeNull();
+    expect((await credentials.read("local")).connections["forge"]).toMatchObject({ fields: { token: NEW }, refresh: { token: NEXT_REFRESH } });
+    expect(live()?.get("forgeToken")).toBe(NEW);
+    expect(printed.some((l) => l.includes("connection.refreshed"))).toBe(true);
+    for (const secret of [OLD, NEW, REFRESH, NEXT_REFRESH]) expect(printed.join("\n")).not.toContain(secret);
+  }, 30_000);
+
+  it("still refuses a headless start whose expired token the provider will not renew, marking it failed", async () => {
+    const { dir, credentials } = await expired();
+    const answer = (): Response => new Response(JSON.stringify({ error: "invalid_grant", error_description: "revoked" }), { status: 400 });
+    const { printed, refused } = await headless(dir, credentials, answer);
+    expect(String(refused)).toMatch(/^Error: connection\.\w+: .*forge/im);
+    expect((await credentials.read("local")).connections["forge"]?.failure).toMatch(/invalid_grant: revoked/);
+    expect(live()).toBeUndefined();
+    for (const secret of [OLD, REFRESH]) expect(printed.join("\n")).not.toContain(secret);
+  }, 30_000);
+
   it("keeps the token and tries again after a 5xx, marking nothing", async () => {
     const { dir, credentials } = await oauthFixture();
     let asked = 0;
