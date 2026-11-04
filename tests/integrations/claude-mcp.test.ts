@@ -5,6 +5,7 @@ import { parse } from "yaml";
 import { loadConfig } from "#config/load.js";
 import { mcpRedactionValues, readClaudeSettings, resolveStepServers } from "landrace/integrations/claude";
 import { gitRepo, plainDir, removeRepos } from "#tests/support/repo.js";
+import { frontDoorOrigins } from "#front/hosts.js";
 
 afterAll(removeRepos);
 
@@ -255,10 +256,11 @@ describe("the shipped allowlist, against what agsync generates", () => {
     const sources = (await readdir(".agsync/mcp")).filter((f) => f.endsWith(".yaml"));
     const mcpServers: Record<string, unknown> = {};
     for (const file of sources) {
-      const { name, command, args } = parse(await readFile(join(".agsync/mcp", file), "utf8")) as {
-        name: string; command: string; args?: string[];
+      const { name, command, args, type, url } = parse(await readFile(join(".agsync/mcp", file), "utf8")) as {
+        name: string; command?: string; args?: string[]; type?: string; url?: string;
       };
-      mcpServers[name] = { command, args: args ?? [], env: {} };
+      // An HTTP server is its type and URL; a stdio one its command line.
+      mcpServers[name] = url === undefined ? { command, args: args ?? [], env: {} } : { type, url };
     }
     return { mcpServers };
   };
@@ -287,7 +289,10 @@ describe("the shipped allowlist, against what agsync generates", () => {
     const operator = mcpServers["landrace"];
     expect(operator).toBeDefined();
     const { dir } = await repo({ mcpServers: { renamed: operator } });
-    expect((await resolveStepServers(dir, ["renamed"])).problems).toEqual([
+    // An HTTP server at the front door: refused by its URL, against the door this repository's own config serves.
+    const { config } = await loadConfig(".landrace");
+    const door = frontDoorOrigins(config.serve, config.serve.port);
+    expect((await resolveStepServers(dir, ["renamed"], undefined, door)).problems).toEqual([
       { rule: "mcp", message: expect.stringMatching(/operator tools must never reach a step agent/) },
     ]);
   });

@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { instancePath, portCommand, readInstance, removeInstance, writeInstance } from "#cli/port.js";
 import type { BoardInstance, BoardView, UiServer } from "#namespace.js";
 import { sandboxRoot } from "#sandbox.js";
-import { serveBoard } from "#ui/server.js";
+import { serveBoard } from "#tests/support/board.js";
 import { describeLoopback } from "#tests/support/loopback.js";
 
 const dirs: string[] = [];
@@ -68,6 +68,14 @@ describe("the instance record", () => {
     const dir = await workspace();
     await writeInstance(dir, record());
     expect(await readInstance(dir)).toEqual({ instance: record() });
+  });
+
+  it("keeps the host the door bound, and reads a record from before it was kept", async () => {
+    const dir = await workspace();
+    await writeInstance(dir, record({ host: "::1" }));
+    expect(await readInstance(dir)).toEqual({ instance: record({ host: "::1" }) });
+    await writeInstance(dir, { ...record(), host: 1 } as unknown as BoardInstance);
+    expect(await readInstance(dir)).toMatchObject({ unreadable: expect.any(String) });
   });
 
   it("is removed only by the process that wrote it", async () => {

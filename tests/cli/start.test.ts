@@ -33,6 +33,7 @@ import {
   sandboxFor,
   sourceReaders,
   startCommand,
+  doorPort,
   startUi,
 } from "#cli/start.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
@@ -140,6 +141,13 @@ describe("agent.worktree", () => {
 });
 
 describe("buildWorkspaceRuntime", () => {
+  it.each(["0.0.0.0", "10.0.0.5"])("refuses serve.host %s, a door open to the network that asks no one who they are", async (host) => {
+    const dir = await fixture({ extra: `serve: { host: "${host}" }\n` });
+    await expect(buildWorkspaceRuntime(dir, {})).rejects.toThrow(`serve.unauthenticated: serve.host is "${host}", which is not loopback`);
+    // `landrace status` serves nothing, so it reads on, to the fixture's own missing source.
+    await expect(buildWorkspaceRuntime(dir, { readOnly: true })).rejects.toThrow(/no source hook/);
+  });
+
   it("refuses to start when the workflow does not validate", async () => {
     const dir = await fixture();
     // Schema-valid and unsound: no entry stage, so nothing can ever begin.
@@ -293,7 +301,7 @@ describe("which executor screens", () => {
   };
   const ctx = (): ExecutorContext => ({
     config: runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" } }),
-    secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: ".", redact: () => {},
+    secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: ".", redact: () => {}, frontDoor: { hosts: [], origins: [] },
   });
   const plain = (id: string): Registry => ({
     ...empty, executors: new Map([[id, defineExecutor({ id, run: async () => ({ text: "", sessionId: null }) })]]),
@@ -394,10 +402,10 @@ describe("which executor screens", () => {
  * worktree, so a relative one would resolve somewhere else entirely.
  */
 describe("the item server an items:create step is handed", () => {
-  it("is this process started again as `landrace mcp` on the absolute workspace directory", () => {
+  it("is this process started again as `landrace mcp --pairing` on the absolute workspace directory", () => {
     expect(childServerCommand("relative/.landrace", "main")).toEqual({
       command: process.execPath,
-      args: [...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace"), "--workflow", "main"],
+      args: [...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace"), "--workflow", "main", "--pairing"],
     });
   });
 });
@@ -561,8 +569,18 @@ describe("the start command line", () => {
     return { dir, opts };
   };
 
-  it("serves the board by default", async () => {
-    expect((await parsed()).opts).toMatchObject({ ui: true, uiPort: 4545 });
+  it("puts the door on --ui-port over serve.port, and on serve.port without it", () => {
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" }, serve: { port: 4600 } });
+    expect(doorPort(config, 5000)).toBe(5000);
+    expect(doorPort(config, undefined)).toBe(4600);
+    expect(doorPort(runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake" } }), undefined)).toBe(4545);
+  });
+
+  it("serves the board by default, on the port serve.port names", async () => {
+    const { opts } = await parsed();
+    expect(opts.ui).toBe(true);
+    // No default of its own: one would always beat serve.port.
+    expect(opts).not.toHaveProperty("uiPort");
   });
   it.each([["--headless"], ["--no-ui"], ["--headless", "--no-ui"]])("serves none with %s", async (...flags) => {
     expect((await parsed(...flags)).opts.ui).toBe(false);

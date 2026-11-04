@@ -64,7 +64,7 @@ describe("the Codex integration", () => {
   it("refuses a stage that waits for a pairing, at startup", async () => {
     const ctx: ExecutorContext = {
       config: { agent: { adapter: "codex" } } as unknown as ExecutorContext["config"],
-      secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: await gitRepo(), redact: () => {},
+      secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: await gitRepo(), redact: () => {}, frontDoor: { hosts: [], origins: [] },
       pairingStages: ["design"],
     };
     await expect(new Codex().create(ctx)).rejects.toThrow(/stage "design" waits for a pairing, but the codex executor/);
@@ -368,7 +368,7 @@ describe("the Codex integration", () => {
   describe("create(), at startup", () => {
     const ctxFor = (agent: Record<string, unknown>, steps?: ExecutorContext["steps"]): ExecutorContext => ({
       config: { agent } as unknown as ExecutorContext["config"],
-      secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: temp("codex-dir-"), redact: () => {},
+      secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: temp("codex-dir-"), redact: () => {}, frontDoor: { hosts: [], origins: [] },
       ...(steps === undefined ? {} : { steps }),
     });
 

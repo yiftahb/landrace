@@ -10,7 +10,8 @@ Landrace runs coding agents on your machine, over text that strangers can write,
 - **Pull requests from anyone.** A fork's pull request, or one whose text merely says it closes an item.
 - **What an agent does.** An agent reads that text, so it may be steered. A step that may write runs shell commands.
 - **The repository's own files.** A workflow file, a step prompt or a hook is a file a pull request can edit, and a write step can commit one.
-- **Other websites in your browser.** Your browser can reach the board on `127.0.0.1`.
+- **Other websites in your browser.** Your browser can reach the board and its MCP endpoint on `127.0.0.1`.
+- **Anyone else on the network.** The board asks no one who they are, so it binds loopback only.
 
 **What Landrace trusts:** you, the operator, and your own configuration — `landrace.yaml`, `.env`, `.mcp.json`, your user-level agent settings. A reply on an item is read as a person's decision, but no reply can clear a security check.
 
@@ -100,7 +101,7 @@ The screener is a model, and it can refuse a prompt that is fine — #39's spec 
 Under either shipped executor, a step or turn gets exactly the MCP servers `agent.mcp` allows — or the narrower set its step's own `mcp` names — strictly — nothing from a `.mcp.json` committed to the repository, from your user config, or from anywhere else — and the screener gets none.
 
 - **An allowlisted server is not read-only because the step is.** A bare name allows every tool the server has, whatever it does. For the codebase graph that includes indexing any path (which writes its index there), deleting a project, rewriting ADRs, ingesting traces, and reading any project indexed on the machine — your own checkout, uncommitted work included. List the tools instead, as [Configuration](configuration.md#the-agent-block) shows. This repository's list still leaves two things open: `index_repository`, because a step's fresh worktree is not indexed yet, so a step can index a path of its choosing; and the reading tools take a project, so a step can read any project already indexed on the machine.
-- **Landrace's own operator server is refused**, by name (`landrace`) and by command line — a server that runs `landrace mcp`, through the bin, `npx landrace@<version>`, `landrace#<ref>`, the `cli` entry with or without its extension, quoted, after `--`, or inside `sh -c`, in any case. Its tools create, update and reply on items, so a step holding them could move its own item. The command match is defence in depth over configuration you already trust, not a guarantee: a wrapper script under another name gets past it, so do not allow one. Keeping that server from a step is every executor's contract, not the kit's alone.
+- **Landrace's own operator server is refused**, by name (`landrace`), by a URL at the [front door](#the-front-door), and by command line — a server that runs `landrace mcp`, through the bin, `npx landrace@<version>`, `landrace#<ref>`, the `cli` entry with or without its extension, quoted, after `--`, or inside `sh -c`, in any case. Its tools create, update and reply on items, so a step holding them could move its own item. The command match is defence in depth over configuration you already trust, not a guarantee: a wrapper script under another name gets past it, so do not allow one. Keeping that server from a step is every executor's contract, not the kit's alone.
 - **A definition's relative paths are not rebased.** A server is resolved from the repository root's `.mcp.json` but started in the step's worktree, so a relative `command` or argument resolves there, against committed files only. Use absolute paths or commands on `PATH`.
 - **Credentials in a server's definition are visible.** An allowlisted server's `env` and `headers` travel in the agent's argv, where `ps` can read them for as long as the step runs. Keep credentials out of servers you allow. Their values, 8 characters or longer, are redacted from Landrace's own log.
 - **A different executor may read none of it.** An `agent.adapter` naming a hook not built on the kit gets the `agent:` block unread, and owes these keys no meaning.
@@ -113,9 +114,18 @@ Only a pull request from an item's own branch (`landrace/{item}` unless `branch`
 
 A step's front matter carries routes, effects and capabilities, and a retro writes lessons beside it — which is why `validate` refuses a `pull.merge` anywhere but a stage's `on_enter`, and why `.landrace/**` is protected.
 
+## The front door
+
+The board and the operator server share one port: the board at `/`, the operator tools at `/mcp`. Nothing asks who a caller is, so the guards are where it listens and what it answers.
+
+- **Loopback only.** It binds `serve.host`, which must be loopback; `validate` reports any other as `serve.unauthenticated`, and `start` refuses it. To reach it from elsewhere, put a proxy of your own that checks who you are in front of it, and name it in `serve.publicUrl`.
+- **Its own host names only, before routing.** Every request, `/mcp` included, is answered `421` unless its `Host` is `127.0.0.1` or `localhost` on its port, the host it bound, or `serve.publicUrl`'s host. That stops DNS rebinding: a page on another site pointing its own name at `127.0.0.1`.
+- **No other site's pages.** `/mcp` answers `403` to a request whose `Origin` names any other site, so a page you have open cannot call the operator tools through your browser.
+- **No step reaches it.** A step's agent is kept from the door three ways. An `agent.mcp` server whose URL is the door's — any of its origins, or any loopback address on its port — is refused, whatever it is named. An `agent.sandbox.hosts` entry that matches the door's host names, `127.0.0.1`, `localhost` and `serve.publicUrl`'s host, wildcards included, is refused, so a write step's commands cannot reach it. And the Claude executor denies every run `WebFetch` of each of those host names. The Codex executor adds no such deny of its own. The port these use is the one `start` serves on, `--ui-port` included.
+
 ## The board
 
-The board binds loopback only and answers only its own host name. It has twelve writes:
+The board has twelve writes:
 
 - in the header, the tick button and Refresh;
 - in a row's menu, Start work, Retry, Clear & retry and Go to step;

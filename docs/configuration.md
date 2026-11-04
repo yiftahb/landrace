@@ -27,6 +27,9 @@ Every key, with its default:
 | `security.screen` | `true` | Screen each prompt for injection before running an agent that can act — see [Security](security.md#screening-prompts) |
 | `security.adapter` | `agent.adapter` | The executor that screens: an id a hook registers with `defineExecutor`. It must run the screener with no tools, or refuse |
 | `security.model` | none | The model the screening run asks for. Absent, the screening executor's own default decides |
+| `serve.host` | `127.0.0.1` | The address the board and its MCP endpoint bind. Loopback only — see [The front door](#the-front-door) |
+| `serve.port` | `4545` | Their port. `landrace start --ui-port` wins over it |
+| `serve.publicUrl` | none | An `http://` or `https://` URL a proxy of your own serves the board at — see [The front door](#the-front-door) |
 | `log.redact` | `[]` | Names of secrets whose values are cut from every log line and event. Each must name a declared secret whose value is 8 characters or longer, or `landrace start` refuses. A secret not named here is not redacted from the log |
 | `secrets.*` | `{}` | Values handed to hooks, usually `$VAR` references resolved from [`.env`](#env) |
 | `workflows` | by each workflow's `name`, then folder id, by code point | The order the MCP lists workflows in, and the board's sidebar and `/board` tabs show them in. Display only. When given, it must name exactly the folders under `workflows/`: a name with no folder, a folder not named, or a name twice is refused |
@@ -112,6 +115,23 @@ agent:
 A write step's worktree is kept between the item's write steps on the same branch, and removed when the item reaches a terminal stage. The next tick also removes it once the item is closed, for example by its merged pull request. A write step on a stage that names no `branch` gets `copy` and `setup` too, in a worktree removed when the run ends. Between runs the kept worktree is detached from the branch, so you can check the item's branch out in your own checkout while the item waits; switch back off it before the item's next write step, which halts while the branch is checked out elsewhere. On reuse it is put back on the branch and reset to the branch's commit: what a step left uncommitted is removed, and what git ignores, such as `node_modules`, stays. `setup` runs again only when its commands, or the files `lockfiles` matches, have changed since it last passed. A worktree that is missing, or on another branch, is rebuilt, and setup runs again.
 
 What this exposes to a step is in [Security](security.md#copied-files-and-setup).
+
+### The front door
+
+`landrace start` serves the board and the [operator server](cli.md#the-operator-server) on one port, at `/` and `/mcp`:
+
+```yaml
+serve:
+  host: 127.0.0.1
+  port: 4545
+  publicUrl: https://board.example.org/
+```
+
+- **`host`** must be loopback: `127.0.0.1` or any `127.x.x.x`, `localhost`, or `::1`. Nothing asks who a caller is, so a door the network can reach hands anyone every item and the loop's controls. `validate` reports any other host, `0.0.0.0` included, as `serve.unauthenticated`, and `start` refuses it.
+- **`port`** is the port both are served on. `--ui-port` wins over it for one start.
+- **`publicUrl`** is where a person reaches the board through a proxy of their own that forwards to `host` and `port`. `start` prints it as the board's URL, a notification links to it, and the door answers its host name too. Landrace does not check who the proxy lets through.
+
+Any other key under `serve` is refused. A step is kept from the door whatever these say: see [Security](security.md#the-front-door).
 
 ### notify
 

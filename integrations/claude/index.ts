@@ -14,7 +14,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
 import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
 import type {
-  AgentSettings, EventReading, HandoffPlan, HookLog, McpServerConfig, PairingKind, RunPlan, SandboxSettings, StepKey,
+  AgentSettings, EventReading, FrontDoor, HandoffPlan, HookLog, McpServerConfig, PairingKind, RunPlan, SandboxSettings, StepKey,
 } from "landrace/kit";
 import type { Executor, HandoffArg } from "landrace/hooks";
 
@@ -377,7 +377,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     if (skills?.length !== 0 && existsSync(join(cwd, ".claude", "skills"))) await buildPluginDir(cwd, join(built, "plugin"), skills, log);
   }
 
-  protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, extras, plugins: own }: RunPlan<ClaudeExtras>): string[] {
+  protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, extras, plugins: own, frontDoor }: RunPlan<ClaudeExtras>): string[] {
     const declared = tier !== "screen";
     // A step's own instructions and skills: `--setting-sources ""` and
     // `--restricted` each keep the CLI from reading the worktree's
@@ -430,8 +430,13 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     // — a flag always does, since `--mcp-config` is pushed below whatever
     // else is.
     if (!declared) args.push("--tools", "");
-    // Variadic like `--allowedTools`: the next flag ends it.
-    if (declared && !mayWrite) args.push("--disallowedTools", ...WRITE_TOOLS);
+    // Variadic like `--allowedTools`: the next flag ends it. Every tier is
+    // denied a fetch of the operator's front door, whose `/mcp` moves items:
+    // a write step has WebFetch, and the other two are denied it here too, so
+    // no later change to their flags hands one the door.
+    const doorFetches = frontDoor.hosts.map((host) => `WebFetch(domain:${host})`);
+    const denied = [...(declared && !mayWrite ? WRITE_TOOLS : []), ...doorFetches];
+    if (denied.length) args.push("--disallowedTools", ...denied);
     if (model !== undefined) args.push("--model", model);
     if (effort !== undefined) args.push("--effort", effort);
     if (resume !== undefined) args.push("--resume", resume);
@@ -554,6 +559,8 @@ export function createClaudeExecutor(opts: {
   sandbox?: SandboxSettings;
   /** Whose `~/.claude` a pairing's sessions are looked up in. */
   home?: string;
+  /** The operator's front door, which no run may fetch. Absent: none. */
+  frontDoor?: FrontDoor;
 } = {}): Executor {
   const { bin, home, plugins = [], mcpServers = {}, mcpTools = {}, sandbox = { hosts: [], deny: [...DEFAULT_DENY] }, ...rest } = opts;
   return new Claude({ bin, home }).build({ ...rest, plugins, servers: mcpServers, tools: mcpTools, sandbox });

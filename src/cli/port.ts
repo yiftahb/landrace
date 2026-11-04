@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
+import { isIPv6 } from "node:net";
 import { dirname, join } from "node:path";
 import { Command } from "commander";
 import type { BoardInstance, BoardLiveness, InstanceRead, PortIo } from "#namespace.js";
@@ -9,7 +10,14 @@ import { messageOf } from "#runner/errors.js";
 import { alive } from "#runner/lock.js";
 import { sandboxRoot } from "#sandbox.js";
 
-const HOST = "127.0.0.1";
+/** The host a board is asked on: the one it bound, bracketed if IPv6; a record from before it was kept names none. */
+const hostOf = (instance: BoardInstance): string => {
+  const host = instance.host ?? "127.0.0.1";
+  return isIPv6(host) ? `[${host}]` : host;
+};
+
+/** A Host header's brackets taken off, for the socket's address. */
+const bare = (host: string): string => host.replace(/^\[(.*)\]$/, "$1");
 
 /** Long enough for a board busy building its view; short enough that a pane polling this never waits on a wedged one. */
 const ASK_TIMEOUT_MS = 2_000;
@@ -39,7 +47,7 @@ export async function writeInstance(dir: string, instance: BoardInstance): Promi
 const isInstance = (v: unknown): v is BoardInstance => {
   const r = v as Partial<BoardInstance> | null;
   return typeof r === "object" && r !== null && Number.isInteger(r.pid) && Number.isInteger(r.port)
-    && typeof r.workspace === "string" && typeof r.startedAt === "string";
+    && typeof r.workspace === "string" && typeof r.startedAt === "string" && (r.host === undefined || typeof r.host === "string");
 };
 
 export async function readInstance(dir: string): Promise<InstanceRead> {
@@ -73,10 +81,10 @@ export async function removeInstance(dir: string, pid: number): Promise<void> {
 }
 
 /** `GET /board.json` on loopback, with the Host header the board answers: its status and body, or why nothing answered. */
-function askBoard(port: number): Promise<{ status: number; body: string } | { error: string }> {
+function askBoard(host: string, port: number): Promise<{ status: number; body: string } | { error: string }> {
   return new Promise((done) => {
     const req = request(
-      { host: HOST, port, path: "/board.json", method: "GET", headers: { host: `${HOST}:${port}` }, timeout: ASK_TIMEOUT_MS },
+      { host: bare(host), port, path: "/board.json", method: "GET", headers: { host: `${host}:${port}` }, timeout: ASK_TIMEOUT_MS },
       (res) => {
         const chunks: Buffer[] = [];
         res.on("data", (c: Buffer) => chunks.push(c));
@@ -111,7 +119,8 @@ export async function boardLiveness(dir: string): Promise<BoardLiveness> {
   if (!alive(instance.pid)) {
     return { offline: `the recorded pid ${instance.pid} is gone, so the start that served port ${instance.port} has stopped` };
   }
-  const answer = await askBoard(instance.port);
+  const host = hostOf(instance);
+  const answer = await askBoard(host, instance.port);
   if ("error" in answer) return { offline: `port ${instance.port} does not answer: ${answer.error}` };
   let published: unknown;
   try {
@@ -123,7 +132,7 @@ export async function boardLiveness(dir: string): Promise<BoardLiveness> {
     return { offline: `port ${instance.port} answers, but not with a board: HTTP ${answer.status}` };
   }
   if (published !== instance.workspace) return { offline: `port ${instance.port} answers for another workspace, ${published}` };
-  return { live: `http://${HOST}:${instance.port}`, instance };
+  return { live: `http://${host}:${instance.port}`, instance };
 }
 
 const consoleIo: PortIo = {

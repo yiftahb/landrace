@@ -6,7 +6,7 @@ import type {
   ActivityLog, BoardView, GotoPath, GotoResult, Graph, ItemPanel, ItemReads, Node, UiServer, WakeResult, Workflow,
 } from "#namespace.js";
 import { createBoard } from "#ui/board.js";
-import { serveBoard } from "#ui/server.js";
+import { serveBoard } from "#tests/support/board.js";
 import { describeLoopback } from "#tests/support/loopback.js";
 
 const empty: BoardView = {

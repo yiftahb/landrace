@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { messageOf } from "#runner/errors.js";
 import { resolveLandraceToSelf } from "#hooks/load.js";
 import { reexec, shouldReexec, STRIP_TYPES } from "#cli/reexec.js";
@@ -131,13 +131,14 @@ program.addCommand(portCommand());
 
 program
   .command("mcp")
-  .description("run the MCP server over stdio")
+  .description("the stdio servers landrace starts for itself; the operator's tools are at /mcp on `landrace start`'s port")
   .option("-w, --workspace <dir>", "workspace directory", ".landrace")
-  .option("--workflow <id>", "act for this workflow alone, by its folder under workflows/; with --child, the workflow whose step is creating the children")
+  .option("--workflow <id>", "the workflow the server acts for; with --child, the workflow whose step is creating the children")
+  .addOption(new Option("--pairing", "serve the operator's tools for --workflow, as a pairing's session is handed them").hideHelp())
   .option("--child <parent>", "serve only landrace_create_child, bound to this parent item")
   .option("--stage <stage>", "with --child: the stage creating the children")
   .option("--round <round>", "with --child: the round creating the children")
-  .action(async (opts: { workspace: string; workflow?: string; child?: string; stage?: string; round?: string }) => {
+  .action(async (opts: { workspace: string; workflow?: string; pairing?: boolean; child?: string; stage?: string; round?: string }) => {
     // The MCP client that spawned us shows stderr, so what loadingHooks prints
     // there is the only diagnostic a user gets.
     await loadingHooks("mcp", () => {
@@ -148,7 +149,7 @@ program
         if (opts.workflow === undefined) throw new Error("--child needs --workflow");
         return runChildMcp(opts.workspace, { parent: opts.child, stage: opts.stage, round: Number(opts.round) }, opts.workflow);
       }
-      return runMcp(opts.workspace, opts.workflow);
+      return runMcp(opts.workspace, { scope: opts.workflow, pairing: opts.pairing === true });
     });
   });
 

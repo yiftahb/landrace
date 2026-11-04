@@ -9,6 +9,7 @@ import { loadConfig } from "#config/load.js";
 import { BaseExecutor, gitIdentityEnv } from "#kit/executor.js";
 import type { EventReading, ExecutorContext, HandoffArg, HandoffPlan, PairingKind, RunPlan, SandboxSettings, Step } from "#namespace.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
+import { frontDoorOrigins } from "#front/hosts.js";
 
 afterAll(removeRepos);
 
@@ -82,9 +83,13 @@ const markingBin = (): string => {
 
 const settings = { servers: {}, tools: {}, sandbox: { hosts: [], deny: [] }, colour: "red" };
 
+/** The door a start on serve.port 4600 with a public URL serves, as `start` builds it. */
+const DOOR = frontDoorOrigins({ host: "127.0.0.1", publicUrl: "https://board.example.org/" }, 4600);
+
 const ctxFor = (agent: Record<string, unknown>, steps?: Map<string, Step>): ExecutorContext => ({
   config: { agent } as unknown as ExecutorContext["config"],
   secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: tempDir("tiny-dir-"), redact: () => {},
+  frontDoor: DOOR,
   ...(steps === undefined ? {} : { steps }),
 });
 
@@ -213,6 +218,54 @@ describe("BaseExecutor", () => {
     it("refuses a sandbox setting the integration cannot enforce", async () => {
       await expect(new Tiny("tiny").create(ctxFor({ adapter: "tiny", sandbox: { hosts: ["github.com"] } })))
         .rejects.toThrow(/tiny has no network allowlist/);
+    });
+
+    describe("the operator's front door, which no step may reach", () => {
+      /** Tiny with a network allowlist, so only the door's own refusal is left to say. */
+      class Networked extends Tiny {
+        protected override sandboxProblems(): string[] {
+          return [];
+        }
+      }
+
+      it.each([
+        ["the door's loopback origin", "http://127.0.0.1:4600/mcp"],
+        ["its other loopback name", "http://localhost:4600/mcp"],
+        ["another loopback address on its port", "http://127.0.0.2:4600/mcp"],
+        ["IPv6 loopback on its port", "http://[::1]:4600/"],
+        ["its public URL", "https://board.example.org/mcp"],
+      ])("refuses an agent.mcp server at %s, whatever it is named", async (_, url) => {
+        const dir = await gitRepo();
+        writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { tools: { type: "http", url } } }));
+        await expect(new Tiny("tiny").create({ ...ctxFor({ adapter: "tiny", mcp: ["tools"] }), dir }))
+          .rejects.toThrow(/^mcp: agent\.mcp names "tools", whose URL is landrace's own operator server/);
+      });
+
+      it("lets through a server on loopback at another port", async () => {
+        const dir = await gitRepo();
+        writeFileSync(join(dir, ".mcp.json"), JSON.stringify({ mcpServers: { tools: { type: "http", url: "http://127.0.0.1:9999/mcp" } } }));
+        await expect(new Tiny("tiny").create({ ...ctxFor({ adapter: "tiny", mcp: ["tools"] }), dir })).resolves.toBeDefined();
+      });
+
+      it.each([["127.0.0.1"], ["localhost"], ["board.example.org"], ["*.example.org"]])(
+        "refuses agent.sandbox.hosts holding %s, which reaches the door", async (host) => {
+          await expect(new Networked("tiny").create(ctxFor({ adapter: "tiny", sandbox: { hosts: ["github.com", host] } })))
+            .rejects.toThrow(`agent.sandbox.hosts[1] is "${host}", which reaches landrace's own front door`);
+        });
+
+      it("lets through a sandbox host that is not the door's", async () => {
+        await expect(new Networked("tiny").create(ctxFor({ adapter: "tiny", sandbox: { hosts: ["github.com", "*.npmjs.org"] } })))
+          .resolves.toBeDefined();
+      });
+
+      it("hands every run, the screener's too, the door to keep its agent from", async () => {
+        const tiny = new Tiny(markingBin());
+        const step = await tiny.create(ctxFor({ adapter: "tiny" }));
+        await step.run("p", { round: 1, capabilities: [], cwd: tempDir("tiny-cwd-"), signal: new AbortController().signal });
+        const screener = await tiny.create(ctxFor({ adapter: "other" }));
+        await screener.run("p", { round: 1, cwd: tempDir("tiny-cwd-"), signal: new AbortController().signal });
+        expect(tiny.plans.map((p) => p.frontDoor)).toEqual([DOOR, DOOR]);
+      });
     });
 
     it.each([

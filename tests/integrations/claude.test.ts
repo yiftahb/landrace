@@ -9,6 +9,7 @@ import { claude } from "#landrace/hooks/claude.js";
 import { createClaudeExecutor } from "landrace/integrations/claude";
 import type { Executor, ExecutorContext, Step } from "#namespace.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
+import { frontDoorOrigins } from "#front/hosts.js";
 
 afterAll(removeRepos);
 
@@ -1433,6 +1434,22 @@ describe("a writing step's sandbox", () => {
    * screener get nothing of the sandbox, element for element, however the
    * executor's sandbox is configured.
    */
+  /*
+   * The front door's `/mcp` moves items. A read-only step is `--restricted`
+   * and the screener has no tools, so neither has WebFetch today; the deny is
+   * on every tier all the same, so no later flag change hands one the door.
+   */
+  it("denies every tier a fetch of each of the front door's hosts", async () => {
+    const executor = createClaudeExecutor({ bin, frontDoor: { hosts: ["127.0.0.1", "localhost"], origins: ["http://127.0.0.1:4545"] } });
+    const denied = ["WebFetch(domain:127.0.0.1)", "WebFetch(domain:localhost)"];
+    const read = await argvOf(executor, { capabilities: ["repo:read"] });
+    expect(list(read, "--disallowedTools").sort()).toEqual([...WRITE_TOOLS, ...denied].sort());
+    for (const capabilities of [["repo:read", "repo:write"], undefined]) {
+      const argv = await argvOf(executor, capabilities === undefined ? {} : { capabilities });
+      expect(list(argv, "--disallowedTools")).toEqual(denied);
+    }
+  });
+
   it("gives a read-only step and the screener nothing of the sandbox", async () => {
     const executor = createClaudeExecutor({ bin, plugins: [PLUGIN], sandbox: { hosts: ["github.com"], deny: ["~/.ssh"] } });
     expect(atInstructions(await argvOf(executor, { capabilities: ["repo:read"] }))).toEqual([
@@ -1460,7 +1477,7 @@ describe("a writing step's sandbox", () => {
 describe("a step's own skills, at startup", () => {
   const ctxIn = (dir: string, steps: Map<string, Step>): ExecutorContext => ({
     config: { agent: { adapter: "claude" } } as unknown as ExecutorContext["config"],
-    secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir, redact: () => {}, steps,
+    secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir, redact: () => {}, steps, frontDoor: { hosts: [], origins: [] },
   });
 
   it("refuses a skill no .claude/skills/*/SKILL.md defines, naming the step and the skill", async () => {
@@ -1485,7 +1502,7 @@ describe("a stage that waits for a pairing, at startup", () => {
     const ctx: ExecutorContext = {
       config: { agent: { adapter: "claude" } } as unknown as ExecutorContext["config"],
       secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: root, redact: () => {},
-      pairingStages: ["design"],
+      pairingStages: ["design"], frontDoor: { hosts: [], origins: [] },
     };
     await expect(claude.create(ctx)).resolves.toMatchObject({ handoff: expect.any(Function) });
   });
@@ -1510,6 +1527,8 @@ describe("the factory's wiring, end to end", () => {
       log: () => {},
       dir,
       redact: () => {},
+      // As `start` builds it for serve.port 4545.
+      frontDoor: frontDoorOrigins({ host: "127.0.0.1" }, 4545),
     };
     const executor = await claude.create(ctx);
 
@@ -1532,6 +1551,9 @@ describe("the factory's wiring, end to end", () => {
         memory: { command: "codebase-memory-mcp", args: [] },
       });
       expect(list(argv, "--allowedTools")).toEqual(["mcp__memory__t"]);
+      const doorFetches = ["WebFetch(domain:127.0.0.1)", "WebFetch(domain:localhost)"];
+      expect(list(argv, "--disallowedTools")).toEqual(expect.arrayContaining(doorFetches));
+      expect(list(await argvOf(executor, { capabilities: ["repo:read", "repo:write"] }), "--disallowedTools")).toEqual(doorFetches);
 
       // The read-only run above got the plugins and nothing of the sandbox; a
       // write run gets both — the configured hosts, and the deny list the

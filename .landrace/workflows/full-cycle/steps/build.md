@@ -65,7 +65,8 @@ the form an example or an aside in the spec describes, and its test tries each
 form. A change to what follows a state holds for every action that can reach
 it — each control, tool and record that leads in, not only those the spec
 lists. It also means every place that still states what the change replaces, in
-code, a comment, `README.md` or `docs/` — a list or pattern of the old set
+code, a comment, `README.md`, `docs/` or the architecture map in
+`.agsync/instructions.md` (then `agsync sync`) — a list or pattern of the old set
 written out by hand, a sentence on how it used to work — found by searching
 for the old, not only by reading what you edit. And it means the code that
 already does what you are adding — the same git command, a call to the same
@@ -88,7 +89,9 @@ steps. Plan them with the `superpowers:writing-plans` skill, from the spec's
 Technical design. The plan is for this session; do not commit it.
 
 **Step 4 — Implement the plan, committing as you go.** Work through it with
-`superpowers:executing-plans`, test first wherever behaviour changes.
+`superpowers:executing-plans`, test first wherever behaviour changes, and test
+each line of the spec's Done-when through the command it names, not only the
+function that command calls.
 A refusal because another holds something — a lock, a record, a port —
 checks again just before taking it: slow work between the check and the
 write lets two both pass, and the later write wins.
