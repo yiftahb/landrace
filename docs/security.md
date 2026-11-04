@@ -55,7 +55,7 @@ Codex's sandbox is different and keeps less — see [Integrations](integrations.
 
 ## Stored credentials
 
-`~/.landrace/credentials/<person>.json` holds what each person has connected — see [Per-person keys](configuration.md#per-person-keys). Nothing in Landrace writes it yet. The store the connect flow will write through makes each file mode 0600, in a directory of mode 0700, and refuses to write over a file it cannot read rather than drop the connections in it. Every value read from it is cut from the log.
+`~/.landrace/credentials/<person id>.json` holds what each person has connected — see [Per-person keys](configuration.md#per-person-keys). Nothing in Landrace writes it yet. The store the connect flow will write through makes each file mode 0600, in a directory of mode 0700, and refuses to write over a file it cannot read rather than drop the connections in it. Every value read from it is cut from the log.
 
 The Claude Code integration denies `~/.landrace/credentials` to every step and turn, whatever `agent.sandbox.deny` says: a list you write replaces the defaults, and this repository's own `landrace.yaml` writes one. A write step gets it in the sandbox's `denyRead` and as `Read` rules; a read-only step gets the `Read` rules.
 

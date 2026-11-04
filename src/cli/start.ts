@@ -3,7 +3,7 @@ import { basename, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
 import { redactionValues } from "#config/load.js";
-import { assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, resolvePerson } from "#people/resolve.js";
+import { assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
 import { credentialValues } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
 import { defineExecutor } from "#hooks/contracts.js";
@@ -711,7 +711,11 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // so nothing runs while theirs is missing, expired or unreadable; `validate`
   // reports the same words.
   const people = connectionsOf(hooked.map((h) => ({ id: h.loaded.id, registry: h.registry })));
-  assertPersonReady(resolvePerson(local, people.connections, { now: Date.now() }), people.problems);
+  const person = localPerson(loaded);
+  const creds = await localCredentials(local, person, people.connections, opts.credentials);
+  // Read only now when no key was per-person but a hook requires a connection anyway.
+  if (creds !== local.credentials) log.redact(credentialValues(creds));
+  assertPersonReady(resolvePerson(local.configured, people, person, creds, { remote: false }), people.problems);
 
   // Between workflows, so only once every hook is loaded: two share a source
   // when they share the loaded object, which is what the tick's claims go

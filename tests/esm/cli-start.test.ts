@@ -1807,7 +1807,7 @@ export const preflight = brand("preflight", {
 describe("buildWorkspaceRuntime, for a per-person key", () => {
   const STORED_TOKEN = "ghp_stored_token_long_enough";
   const CONNECTION = (lifetime = "") => `
-export const forge = brand("connection", { id: "forge", fields: ["login", "token"]${lifetime}, resolve: async (): Promise<Record<string, string>> => ({}) });
+export const forge = brand("connection", { id: "forge", label: "Forge", kind: "credential", fields: ["login", "token"]${lifetime} });
 `;
   const PER_PERSON = "vars: { assignee: { perPerson: true, env: LR_TEST_ASSIGNEE, connection: forge.login } }\n" +
     "people: { local: { email: dev1@example.invalid } }\n";
@@ -1817,13 +1817,13 @@ export const forge = brand("connection", { id: "forge", fields: ["login", "token
     const root = join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials");
     if (connections !== null) {
       await mkdir(root, { recursive: true });
-      await writeFile(join(root, "local.json"), JSON.stringify({ person: "local", connections }));
+      await writeFile(join(root, "local.json"), JSON.stringify({ person: { id: "local" }, connections }));
     }
     return createCredentialStore(root);
   }
 
   const connected = (daysAgo: number) => ({
-    forge: { values: { login: "dev1", token: STORED_TOKEN }, connectedAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString() },
+    forge: { fields: { login: "dev1", token: STORED_TOKEN }, source: "paste", connectedAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString() },
   });
 
   it("runs with the stored value when the env is unset, and redacts what the store holds", async () => {
@@ -1863,6 +1863,15 @@ export const forge = brand("connection", { id: "forge", fields: ["login", "token
     await writeFile(join(corrupt.root, "local.json"), "{ not json");
     expect((await runValidate(dir, { credentials: corrupt })).problems.filter((p) => p.rule.startsWith("connection."))).toEqual([]);
     const rt = await buildMain(dir, { credentials: corrupt });
+    expect(rt.deps.workflow.stages[0]?.on_enter?.[0]).toMatchObject({ body: "Writing the spec for dev2, round {round}." });
+  });
+
+  it("runs a key its env answers, locally, when no hook defines its connection", async () => {
+    const { dir } = await fixture({ hookExtra: "", configExtra: PER_PERSON, workflow: usingAssignee });
+    await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\nLR_TEST_ASSIGNEE=dev2\n`);
+    const credentials = await storeOf(null);
+    expect((await runValidate(dir, { credentials })).problems.filter((p) => p.rule.startsWith("connection."))).toEqual([]);
+    const rt = await buildMain(dir, { credentials });
     expect(rt.deps.workflow.stages[0]?.on_enter?.[0]).toMatchObject({ body: "Writing the spec for dev2, round {round}." });
   });
 });

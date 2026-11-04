@@ -7,11 +7,11 @@ import type { PerPersonKey, RuntimeConfig } from "#namespace.js";
  */
 export function perPersonKeys(config: RuntimeConfig): PerPersonKey[] {
   const keys: PerPersonKey[] = [];
-  for (const section of ["secrets", "vars"] as const) {
+  for (const [section, kind] of [["secrets", "secret"], ["vars", "var"]] as const) {
     for (const [name, value] of Object.entries(config[section]).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
       if (typeof value === "string") continue;
-      const [connection = "", field = ""] = value.connection.split(".");
-      keys.push({ section, name, ...(value.env === undefined ? {} : { env: value.env }), connection, field });
+      const [id = "", field = ""] = value.connection.split(".");
+      keys.push({ kind, name, ...(value.env === undefined ? {} : { env: value.env }), connection: { id, field } });
     }
   }
   return keys;

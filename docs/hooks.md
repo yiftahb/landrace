@@ -184,10 +184,13 @@ Sending is fire and forget: a send that throws is logged as `notify.failed` and 
 
 ## Connections
 
-A connection is `{ id, fields, lifetimeDays?, resolve(ctx), check?(value, ctx) }`, registered with `defineConnection`. A per-person key's `connection: <id>.<field>` names it and one of its `fields`. Two connections with one id in one workflow's hooks refuse to load, naming both modules.
+A connection is `{ id, label, kind, fields, required?, paste?, lifetimeDays?, resolve?(email, ctx), check?(value, ctx) }`, registered with `defineConnection`. A per-person key's `connection: <id>.<field>` names it and one of its `fields`. Two connections with one id in one workflow's hooks refuse to load, naming both modules.
 
+- `label` is the name a person sees. `kind` is `credential`, something they hold such as a token, or `identity`, who they are on a system such as a login.
 - `fields` lists what a stored connection holds, such as `["login", "token"]`. A key naming a field not listed is `connection.unknown`.
+- A connection a per-person key names is required. `required: always` makes it required even when no key names it, and `required: remote` only on a remote instance. A required connection that is missing, expired or failed stops `start`.
+- `paste: { hint }` tells a person what to paste to connect it.
 - `lifetimeDays`, when set, is how long a stored connection lasts from its `connectedAt`. An older one is `connection.expired`, and `start` refuses until it is made again.
-- `resolve(ctx)` makes a connection and returns a value for each field. `check(value, ctx)` answers `{ ok: true }` or `{ ok: false, reason }` for a stored one. `ctx` is `{ person, signal, log }`.
+- `resolve(email, ctx)` looks a person's fields up by their email, using the instance's own secrets in `ctx`, a `RuntimeContext`. It returns `null` when it finds nobody. `check(value, ctx)` returns `null` when a stored connection still works, and the reason when it does not.
 
 Landrace calls neither `resolve` nor `check` yet. The flow that connects an account will call them. Until then, the stored values come from the file described in [Per-person keys](configuration.md#per-person-keys).

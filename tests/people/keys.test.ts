@@ -13,8 +13,8 @@ describe("perPersonKeys", () => {
       vars: { plain: "x", assignee: { perPerson: true, env: "LANDRACE_ASSIGNEE", connection: "forge.login" } },
       secrets: { token: { perPerson: true, connection: "forge.token" } },
     }))).toEqual([
-      { section: "secrets", name: "token", connection: "forge", field: "token" },
-      { section: "vars", name: "assignee", env: "LANDRACE_ASSIGNEE", connection: "forge", field: "login" },
+      { kind: "secret", name: "token", connection: { id: "forge", field: "token" } },
+      { kind: "var", name: "assignee", env: "LANDRACE_ASSIGNEE", connection: { id: "forge", field: "login" } },
     ]);
   });
 });

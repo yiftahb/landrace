@@ -220,7 +220,7 @@ describe("ambiguity halts, naming both sides", () => {
 });
 
 describe("connections", () => {
-  const connection = (id: string) => defineConnection({ id, fields: ["login"], resolve: async () => ({ login: "dev1" }) });
+  const connection = (id: string) => defineConnection({ id, label: id, kind: "identity", fields: ["login"], resolve: async () => ({ login: "dev1" }) });
 
   it("are filed by id", () => {
     const github = connection("github");

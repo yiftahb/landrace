@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { screenerFor, stepExecutorFor } from "#cli/start.js";
 import { configProblems } from "#config/load.js";
-import { connectionsOf, loadLocalConfig, resolvePerson } from "#people/resolve.js";
+import { localPerson } from "#people/person.js";
+import { connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
 import { frontDoorOrigins, serveProblems } from "#front/hosts.js";
 import { ITEM_BRANCH } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
@@ -221,7 +222,9 @@ export async function runValidate(dir: string, opts: { credentials?: CredentialS
   const all = registries.flatMap(({ id, registry }) => (registry ? [{ id, registry }] : []));
   if (local && ws.failures.length === 0 && all.length === registries.length) {
     const people = connectionsOf(all);
-    problems.push(...people.problems, ...resolvePerson(local, people.connections, { now: Date.now() }).problems);
+    const person = localPerson(local.loaded);
+    const creds = await localCredentials(local, person, people.connections, opts.credentials);
+    problems.push(...people.problems, ...resolvePerson(local.configured, people, person, creds, { remote: false }).problems);
   }
   for (const { problem, ids } of shared.values()) {
     problems.push(named && ids.length < ws.ids.length ? { ...problem, message: `${ids.join(", ")}: ${problem.message}` } : problem);

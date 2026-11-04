@@ -224,27 +224,33 @@ vars:
 
 Any other key is refused. For the one local person, `local`, the value comes from:
 
-1. `env`, when the variable is set to something, from `.env` first and then your shell, as a `$VAR` resolves. The key then needs no stored connection, so a setup that already sets the variable runs as before. Its `connection` must still name one a hook defines.
+1. `env`, when the variable is set to something, from `.env` first and then your shell, as a `$VAR` resolves. The key then needs no stored connection, so a setup that already sets the variable runs as before, even when no hook defines its `connection` yet.
 2. Otherwise, the connection's field in `~/.landrace/credentials/local.json`.
 
 A key neither answers is reported by `validate` as `connection.missing`, naming the variable and the connection. `landrace start`, `landrace status` and `landrace mcp` refuse to start over it in the same words. A credentials file that cannot be read, or is not the shape below, is `connection.failed`, with the reason. Once the hooks load, `validate` reports and `start` and `status` refuse:
 
-- `connection.unknown`: a key naming a connection no hook defines, or a field the connection does not list;
-- `connection.expired`: a connection older than its `lifetimeDays`;
+- `connection.unknown`: a key its variable left unset naming a connection no hook defines, or a field the connection does not list;
+- `connection.expired`: a connection older than its `lifetimeDays`, or past its `expiresAt`;
+- `connection.failed`: a connection whose stored `failure` says it no longer works;
+- `connection.missing`, `connection.expired` or `connection.failed` for a connection a hook marks `required: always`, whether a key names it or not;
 - `connection.duplicate`: two different connection objects with one id, in two workflows' hooks.
 
 `landrace next` fills in a var from the store too.
 
-The credentials file is JSON, mode 0600, in a directory of mode 0700:
+The credentials file is JSON, mode 0600, in a directory of mode 0700. Replace `your-login` with your login on that system:
 
 ```json
 {
-  "person": "local",
+  "person": { "id": "local" },
   "connections": {
-    "github": { "values": { "login": "your-login" }, "connectedAt": "2026-11-04T09:00:00.000Z" }
+    "github": { "fields": { "login": "your-login" }, "source": "paste", "connectedAt": "2026-11-04T09:00:00.000Z" }
   }
 }
 ```
+
+- `person` is `{ id, email?, name? }`. Its `id` must be the file's name.
+- Each connection holds `fields`, `source` (`paste`, `oauth`, `lookup` or `override`) and `connectedAt`, an ISO 8601 time.
+- A connection may also hold `expiresAt`, `failedAt`, `failure` and `refresh: { token }`. Any other key makes the file unreadable.
 
 Nothing in Landrace writes this file yet. A later release adds the flow that connects an account; until then, write it by hand, or set the variable. Every value in the file is cut from the log once it is read, if it is 8 characters or longer; a per-person secret is also handed to hooks and scrubbed as any secret is (see [.env](#env)). A per-person var is still a var: it reaches comments and prompts unredacted. How runs are kept from reading the file is in [Security](security.md#stored-credentials).
 
