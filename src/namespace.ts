@@ -3319,6 +3319,8 @@ export interface FrontDoorOptions {
 export interface BoardInstance {
   pid: number;
   port: number;
+  /** The host the front door bound, `serve.host`; absent in a record written before it was kept, which means 127.0.0.1. */
+  host?: string;
   workspace: string;
   /** ISO 8601. */
   startedAt: string;

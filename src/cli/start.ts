@@ -88,7 +88,13 @@ export function parseInterval(text: string): number {
   return ms;
 }
 
-export const DEFAULT_UI_PORT = 4545;
+/**
+ * The front door's port: `--ui-port` when given, else `serve.port`. One
+ * answer for the socket the door binds and the door every step is held from.
+ */
+export function doorPort(config: RuntimeConfig, uiPort: number | undefined): number {
+  return uiPort ?? config.serve.port;
+}
 
 export function parsePort(text: string): number {
   const port = Number(text);
@@ -731,7 +737,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   const toolWorkflows: ToolWorkflow[] = [];
   // The door the page and the MCP endpoint are served at, on the port this
   // start binds: every step's executor is held from it.
-  const frontDoor = frontDoorOrigins(loaded.config.serve, opts.port ?? loaded.config.serve.port);
+  const frontDoor = frontDoorOrigins(loaded.config.serve, doorPort(loaded.config, opts.port));
   for (const { loaded: { id, dir: workflowDir, workflow, steps }, registry, source } of hooked) {
     // An executor factory's own members, beyond what every hook gets: where its
     // repository is, a way to keep what its setup turns up out of every log
@@ -805,7 +811,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     ...(activity ? { activity } : {}),
     ...(telemetry ? { telemetry } : {}),
     ...(opts.readOnly ? {} : { toolWorkflows }),
-    port: opts.port ?? loaded.config.serve.port,
+    port: doorPort(loaded.config, opts.port),
   };
 }
 
@@ -1228,7 +1234,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       throw new Error(refused);
     }
     try {
-      await writeInstance(dir, { pid: process.pid, port: ui.port, workspace, startedAt: new Date().toISOString() });
+      await writeInstance(dir, { pid: process.pid, port: ui.port, host: ui.host, workspace, startedAt: new Date().toISOString() });
     } catch (e) {
       await ui.close();
       throw new Error(`could not record which port serves this workspace's board: ${messageOf(e)}`);

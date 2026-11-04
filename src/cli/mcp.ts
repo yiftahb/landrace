@@ -193,8 +193,25 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
   });
 }
 
-export async function runMcp(dir: string, scope?: string): Promise<void> {
-  const server = createMcpServer(await buildMcpTools(dir, scope));
+/**
+ * What a bare `landrace mcp` says, still configured in an editor from before
+ * the operator's tools moved behind the front door. Before any file is read,
+ * so it is said the same in any directory, configured or not.
+ */
+export const STDIO_REMOVED =
+  "the operator's tools are no longer served over stdio. `landrace start` serves them over HTTP beside the board, " +
+  "at /mcp on serve.port (4545 by default). Point your editor at it instead, for Claude Code: " +
+  "claude mcp add --transport http landrace http://127.0.0.1:4545/mcp";
+
+/**
+ * The stdio server a pairing's session is handed (`--pairing`), bound to one
+ * workflow as `childServerCommand` names it. Nothing else serves the
+ * operator's tools over stdio any more: a bare `landrace mcp` is refused.
+ */
+export async function runMcp(dir: string, opts: { scope?: string | undefined; pairing: boolean }): Promise<void> {
+  if (!opts.pairing) throw new Error(STDIO_REMOVED);
+  if (opts.scope === undefined) throw new Error("--pairing needs --workflow");
+  const server = createMcpServer(await buildMcpTools(dir, opts.scope));
   await server.connect(new StdioServerTransport());
 }
 

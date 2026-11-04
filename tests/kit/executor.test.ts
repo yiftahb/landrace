@@ -261,9 +261,9 @@ describe("BaseExecutor", () => {
       it("hands every run, the screener's too, the door to keep its agent from", async () => {
         const tiny = new Tiny(markingBin());
         const step = await tiny.create(ctxFor({ adapter: "tiny" }));
-        await step.run("p", { round: 1, capabilities: [], signal: new AbortController().signal });
+        await step.run("p", { round: 1, capabilities: [], cwd: tempDir("tiny-cwd-"), signal: new AbortController().signal });
         const screener = await tiny.create(ctxFor({ adapter: "other" }));
-        await screener.run("p", { round: 1, signal: new AbortController().signal });
+        await screener.run("p", { round: 1, cwd: tempDir("tiny-cwd-"), signal: new AbortController().signal });
         expect(tiny.plans.map((p) => p.frontDoor)).toEqual([DOOR, DOOR]);
       });
     });
