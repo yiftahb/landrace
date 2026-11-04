@@ -2,6 +2,28 @@ import { z } from "zod";
 
 import { durationMs, ITEM_BRANCH } from "#conventions.js";
 
+/**
+ * A `secrets` or `vars` value: a string, as it always was, or a key each
+ * person supplies for themselves. `env` is a bare variable name, never a
+ * `$VAR` and never a value — the object form holds no literal, because one
+ * committed file names nobody in particular. `connection` is
+ * `<connection id>.<field>`, the stored value a person's connection answers
+ * with when the variable is unset.
+ */
+const keyValue = z.union([
+  z.string(),
+  z
+    .object({
+      perPerson: z.literal(true),
+      env: z
+        .string()
+        .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, { message: "must be a bare variable name like LANDRACE_ASSIGNEE, not a $reference or a value" })
+        .optional(),
+      connection: z.string().regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, { message: 'must be "<connection id>.<field>", like github.login' }),
+    })
+    .strict(),
+]);
+
 export const runtimeConfigSchema = z.object({
   version: z.literal(1),
   /**
@@ -93,7 +115,8 @@ export const runtimeConfigSchema = z.object({
     .default({}),
   workflows: z.array(z.string().min(1)).optional(), // the sidebar's order; must name exactly the folders
   log: z.object({ redact: z.array(z.string()).default([]) }).default({}),
-  secrets: z.record(z.string()).default({}),
+  /** A `$VAR` or a literal, or the per-person form (`keyValue`), resolved in `loadConfig` and the person's store. */
+  secrets: z.record(keyValue).default({}),
   /**
    * The same `$VAR` expansion as `secrets`, pointed somewhere else entirely: a
    * secret is handed to a hook at runtime, a var is substituted into
@@ -109,8 +132,11 @@ export const runtimeConfigSchema = z.object({
    * redacts by value and only knows the values `secrets` declares, while a var
    * reaches a comment body and an agent's prompt unredacted. `varsHoldingSecrets`
    * in config/load.ts is the check; this comment is the reason it exists.
+   *
+   * A var may instead be the per-person form (`keyValue`), whose value comes
+   * from its `env` or, unset, from the person's own stored connection.
    */
-  vars: z.record(z.string()).default({}),
+  vars: z.record(keyValue).default({}),
   /**
    * Who this instance's events belong to: every event `landrace start` logs
    * carries `person: "local"`, and `personEmail` when `email` is set. Each
