@@ -1574,3 +1574,62 @@ describe("the factory's wiring, end to end", () => {
     }
   });
 });
+
+/*
+ * #183: a person's own Claude login. Their pasted `claude setup-token` is
+ * handed to every run as CLAUDE_CODE_OAUTH_TOKEN, through the factory the
+ * engine builds — the step's and the screener's — and an API key the
+ * operator's shell holds never reaches the agent beside it.
+ */
+describe("a person's own Claude connection", () => {
+  const TOKEN = "sk-ant-oat01-person-token-for-test";
+
+  it("names the connection a step runs on, and the variable its token goes in", async () => {
+    const { claudeConnection } = await import("landrace/integrations/claude");
+    expect(claudeConnection).toMatchObject({ id: "claude", kind: "credential", fields: ["token"], lifetimeDays: 365 });
+    expect(claude.connection).toEqual({ id: "claude", env: { CLAUDE_CODE_OAUTH_TOKEN: "token" } });
+  });
+
+  it.each([
+    ["a step", "claude", ["repo:read"]],
+    ["the screener", "codex", undefined],
+  ])("runs %s with the person's token, never the operator's API key, and without --bare", async (_what, adapter, capabilities) => {
+    const root = await gitRepo();
+    const ctx: ExecutorContext = {
+      config: { agent: { adapter } } as unknown as ExecutorContext["config"],
+      secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: root, redact: () => {},
+      frontDoor: { hosts: [], origins: [] }, personEnv: { CLAUDE_CODE_OAUTH_TOKEN: TOKEN },
+    };
+    const executor = await claude.create(ctx);
+    const binDir = mkdtempSync(join(tmpdir(), "fake-claude-bin-"));
+    dirs.push(binDir);
+    copyFileSync(bin, join(binDir, "claude"));
+    chmodSync(join(binDir, "claude"), 0o755);
+    const saved = { PATH: process.env.PATH, KEY: process.env.ANTHROPIC_API_KEY };
+    process.env.PATH = `${binDir}:${saved.PATH ?? ""}`;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-api03-operator-key";
+    try {
+      const cwd = withCfg({ out: "[{{ENV:CLAUDE_CODE_OAUTH_TOKEN}}|{{ENV:ANTHROPIC_API_KEY}}] {{ARGV_JSON}}" });
+      const r = await executor.run("p", { round: 1, signal: new AbortController().signal, cwd, ...(capabilities ? { capabilities } : {}) });
+      const [env, ...rest] = r.text.split(" ");
+      expect(env).toBe(`[${TOKEN}|]`);
+      expect(JSON.parse(rest.join(" ")) as string[]).not.toContain("--bare");
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (saved.KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = saved.KEY;
+    }
+  });
+
+  it("runs as it always has with no person's connection", async () => {
+    const cwd = withCfg({ out: "[{{ENV:CLAUDE_CODE_OAUTH_TOKEN}}]" });
+    const saved = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "the-operator-shell-token";
+    try {
+      expect((await run("x", {}, { cwd })).text).toBe("[]");
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = saved;
+    }
+  });
+});

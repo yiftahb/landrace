@@ -1451,7 +1451,7 @@ function integrationsLink(selected) {
 
 // One connection's row. Never a value: the server sends states, hints and
 // field names only. An identity is looked up, so it has nothing to paste.
-function integrationRow(conn, hint, fields) {
+function integrationRow(conn, hint, fields, identity) {
   const muted = "text-xs text-neutral-500 dark:text-neutral-400";
   const li = el("li", "flex flex-col gap-2 py-3");
   li.setAttribute("data-key", "integration:" + conn.id);
@@ -1466,7 +1466,11 @@ function integrationRow(conn, hint, fields) {
   li.append(head);
   if (conn.detail) li.append(el("p", muted, conn.detail));
   if (conn.expiresAt) li.append(el("p", muted, "Lasts until " + conn.expiresAt.slice(0, 10)));
-  if (conn.kind === "identity") return li;
+  // Who a lookup matched, as text: an identity is looked up, never typed in.
+  if (conn.kind === "identity") {
+    for (const [field, value] of Object.entries(identity || {})) li.append(el("p", "font-mono " + muted, field + ": " + value));
+    return li;
+  }
   if (!good) {
     const form = el("form", "flex flex-col gap-2");
     form.setAttribute("data-connect", conn.id);
@@ -1517,7 +1521,7 @@ async function loadMe() {
       : "Landrace runs nothing until each connection it needs is made.";
     document.getElementById("integrations-list").replaceChildren(
       ...(me.connections.length
-        ? me.connections.map((c) => integrationRow(c, me.hints[c.id] || "", me.fields[c.id] || []))
+        ? me.connections.map((c) => integrationRow(c, me.hints[c.id] || "", me.fields[c.id] || [], (me.identities || {})[c.id]))
         : [el("li", "py-3 text-sm italic text-neutral-400 dark:text-neutral-600", "No hook defines a connection")]),
     );
   } catch (e) {

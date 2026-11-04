@@ -161,6 +161,21 @@ describe("the Integrations tab's routes", () => {
     expect((await drive(ui, "/people/me", post("me"))).status).toBe(405);
   });
 
+  it("GET /people/me shows the caller their own looked-up identity, another caller none of it, and never a credential", async () => {
+    const { ui, store } = await world();
+    const at = new Date().toISOString();
+    await store.put("local", ME, "who", { fields: { user: "U0123ABCD" }, source: "lookup", connectedAt: at });
+    await store.put("local", ME, "x", { fields: { token: TOKEN }, source: "paste", connectedAt: at });
+    const mine = await drive(ui, "/people/me");
+    expect(JSON.parse(mine.body)).toMatchObject({ identities: { who: { user: "U0123ABCD" } } });
+    expect(mine.body).not.toContain(TOKEN);
+    const people = ui.people;
+    if (!people) throw new Error("no panel");
+    const theirs = await drive({ ...ui, people: { ...people, caller: () => ({ id: "other" }) } }, "/people/me");
+    expect(theirs.status).toBe(200);
+    expect(theirs.body).not.toContain("U0123ABCD");
+  });
+
   it("is not there when the server was given no panel", async () => {
     const bare: UiOptions = { ...DOOR, view: async () => empty };
     expect((await drive(bare, "/people/me")).status).toBe(404);

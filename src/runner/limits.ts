@@ -20,3 +20,21 @@ export function limitKindOf(text: string): LimitKind | null {
   if (RATE.test(text)) return "rate";
   return null;
 }
+
+/*
+ * Each agent's own words for a login it will not take: an API key or bearer
+ * token it calls invalid, Anthropic's `authentication_error`, an expired
+ * OAuth token, and a bare 401 — a whole word, so "7401" in a path or an id
+ * is never a token refused.
+ */
+const AUTH = /invalid (api key|bearer token)|authentication_error|OAuth token (has )?expired|\b401\b/i;
+
+/**
+ * Whether an executor's failure says the agent refused the login it was
+ * handed. Only where that login is a person's stored connection does
+ * anything follow: the connection is marked failed, so nothing runs on it
+ * until it is made again.
+ */
+export function isAuthFailure(text: string): boolean {
+  return AUTH.test(text);
+}

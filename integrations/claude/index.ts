@@ -16,6 +16,8 @@ import { BaseExecutor, CREDENTIALS_DENY, DEFAULT_DENY, shortPath } from "landrac
 import type {
   AgentSettings, EventReading, FrontDoor, HandoffPlan, HookLog, McpServerConfig, PairingKind, RunPlan, SandboxSettings, StepKey,
 } from "landrace/kit";
+import { defineConnection } from "landrace/hooks";
+import type { ExecutorConnection } from "landrace/kit";
 import type { Executor, HandoffArg } from "landrace/hooks";
 
 export { ARG_SHAPE, mcpRedactionValues, resolveStepServers } from "landrace/kit";
@@ -336,8 +338,26 @@ async function buildPluginDir(cwd: string, dir: string, only: readonly string[] 
   }
 }
 
+/**
+ * A person's own Claude login, pasted once into the Integrations tab: what
+ * `claude setup-token` prints, an OAuth token for their own subscription,
+ * which lasts a year. A hook file exports it beside the executor, and every
+ * step and turn then runs on it — never on the operator's login, nor an
+ * `ANTHROPIC_API_KEY` in their shell, which no run is ever handed.
+ */
+export const claudeConnection = defineConnection({
+  id: "claude",
+  label: "Claude",
+  kind: "credential",
+  fields: ["token"],
+  paste: { hint: "Run `claude setup-token` and paste the token it prints (sk-ant-oat01-…)" },
+  lifetimeDays: 365,
+});
+
 export class Claude extends BaseExecutor<ClaudeExtras> {
   readonly id = "claude";
+  /** Claude Code reads a subscription's OAuth token from this variable; `--bare` would ignore it, and no run passes it. */
+  override readonly connection: ExecutorConnection = { id: claudeConnection.id, env: { CLAUDE_CODE_OAUTH_TOKEN: "token" } };
   /** The levels `claude --effort` takes. */
   readonly efforts = ["low", "medium", "high", "xhigh", "max"];
   readonly pairings: readonly PairingKind[] = ["take", "continue", "fork"];

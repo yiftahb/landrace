@@ -16,11 +16,16 @@ const byId = (a: ConnectionDef, b: ConnectionDef): number => (a.id < b.id ? -1 :
  * `landrace.yaml` the tab lists, gates on and takes a paste for what the
  * runtime gates on, never what the process started with. `onChange` is the
  * reload: a connection stored and a reload that failed leaves the connection
- * stored and rejects with why, since the paste itself was good.
+ * stored and rejects with why, since the paste itself was good. `lookups` is
+ * why each identity the gate could not look up is missing, for the one
+ * person it judged: another caller's rows say nothing of it.
  */
 export function createPeoplePanel(opts: {
   store: CredentialStore;
-  gate: () => { registry: Pick<Registry, "connections">; loaded: LoadedConfig; ctx: RuntimeContext };
+  gate: () => {
+    registry: Pick<Registry, "connections">; loaded: LoadedConfig; ctx: RuntimeContext;
+    lookups?: { person: string; reasons: ReadonlyMap<string, string> };
+  };
   mode: { remote: boolean };
   onChange: (personId: string) => Promise<void>;
   log: RedactingLogger;
@@ -38,24 +43,36 @@ export function createPeoplePanel(opts: {
 
   return {
     me: async (caller): Promise<MeView> => {
-      const { registry, loaded } = opts.gate();
+      const { registry, loaded, lookups } = opts.gate();
       const creds = await opts.store.read(caller.id);
       const at = now();
+      const reasons = lookups?.person === caller.id ? lookups.reasons : new Map<string, string>();
       const defs = [...registry.connections.values()].sort(byId);
       const hints: Record<string, string> = {};
       const fields: Record<string, string[]> = {};
+      const identities: Record<string, Record<string, string>> = {};
+      const connections = defs.map((def) => connectionStatus(def, creds, at.getTime(), reasons));
       for (const def of defs) {
+        // Who a lookup matched, shown to that person alone — this read is
+        // their own file — so they can tell it matched someone else. Never
+        // a credential's value: that is what they hold, not who they are.
+        const stored = creds.connections[def.id];
+        if (def.kind === "identity" && stored !== undefined && connections.some((c) => c.id === def.id && c.state === "connected")) {
+          identities[def.id] = Object.fromEntries(def.fields.flatMap((f) => (stored.fields[f] === undefined ? [] : [[f, stored.fields[f]]])));
+        }
         if (def.kind !== "credential") continue;
         fields[def.id] = [...def.fields];
         if (def.paste) hints[def.id] = def.paste.hint;
       }
       return {
         person: caller,
-        connections: defs.map((def) => connectionStatus(def, creds, at.getTime())),
-        ready: resolvePerson(loaded, registry, caller, creds, opts.mode, at).ready,
+        connections,
+        ready: resolvePerson(loaded, registry, caller, creds, opts.mode, at, reasons).ready,
         hints,
         fields,
+        identities,
       };
+
     },
 
     connect: async (caller: Person, id: string, fields: Record<string, string>): Promise<ConnectionStatus> => {

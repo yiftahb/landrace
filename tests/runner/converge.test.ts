@@ -2,6 +2,7 @@ import { converge } from "#runner/converge.js";
 import { createChild, childServerFor } from "#runner/children.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
+import { isAuthFailure } from "#runner/limits.js";
 import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
 import { labelsOf, NODES_CLOSE_EFFECT } from "#conventions.js";
 import { createExternalState, createHarness } from "#testing/index.js";
@@ -407,6 +408,63 @@ describe("converge", () => {
       await converge("1", deps(w, { workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: plain, log }));
       expect(events.filter((e) => e.name === "agent.limited")).toHaveLength(1);
       expect(events.filter((e) => e.name === "step.started").map((e) => e.round)).toEqual([1, 1]);
+    });
+
+    /*
+     * #183: an agent that refused the person's own login. The connection is
+     * marked failed, so nothing runs until it is made again — and still no
+     * round is recorded, since the step never ran.
+     */
+    it("marks the person's connection failed when the agent refuses its token, and records no round", async () => {
+      const w = world();
+      const events: LandraceEvent[] = [];
+      const log = createLogger({ sink: (e) => events.push(e) });
+      const refused: Executor = { id: "refused", run: async () => { throw new Error("claude exited 1: OAuth token has expired. Please run /login"); } };
+      const failed: string[] = [];
+      const r = await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: refused, log,
+        connectionFailed: async (reason: string) => { failed.push(reason); },
+      }));
+      expect(r.settled).toBe("halt");
+      expect(failed).toEqual([expect.stringMatching(/OAuth token has expired/)]);
+      expect(events.filter((e) => e.name === "connection.failed")).toEqual([{ name: "connection.failed", item: "1", stage: "spec", round: 1 }]);
+      expect(w.entries).toHaveLength(0);
+    });
+
+    it("leaves the operator's own login alone: the same refusal without a person's connection is only a halt", async () => {
+      const w = world();
+      const events: LandraceEvent[] = [];
+      const log = createLogger({ sink: (e) => events.push(e) });
+      const refused: Executor = { id: "refused", run: async () => { throw new Error("OAuth token has expired"); } };
+      const r = await converge("1", deps(w, { workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: refused, log }));
+      expect(r.settled).toBe("halt");
+      expect(events.some((e) => e.name === "connection.failed")).toBe(false);
+    });
+
+    it("marks nothing for an outage that is not the token's", async () => {
+      const w = world();
+      const failed: string[] = [];
+      const plain: Executor = { id: "plain", run: async () => { throw new Error("spawn claude ENOENT"); } };
+      await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor()]]), executor: plain, connectionFailed: async (reason: string) => { failed.push(reason); },
+      }));
+      expect(failed).toEqual([]);
+    });
+  });
+
+  describe("isAuthFailure", () => {
+    it.each([
+      ["Invalid API key · Please run /login", true],
+      ["API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\"}}", true],
+      ["OAuth token has expired", true],
+      ["OAuth token expired", true],
+      ["invalid bearer token", true],
+      ["status 401", true],
+      ["request 7401 failed", false],
+      ["line 4012: unexpected token", false],
+      ["Claude AI usage limit reached", false],
+    ])("reads %j as %s", (text, expected) => {
+      expect(isAuthFailure(text)).toBe(expected);
     });
   });
 

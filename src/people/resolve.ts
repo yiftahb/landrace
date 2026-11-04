@@ -3,8 +3,10 @@ import { configProblems, loadConfig } from "#config/load.js";
 import { LOCAL_PERSON_ID } from "#conventions.js";
 import { perPersonKeys } from "#people/keys.js";
 import { createCredentialStore } from "#people/store.js";
+import { messageOf } from "#runner/errors.js";
 import type {
-  ConnectionDef, ConnectionStatus, CredentialStore, LoadedConfig, LocalConfig, PerPersonKey, Person, PersonCredentials, PersonResolution, Problem, Registry,
+  ConnectionDef, ConnectionStatus, ConnectionValue, CredentialStore, ExecutorConnection, LoadedConfig, LocalConfig, PerPersonKey, Person, PersonCredentials,
+  PersonResolution, Problem, Registry, RuntimeContext,
 } from "#namespace.js";
 
 const DAY_MS = 86_400_000;
@@ -117,23 +119,100 @@ export function connectionsOf(registries: ReadonlyArray<{ id: string; registry: 
 /**
  * The local person's file, for `resolvePerson`: what `loadLocalConfig` read,
  * or, when it read nothing because no key is per-person, the store again if
- * a hook requires a connection whatever the keys say — otherwise nothing,
+ * a hook defines any connection — one stored whatever the keys say is still
+ * judged, and an agent's login may be in it. With none defined, nothing,
  * and the store stays unopened.
  */
 export async function localCredentials(
   local: LocalConfig, person: Person, connections: ReadonlyMap<string, ConnectionDef>, store: CredentialStore = createCredentialStore(),
 ): Promise<PersonCredentials> {
   if (local.credentials !== null) return local.credentials;
-  const required = [...connections.values()].some((def) => def.required === "always");
-  return required ? store.read(person.id) : { person, connections: {} };
+  return connections.size > 0 ? store.read(person.id) : { person, connections: {} };
 }
 
-/** A connection's status for one person, out of what their file holds: the Integrations tab's row, and what `resolvePerson` judges. */
-export function connectionStatus(def: ConnectionDef, credentials: PersonCredentials, now: number): ConnectionStatus {
+/**
+ * Each identity a hook can look up and the person has not stored, looked up
+ * by their email and stored as a `lookup`; the credentials as they are then,
+ * and why each one still missing is. A lookup that throws keeps its reason —
+ * the vendor's own, or a secret the hook needs — and one that finds nobody
+ * says so; neither stores anything, so the next start or reload asks again.
+ * An answer that is not exactly the connection's fields is refused.
+ * Without an email, nothing is asked. A file that did not read is left as
+ * it is: the store refuses to write over it.
+ */
+export async function lookupIdentities(
+  store: CredentialStore, person: Person, connections: ReadonlyMap<string, ConnectionDef>, credentials: PersonCredentials, ctx: RuntimeContext,
+  now: Date = new Date(),
+): Promise<{ credentials: PersonCredentials; lookups: Map<string, string> }> {
+  const lookups = new Map<string, string>();
+  if (credentials.problem !== undefined) return { credentials, lookups };
+  let stored = false;
+  for (const def of [...connections.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+    if (def.kind !== "identity" || def.resolve === undefined || credentials.connections[def.id] !== undefined) continue;
+    if (person.email === undefined) {
+      lookups.set(def.id, `no email is known for ${person.id} to look up their ${def.label} account by; set people.local.email in landrace.yaml`);
+      continue;
+    }
+    let found: Record<string, string> | null;
+    try {
+      found = await def.resolve(person.email, ctx);
+    } catch (e) {
+      lookups.set(def.id, messageOf(e));
+      continue;
+    }
+    if (found === null) {
+      lookups.set(def.id, `${def.label} found nobody with your email`);
+      continue;
+    }
+    const answer = found;
+    const given = Object.keys(answer).sort();
+    const wanted = [...def.fields].sort();
+    if (given.length !== wanted.length || given.some((f, i) => f !== wanted[i] || !filled(answer[f]))) {
+      lookups.set(def.id, `${def.label}'s lookup answered ${given.join(", ") || "nothing"}, not ${wanted.join(", ")}`);
+      continue;
+    }
+    const value: ConnectionValue = { fields: { ...answer }, source: "lookup", connectedAt: now.toISOString() };
+    await store.put(person.id, person, def.id, value);
+    stored = true;
+  }
+  return { credentials: stored ? await store.read(person.id) : credentials, lookups };
+}
+
+/**
+ * The variables an executor's `connection` sets from the person's stored
+ * one, or nothing when they stored none or no hook defines it: the agent
+ * then runs on the operator's own login, as it always has.
+ */
+export function personEnvOf(
+  connection: ExecutorConnection, connections: ReadonlyMap<string, ConnectionDef>, credentials: PersonCredentials,
+): Record<string, string> | undefined {
+  if (!connections.has(connection.id)) return undefined;
+  const stored = credentials.connections[connection.id];
+  if (stored === undefined) return undefined;
+  const env: Record<string, string> = {};
+  for (const [name, field] of Object.entries(connection.env)) {
+    const value = stored.fields[field];
+    if (filled(value)) env[name] = value;
+  }
+  return env;
+}
+
+/**
+ * A connection's status for one person, out of what their file holds: the
+ * Integrations tab's row, and what `resolvePerson` judges. A missing one
+ * carries why its lookup failed, from `lookups`. Never a value: a status
+ * feeds problems, and problems are logged.
+ */
+export function connectionStatus(
+  def: ConnectionDef, credentials: PersonCredentials, now: number, lookups: ReadonlyMap<string, string> = new Map(),
+): ConnectionStatus {
   const base = { id: def.id, label: def.label, kind: def.kind };
   if (credentials.problem !== undefined) return { ...base, state: "failed", detail: credentials.problem };
   const stored = credentials.connections[def.id];
-  if (stored === undefined) return { ...base, state: "missing" };
+  if (stored === undefined) {
+    const why = lookups.get(def.id);
+    return { ...base, state: "missing", ...(why === undefined ? {} : { detail: why }) };
+  }
   const lasts = def.lifetimeDays === undefined ? undefined : Date.parse(stored.connectedAt) + def.lifetimeDays * DAY_MS;
   const ends = [lasts, stored.expiresAt === undefined ? undefined : Date.parse(stored.expiresAt)].filter((t): t is number => t !== undefined);
   const end = ends.length ? Math.min(...ends) : undefined;
@@ -155,7 +234,10 @@ export function connectionStatus(def: ConnectionDef, credentials: PersonCredenti
  * as it did. Remotely — never yet, until `people.oidc` exists — the variable
  * belongs to the machine and not the person, so it is ignored, and said to
  * be. A connection is required when a key needs it, or when its `required`
- * says so; each is judged once, whatever number of keys need it.
+ * says so; each is judged once, whatever number of keys need it. One stored
+ * is judged too, required or not: an agent's login that stopped working
+ * must stop the runs, never let them fall back to the operator's own.
+ * `lookups` is why each identity a lookup could not store is missing.
  */
 export function resolvePerson(
   loaded: LoadedConfig,
@@ -164,6 +246,7 @@ export function resolvePerson(
   creds: PersonCredentials,
   mode: { remote: boolean },
   now: Date = new Date(),
+  lookups: ReadonlyMap<string, string> = new Map(),
 ): PersonResolution {
   const { remote } = mode;
   const at = now.getTime();
@@ -172,7 +255,7 @@ export function resolvePerson(
   const problems: Problem[] = [];
   const statuses = new Map<string, ConnectionStatus>();
   const judge = (def: ConnectionDef): ConnectionStatus => {
-    const known = statuses.get(def.id) ?? connectionStatus(def, creds, at);
+    const known = statuses.get(def.id) ?? connectionStatus(def, creds, at, lookups);
     statuses.set(def.id, known);
     return known;
   };
@@ -220,13 +303,20 @@ export function resolvePerson(
     }
   }
 
-  // A connection required whatever the keys say, and not yet judged for one.
+  // A connection required whatever the keys say, or one stored, and not yet judged for one.
   for (const def of [...registry.connections.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
-    if (statuses.has(def.id) || !(def.required === "always" || (def.required === "remote" && remote))) continue;
+    const required = def.required === "always" || (def.required === "remote" && remote);
+    const stored = creds.problem === undefined && creds.connections[def.id] !== undefined;
+    if (statuses.has(def.id) || !(required || stored)) continue;
     const status = judge(def);
     if (status.state === "connected") continue;
     const why = status.state === "missing" ? "was never made" : `is ${status.state}: ${status.detail ?? ""}`;
-    problems.push({ rule: `connection.${status.state}`, message: `${whose}${def.id}" connection (${def.label}) is required and ${why}; connect ${def.id}` });
+    problems.push({
+      rule: `connection.${status.state}`,
+      message: required
+        ? `${whose}${def.id}" connection (${def.label}) is required and ${why}; connect ${def.id}`
+        : `${whose}${def.id}" connection (${def.label}) ${why}; connect ${def.id} again`,
+    });
   }
 
   return {

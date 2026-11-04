@@ -49,6 +49,35 @@ const forge = (check?: ConnectionDef["check"]): ConnectionDef => defineConnectio
 });
 const login = defineConnection({ id: "chat", label: "Chat", kind: "identity", fields: ["user"] });
 
+describe("the people panel's identities", () => {
+  it("shows the caller their own looked-up identity, never another's and never a credential, and why one is missing", async () => {
+    const tracker = defineConnection({ id: "tracker", label: "Tracker", kind: "identity", fields: ["accountId"] });
+    const root = join(await mkdtemp(join(tmpdir(), "lr-panel-")), "credentials");
+    const store = createCredentialStore(root);
+    const at = NOW.toISOString();
+    await store.put("local", ME, "chat", { fields: { user: "U0123ABCD" }, source: "lookup", connectedAt: at });
+    await store.put("local", ME, "forge", { fields: { token: TOKEN }, source: "paste", connectedAt: at });
+    await store.put("other", { id: "other" }, "chat", { fields: { user: "U9999ZZZZ" }, source: "lookup", connectedAt: at });
+    const ctx = { config, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+    const panel = createPeoplePanel({
+      store, mode: { remote: false }, log: createLogger({ sink: () => {} }), onChange: async () => {}, now: () => NOW,
+      gate: () => ({
+        registry: { connections: new Map([["chat", login], ["forge", forge()], ["tracker", tracker]]) }, loaded, ctx,
+        lookups: { person: "local", reasons: new Map([["tracker", "Jira rejected jiraEmail and jiraToken (401)"]]) },
+      }),
+    });
+    const mine = await panel.me(ME);
+    expect(mine.identities).toEqual({ chat: { user: "U0123ABCD" } });
+    expect(mine.connections.find((c) => c.id === "tracker")).toMatchObject({ state: "missing", detail: "Jira rejected jiraEmail and jiraToken (401)" });
+    expect(JSON.stringify(mine)).not.toContain(TOKEN);
+    expect(JSON.stringify(mine.connections)).not.toContain("U0123ABCD");
+    const theirs = await panel.me({ id: "other" });
+    expect(theirs.identities).toEqual({ chat: { user: "U9999ZZZZ" } });
+    expect(JSON.stringify(theirs)).not.toContain("U0123ABCD");
+    expect(theirs.connections.find((c) => c.id === "tracker")).not.toHaveProperty("detail");
+  });
+});
+
 describe("the people panel", () => {
   it("lists every defined connection, a required one missing and the person not ready, with each pasted one's hint", async () => {
     const { panel } = await panelOf([forge(), login]);

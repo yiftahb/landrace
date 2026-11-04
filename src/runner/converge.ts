@@ -11,7 +11,7 @@ import { scrubberOf } from "#runner/events.js";
 import { buildBriefing } from "#runner/artifacts.js";
 import { buildSnapshot, positionProblem } from "#runner/snapshot.js";
 import { runStep } from "#runner/step.js";
-import { limitKindOf } from "#runner/limits.js";
+import { isAuthFailure, limitKindOf } from "#runner/limits.js";
 
 /** Generous. The real bound on a run is the workflow's iteration budget. */
 const DEFAULT_MAX_PASSES = 30;
@@ -463,6 +463,13 @@ async function converging(
           // plan running out from an outage. Only said: it is the same halt.
           const kind = limitKindOf(result.reason);
           if (kind !== null) deps.log("agent.limited", { item, stage: stage.id, round, kind });
+          // The agent refused the person's own login: their connection is
+          // marked failed, so nothing runs until they make it again. Still
+          // no record — the step never ran, and is still owed.
+          if (deps.connectionFailed && isAuthFailure(result.reason)) {
+            deps.log("connection.failed", { item, stage: stage.id, round });
+            await deps.connectionFailed(result.reason);
+          }
           return { passes: pass, settled: "halt", why: result.reason };
         }
 
