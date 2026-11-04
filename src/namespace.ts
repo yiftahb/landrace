@@ -1915,6 +1915,13 @@ export interface OAuthSpec {
  */
 export type PendingConnects = Map<string, { person: string; connection: string; verifier: string; redirectUri: string; expires: number }>;
 
+/** A token endpoint's answer once it holds an access token: the rest is the provider's to send or leave out, and checked where it is read. */
+export interface OAuthTokenAnswer {
+  access_token: string;
+  refresh_token?: unknown;
+  expires_in?: unknown;
+}
+
 /** What a provider's redirect back carries in its query: a code and the state, or why it gave none. */
 export interface ConnectCallback {
   state?: string | undefined;

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { messageOf, Refusal } from "#runner/errors.js";
 import { oneLine } from "#runner/status.js";
-import type { ConnectCallback, ConnectionDef, ConnectionValue, OAuthSpec, PendingConnects, RuntimeContext } from "#namespace.js";
+import type { ConnectCallback, ConnectionDef, ConnectionValue, OAuthSpec, OAuthTokenAnswer as TokenAnswer, PendingConnects, RuntimeContext } from "#namespace.js";
 
 /** How long a begun flow is accepted back: long enough to sign in and consent, short enough that a stolen state is soon worthless. */
 const STATE_TTL_MS = 10 * 60_000;
@@ -108,8 +108,6 @@ export async function refreshIfNeeded(
   return valueOf(def, answer, { connectedAt: value.connectedAt, now, refresh: value.refresh.token });
 }
 
-interface TokenAnswer { access_token: string; refresh_token?: unknown; expires_in?: unknown }
-
 /** A provider's error said in its own two fields, on one line and capped: never anything else it sent. */
 function said(error: string, description: unknown): string {
   const text = typeof description === "string" && description.trim() !== "" ? `${error}: ${description}` : error;
@@ -118,8 +116,9 @@ function said(error: string, description: unknown): string {
 
 /**
  * One form POST to the token endpoint, the app's id and secret in the body
- * — both GitLab and GitHub take them there — answered as JSON. The body is
- * never quoted: a provider's error page can echo what it was sent.
+ * — where OAuth 2.0 lets a confidential client send them — answered as
+ * JSON. The body is never quoted: a provider's error page can echo what it
+ * was sent.
  */
 async function tokenRequest(
   def: ConnectionDef, spec: OAuthSpec, form: Record<string, string>, signal: AbortSignal, impl: typeof fetch = fetch,

@@ -1611,7 +1611,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     const schedule = createSchedule({
       intervalMs: parseInterval(config.tick.interval),
       run: () => {
-        // Not one the refresher renews: a GitLab OAuth token lasts two hours,
+        // Not one the refresher renews: an OAuth token can last two hours,
         // and a daily warning for it would say nothing a person can act on.
         warnExpiring(latest.resolution.statuses.filter((s) => latest.credentials.connections[s.id]?.refresh === undefined));
         const served = slot.current();
