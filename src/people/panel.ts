@@ -75,7 +75,7 @@ export function createPeoplePanel(opts: {
       if (problem !== null) throw new Refusal(opts.log.scrub(`"${id}" does not work: ${problem}`, values));
       await opts.store.put(caller.id, caller, id, value);
       opts.log("person.connected", { connection: id });
-      await opts.onChange(caller.id);
+      await reload(caller.id, `"${id}" is connected`, values);
       return connectionStatus(def, await opts.store.read(caller.id), now().getTime());
     },
 
@@ -83,7 +83,16 @@ export function createPeoplePanel(opts: {
       defOf(id);
       await opts.store.remove(caller.id, id);
       opts.log("person.disconnected", { connection: id });
-      await opts.onChange(caller.id);
+      await reload(caller.id, `"${id}" is disconnected`);
     },
   };
+
+  /** The reload after a change, its failure said with what was changed and every secret taken out. */
+  async function reload(personId: string, done: string, values: readonly string[] = []): Promise<void> {
+    try {
+      await opts.onChange(personId);
+    } catch (e) {
+      throw new Error(opts.log.scrub(`${done}, but Landrace could not reload with it: ${messageOf(e)}`, values));
+    }
+  }
 }
