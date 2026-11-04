@@ -33,6 +33,33 @@ describe("check", () => {
     await expect(forgeOver(gl).check(gl.ctx())).resolves.toBeUndefined();
   });
 
+  /* #184: a token connected with GitLab is no personal access token, so its scopes are GitLab's OAuth token info. */
+  it("reads an OAuth token's scopes from GitLab's token info, and still names a missing api scope", async () => {
+    const gl = createFakeGitLab();
+    gl.settings.oauth = true;
+    await expect(forgeOver(gl).check(gl.ctx())).resolves.toBeUndefined();
+    expect(gl.requests.map((r) => r.path)).toEqual(expect.arrayContaining(["/personal_access_tokens/self", "/oauth/token/info"]));
+    const narrow = createFakeGitLab();
+    narrow.settings.oauth = true;
+    narrow.settings.scopes = ["read_user"];
+    await expect(forgeOver(narrow).check(narrow.ctx())).rejects.toThrow(/needs the "api" scope; it has read_user/);
+  });
+
+  /*
+   * #184: a renewed OAuth token is written into the live secrets, and the
+   * client — one per configuration, kept — must send the new one, or every
+   * request after the old one's two hours is a 401.
+   */
+  it("sends the token the secrets hold now, not the one the client was made with", async () => {
+    const gl = createFakeGitLab();
+    const ctx = gl.ctx();
+    const forge = forgeOver(gl);
+    await expect(forge.check(ctx)).resolves.toBeUndefined();
+    gl.settings.token = "glo-renewed-token-0123456789";
+    (ctx.secrets as Map<string, string>).set("gitlabToken", "glo-renewed-token-0123456789");
+    await expect(forge.check(ctx)).resolves.toBeUndefined();
+  });
+
   it("names the missing gitlabToken secret", async () => {
     const gl = createFakeGitLab();
     await expect(forgeOver(gl).check(gl.ctx({}))).rejects.toThrow(/"gitlabToken" secret/);

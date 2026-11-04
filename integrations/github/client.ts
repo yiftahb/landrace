@@ -21,7 +21,8 @@ export const MAX_COMMENT_CHARS = 65_536;
 
 export interface GitHubOptions {
   repo: string;
-  token: string;
+  /** The token, or where to read it on each request: one connected by OAuth can be renewed under a client that is kept. */
+  token: string | (() => string);
   /** Overrides the login resolved from the token, for a GitHub App posting under a bot name. */
   bot?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
@@ -182,7 +183,9 @@ export function tokenRejected(e: unknown): Error | null {
 }
 
 export function createClient(opts: GitHubOptions) {
-  const { repo, token } = opts;
+  const { repo } = opts;
+  const given = opts.token;
+  const tokenNow = typeof given === "string" ? (): string => given : given;
   const doFetch = opts.fetchImpl ?? fetch;
   // Said by the path below the API, which holds no credential: the token rides in a header.
   const said = (url: string, res: Response): void => {
@@ -214,7 +217,7 @@ export function createClient(opts: GitHubOptions) {
     const res = await doFetch(url, {
       method,
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${tokenNow()}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "landrace",
@@ -409,8 +412,10 @@ export function createClient(opts: GitHubOptions) {
     repo,
     owner,
     name,
-    /** For the one place it goes besides a request: the push's own header, and scrubbing it from what git says. */
-    token,
+    /** For the one place it goes besides a request: the push's own header, and scrubbing it from what git says. The one held now. */
+    get token(): string {
+      return tokenNow();
+    },
 
     botLogin,
 
@@ -483,7 +488,7 @@ export function createClient(opts: GitHubOptions) {
     jobLog: async (id: number): Promise<string> => {
       await botLogin();
       const res = await doFetch(`https://api.github.com/repos/${repo}/actions/jobs/${id}/logs`, {
-        headers: { Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "landrace" },
+        headers: { Authorization: `Bearer ${tokenNow()}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "landrace" },
         redirect: "follow",
       });
       said(`${API}/repos/${repo}/actions/jobs/${id}/logs`, res);
@@ -684,8 +689,9 @@ export function clientFor(ctx: RuntimeContext): Client {
   const token = ctx.secrets.get("githubToken");
   if (!token) throw new Error('the GitHub integration needs a "githubToken" secret declared in landrace.yaml');
 
+  // Read again on every request: a renewed token is written into the live secrets, and this client outlives it.
   const client = createClient({
-    repo, token, ...(typeof tracker?.bot === "string" ? { bot: tracker.bot } : {}),
+    repo, token: () => ctx.secrets.get("githubToken") || token, ...(typeof tracker?.bot === "string" ? { bot: tracker.bot } : {}),
     onLimit: (where, limit) => ctx.log("integration.limited", { integration: "github", where, ...limit }),
   });
   clients.set(ctx.config, client);

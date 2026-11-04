@@ -1,4 +1,4 @@
-import { githubConnection } from "landrace/integrations/github";
+import { githubConnection, GitHubPages } from "landrace/integrations/github";
 import { gitlabConnection } from "landrace/integrations/gitlab";
 import type { ConnectionValue, RuntimeConfig, RuntimeContext } from "#namespace.js";
 
@@ -60,4 +60,23 @@ describe.each([
   it("answers empty values when the instance has none, which offers the paste form instead", () => {
     expect(connection.oauth?.(ctx(base))).toMatchObject({ clientId: "", clientSecret: "" });
   });
+});
+
+/*
+ * #184: a renewed token is written into the live secrets. GitHub's client is
+ * one per configuration and kept, so it must send the token the secrets hold
+ * now, not the one it was made with.
+ */
+it("GitHub's kept client sends the token the secrets hold now", async () => {
+  const sent = forge(404, JSON.stringify({ message: "Not Found" }));
+  const live: RuntimeContext = {
+    config: { tracker: { repo: "acme/widgets" } } as unknown as RuntimeConfig,
+    secrets: new Map([["githubToken", "gho_first_token_0123456789"]]), signal: new AbortController().signal, log: () => {},
+  };
+  const pages = new GitHubPages();
+  await pages.page("1", live).catch(() => null);
+  (live.secrets as Map<string, string>).set("githubToken", "gho_renewed_token_0123456789");
+  await pages.page("1", live).catch(() => null);
+  const auths = [...new Set(sent.map((s) => s.auth))];
+  expect(auths).toEqual(["Bearer gho_first_token_0123456789", "Bearer gho_renewed_token_0123456789"]);
 });
