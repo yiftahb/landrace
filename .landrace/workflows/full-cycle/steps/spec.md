@@ -83,14 +83,16 @@ exact. No pre-text, post-text or slop.
 
 - `## Problem` — what is broken or missing, and the case that shows it. Two or three lines.
 - `## Decisions` — product flow first: what a person does and sees, step by step. Then each choice made, one line each, with its reason.
-- `## Technical design` — file changes, one line per file: `path` — what changes. New types, functions and settings by name. No code.
+- `## Technical design` — file changes, one line per file: `path` — what changes. New types, functions and settings by name. A shape the item fixes for later work — each field, each signature — carried whole: build sees only the spec. No code.
 - `## Done when` — observable checks, one per line.
 
 No implementation plan, no step list, no test list: build plans its own steps.
 
 **Step 5 — Validate the spec and fix it until every check passes.**
 Under 400 words. Every path exists. Every Done-when check is observable. No step list.
-Nothing the item decided is reopened. A trigger or route the spec adds or
+Nothing the item decided is reopened. A promise that something always holds —
+denied, checked, refused — still holds when a person's configuration replaces
+the default it sits in. A trigger or route the spec adds or
 changes is checked against every other way out of its stage, the clean state
 included: exactly one holds of any item, or it halts as ambiguous; a Done-when
 sweep of them varies every count any of them reads. A promise about which

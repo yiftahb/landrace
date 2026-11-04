@@ -90,8 +90,9 @@ Technical design. The plan is for this session; do not commit it.
 
 **Step 4 — Implement the plan, committing as you go.** Work through it with
 `superpowers:executing-plans`, test first wherever behaviour changes, and test
-each line of the spec's Done-when through the command it names, not only the
-function that command calls.
+each line of the spec's Done-when, and each Decision, through the command it
+names, not only the function that command calls; a configuration the spec shows
+runs as written, with only the hooks this repository ships.
 A refusal because another holds something — a lock, a record, a port —
 checks again just before taking it: slow work between the check and the
 write lets two both pass, and the later write wins.
