@@ -1,0 +1,48 @@
+I've finished reading the code and settled the open point. Writing the spec now.
+
+## Problem
+Logs and OTEL records don't say whose item an event is about. An agent that hits a usage or rate limit shows up only as a `step.rejected` `unavailable`. An integration's 429 shows up only as a thrown error, and Notion's retried 429s don't show up at all. On a shared instance there's no way to trace a problem to a person or a limit.
+
+## Decisions
+- Operator may set `people.local.email: $VAR` (and `name`) in `landrace.yaml`. If the var is unset, `validate` reports problem `people.local.email` and `start` refuses.
+- `landrace start`: every runtime event carries `person: "local"`, plus `personEmail` when it is set. OTEL exports these as `landrace.person` and `landrace.personEmail`.
+- An executor throw whose message has limit text logs `agent.limited` `{item, workflow, stage, round, kind}`. It still writes no record and counts no round.
+- Any 429 (and on GitHub, a 403 with `x-ratelimit-remaining: 0`) logs `integration.limited` `{integration, status, where, retryAfter?}`.
+- OTEL marks `*.limited` as WARN.
+- **Open point settled: the kit never logs.** `src/kit/http.ts` exports a pure `httpLimit` in place of `reportLimit`. Each integration logs `integration.limited` itself, through the `ctx.log` its `clientFor(ctx)` or `send` already holds. This leaves `tests/boundaries.test.ts` unchanged, because it only checks `src/kit/`, and keeps the CLAUDE.md rule.
+- Clients take an `onLimit` option, wired in `clientFor(ctx)`. The GitHub 403 rule stays in `integrations/github/` because it is GitHub's rule, not the kit's.
+- Slack's `where` is `"webhook"`, never the URL, because the URL is the credential.
+- Notion logs every 429 it waits out, not only the last one.
+- The logger from `createLogger` stays unstamped. Everything the runtime uses (its `log`, `ctx.log`, deps and notify) gets `log.with(personFields(…))`. Locally, every runtime event belongs to the one person. The split between instance events and person events comes with the roster in Task 7.
+- Each workflow's deps log adds `.with({ workflow: id })`, so `agent.limited` names its workflow without a new deps field.
+- `with` uses the parent's redaction set. A field the event already carries wins over the stamp.
+
+## Technical design
+- `src/namespace.ts`: adds `Person`, `LimitKind`, `HttpLimit`, `RedactingLogger.with`, `EventName` entries `agent.limited` and `integration.limited`, and a `LoadedConfig` field for the unresolved person email.
+- `src/conventions.ts`: adds `LOCAL_PERSON_ID = "local"`.
+- `src/config/schema.ts`: adds optional `people.local` with `email` and `name`.
+- `src/config/load.ts`: resolves the `people.local.email` `$VAR` the same way as `agent.git`. `configProblems` reports rule `people.local.email`.
+- `src/people/person.ts` (new): `localPerson(loaded)` and `personFields(p)`.
+- `src/runner/limits.ts` (new): `limitKindOf(text)` returns usage, rate, overloaded or null.
+- `src/runner/events.ts`: `createLogger` result gets a nestable `with(fields)`. `redact` and `scrub` delegate to the parent.
+- `src/telemetry/otel.ts`: `WARN` becomes `/\.(failed|denied|blocked|limited)$/`.
+- `src/cli/start.ts`: stamps the runtime logger with the person, and each workflow's deps log with the workflow.
+- `src/runner/converge.ts`: the `unavailable` branch logs `agent.limited`.
+- `src/kit/http.ts`: adds `httpLimit(status, headers)`, which returns `HttpLimit | null` (429 plus `Retry-After`).
+- `integrations/github/client.ts`, `integrations/gitlab/client.ts`, `integrations/jira/client.ts`, `integrations/notion/client.ts`: add `onLimit` and wire it to `ctx.log`. GitHub also catches the rate-limit 403.
+- `integrations/slack/index.ts`: logs `integration.limited` on a 429.
+- `docs/configuration.md`: documents `people.local`. The Telemetry section lists the new attributes and events.
+
+## Done when
+- `limitKindOf` returns usage, rate, overloaded and null for the item's four examples.
+- `createLogger(...).with({person:"local",personEmail:"a@b.c"})` stamps both fields, and an event's own `person` wins.
+- An OTEL record carries `landrace.person` and `landrace.personEmail`. `agent.limited` and `integration.limited` export as WARN.
+- With no `people` block, `localPerson` returns `{id:"local"}`. With `$X` set, `email` is X's value. With `$X` unset, `validate` reports `people.local.email` and `start` refuses.
+- An executor throwing "Claude AI usage limit reached|…" logs `agent.limited` with kind `usage` and the workflow id. No record is written and the round is unchanged.
+- A 429 with `Retry-After: 30` from GitHub, GitLab, Jira, Notion or Slack logs `integration.limited` with `retryAfter "30"`.
+- A GitHub 403 with remaining 0 logs it. A plain 403 does not. Slack's `where` never holds the URL.
+- `tests/boundaries.test.ts` passes, unchanged.
+- An existing local config without `people` runs as it does today.
+- `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm build` pass.
+
+// Generated by AI (claude-opus-5-5:high)
