@@ -11,15 +11,18 @@
  * Configured by the `gitlabToken` secret and, off gitlab.com, `gitlabBaseUrl`.
  */
 import { defineConnection } from "landrace/hooks";
-import { createClient, statusOf, tokenRejected } from "./client.js";
+import { createClient, DEFAULT_BASE_URL, statusOf, tokenRejected } from "./client.js";
 
 export { createClient } from "./client.js";
 export { GitLab, type GitLabOptions } from "./forge.js";
 
 /**
- * A person's own GitLab token, pasted into the Integrations tab, for a
- * per-person secret to name as `gitlab.token`. Its check asks `GET /user`
- * on `gitlabBaseUrl`, or gitlab.com, with it: a refusal is why it does not work.
+ * A person's own GitLab token, for a per-person secret to name as
+ * `gitlab.token`: pasted into the Integrations tab, or — when the instance
+ * has a GitLab OAuth application, its id and secret in `gitlabOauthClientId`
+ * and `gitlabOauthClientSecret` — connected with GitLab, on `gitlabBaseUrl`
+ * or gitlab.com, and renewed before its two hours are up. Its check asks
+ * `GET /user` there with it: a refusal is why it does not work.
  */
 export const gitlabConnection = defineConnection({
   id: "gitlab",
@@ -27,6 +30,17 @@ export const gitlabConnection = defineConnection({
   kind: "credential",
   fields: ["token"],
   paste: { hint: "A personal access token with the api scope (GitLab → Preferences → Access tokens)" },
+  oauth(ctx) {
+    // An empty value is an unset one, as the client reads it.
+    const base = (ctx.secrets.get("gitlabBaseUrl") || DEFAULT_BASE_URL).replace(/\/$/, "");
+    return {
+      authorizeUrl: `${base}/oauth/authorize`,
+      tokenUrl: `${base}/oauth/token`,
+      clientId: ctx.secrets.get("gitlabOauthClientId") ?? "",
+      clientSecret: ctx.secrets.get("gitlabOauthClientSecret") ?? "",
+      scope: "api",
+    };
+  },
   async check(value, ctx) {
     // Any project path will do: `/user` is not under one.
     const client = createClient({ project: "landrace/check", token: value.fields["token"] ?? "", baseUrl: ctx.secrets.get("gitlabBaseUrl") || undefined });

@@ -2021,6 +2021,12 @@ export interface MeView {
   hints: Record<string, string>;
   fields: Record<string, string[]>;
   identities: Record<string, Record<string, string>>;
+  /**
+   * Each credential this instance has an OAuth app for, by connection id:
+   * where its Connect link starts the flow, `/connect/<id>/start`. A row
+   * here gets the link in place of its paste form.
+   */
+  oauth: Record<string, string>;
 }
 
 /**
@@ -2033,6 +2039,15 @@ export interface PeoplePanel {
   me(caller: Person): Promise<MeView>;
   connect(caller: Person, id: string, fields: Record<string, string>): Promise<ConnectionStatus>;
   disconnect(caller: Person, id: string): Promise<void>;
+  /** The provider's consent URL for a credential connected by OAuth; a `Refusal` when it offers none, or the door's URL is not known yet. */
+  begin(caller: Person, id: string): Promise<string>;
+  /**
+   * The provider's redirect back: the state spent, the code exchanged, then
+   * the token checked, stored and reloaded as a paste is. A `Refusal` —
+   * a state that does not hold, the provider's error, a failing check —
+   * stores nothing.
+   */
+  finish(caller: Person, id: string, callback: ConnectCallback): Promise<ConnectionStatus>;
 }
 
 /**

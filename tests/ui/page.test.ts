@@ -1705,10 +1705,10 @@ describe("the page", () => {
  */
 describe("the Integrations tab", () => {
   interface Conn { id: string; label: string; kind: "credential" | "identity"; state: string; detail?: string; expiresAt?: string }
-  const build = (conn: Conn, hint = "", fields: string[] = [], identity?: Record<string, string>): FakeElement => runInNewContext(`
+  const build = (conn: Conn, hint = "", fields: string[] = [], identity?: Record<string, string>, oauth?: string): FakeElement => runInNewContext(`
     ${constSource("STATE_TEXT")}${constSource("CONNECT_BUTTON")}${constSource("DISCONNECT_BUTTON")}
     ${["el", "integrationRow"].map(fnSource).join("")}
-    integrationRow(CONN, HINT, FIELDS, IDENTITY)`, { CONN: conn, HINT: hint, FIELDS: fields, IDENTITY: identity, document: fakeDocument }) as FakeElement;
+    integrationRow(CONN, HINT, FIELDS, IDENTITY, OAUTH)`, { CONN: conn, HINT: hint, FIELDS: fields, IDENTITY: identity, OAUTH: oauth, document: fakeDocument }) as FakeElement;
   const all = (e: FakeElement, tag: string): FakeElement[] => descendants(e).filter((d) => d.tag === tag);
   const texts = (e: FakeElement): string[] => descendants(e).map((d) => d.text).filter(Boolean);
   const forge: Conn = { id: "forge", label: "Forge", kind: "credential", state: "missing" };
@@ -1727,6 +1727,20 @@ describe("the Integrations tab", () => {
     const inputs = all(row, "input");
     expect(inputs.map((i) => [i.type, i.getAttribute("name"), i.getAttribute("autocomplete")])).toEqual([["password", "login", "off"], ["password", "token", "off"]]);
     expect(all(row, "button").map((b) => [b.type, b.text])).toEqual([["submit", "Connect"]]);
+  });
+
+  it("gives a credential the instance has an OAuth app for a Connect with link in place of the paste form", () => {
+    const row = build({ ...forge, label: "GitLab" }, "a personal access token", ["token"], undefined, "/connect/gitlab/start");
+    expect(all(row, "form")).toEqual([]);
+    expect(all(row, "input")).toEqual([]);
+    const links = all(row, "a");
+    expect(links.map((a) => [a.href, a.text])).toEqual([["/connect/gitlab/start", "Connect with GitLab"]]);
+    // Expired or not working, the same link and Disconnect beside it.
+    const failed = build({ ...forge, label: "GitLab", state: "failed", detail: "refused" }, "", ["token"], undefined, "/connect/gitlab/start");
+    expect(all(failed, "a").map((a) => a.text)).toEqual(["Connect with GitLab"]);
+    expect(all(failed, "button").map((b) => b.text)).toEqual(["Disconnect"]);
+    // Connected, no link at all.
+    expect(all(build({ ...forge, state: "connected" }, "", ["token"], undefined, "/connect/forge/start"), "a")).toEqual([]);
   });
 
   it("gives a connected credential Disconnect and no form", () => {

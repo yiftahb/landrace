@@ -43,3 +43,21 @@ describe.each([
     await expect(connection.check?.(value, ctx(secrets))).resolves.toMatch(/401/);
   });
 });
+
+describe.each([
+  ["GitHub", githubConnection, {}, "github", "https://github.com/login/oauth/authorize", "https://github.com/login/oauth/access_token", "repo"],
+  ["GitLab", gitlabConnection, {}, "gitlab", "https://gitlab.com/oauth/authorize", "https://gitlab.com/oauth/token", "api"],
+  ["GitLab, self-managed", gitlabConnection, { gitlabBaseUrl: "https://git.acme.example/" }, "gitlab",
+    "https://git.acme.example/oauth/authorize", "https://git.acme.example/oauth/token", "api"],
+])("%s's OAuth app", (_name, connection, base, prefix, authorizeUrl, tokenUrl, scope) => {
+  it("is read from the instance's client id and secret, with the forge's own URLs and scope", () => {
+    const secrets: Record<string, string> = { ...base };
+    secrets[`${prefix}OauthClientId`] = "id-1";
+    secrets[`${prefix}OauthClientSecret`] = "secret-1";
+    expect(connection.oauth?.(ctx(secrets))).toEqual({ authorizeUrl, tokenUrl, clientId: "id-1", clientSecret: "secret-1", scope });
+  });
+
+  it("answers empty values when the instance has none, which offers the paste form instead", () => {
+    expect(connection.oauth?.(ctx(base))).toMatchObject({ clientId: "", clientSecret: "" });
+  });
+});

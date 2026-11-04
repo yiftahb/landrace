@@ -314,6 +314,66 @@ function servePeople(opts: UiOptions, req: IncomingMessage, res: ServerResponse,
   }, () => send(res, 400, text, "the request could not be read"));
 }
 
+/** Where a Connect link starts an OAuth flow, and where the provider sends the person back: the connection it names. */
+const OAUTH_PATH = /^\/connect\/([^/]+)\/(start|callback)$/;
+
+/** Where the person lands once a callback stored the token: the page's own Integrations tab. */
+const INTEGRATIONS_TAB = "/#/integrations";
+
+function redirect(res: ServerResponse, location: string): void {
+  res.writeHead(302, {
+    location,
+    "content-security-policy": CSP,
+    "x-content-type-options": "nosniff",
+    "cache-control": "no-store",
+    // The callback's own URL carries the code and the state: neither goes on to the provider's next page.
+    "referrer-policy": "no-referrer",
+  });
+  res.end();
+}
+
+/**
+ * Connect with a provider: two GETs, since a link and a provider's redirect
+ * are both a browser's navigation, which cannot carry the page's header.
+ * The start is still refused when the browser says another site asked for
+ * it. The callback cannot be — the provider is another site — so the state
+ * it carries is what proves the flow was begun here, by this person, for
+ * this connection. A refusal is 409 and anything else 502, in the panel's
+ * scrubbed sentence; a stored token goes back to the Integrations tab.
+ */
+function serveOAuth(opts: UiOptions, req: IncomingMessage, res: ServerResponse, raw: string, step: string): void {
+  const text = "text/plain; charset=utf-8";
+  const people = opts.people;
+  if (!people) return send(res, 404, text, "not found");
+  if (req.method !== "GET") return send(res, 405, text, "method not allowed");
+  let id: string;
+  try {
+    id = decodeURIComponent(raw);
+  } catch {
+    return send(res, 400, text, "that is not a connection");
+  }
+  if (id === "" || UNPRINTABLE.test(id)) return send(res, 400, text, "that is not a connection");
+  const failed = (e: unknown): void => {
+    if (e instanceof Refusal) return send(res, 409, text, oneLine(e.message));
+    console.error(`landrace: connecting ${id} failed: ${oneLine(messageOf(e))}`);
+    send(res, 502, text, oneLine(messageOf(e)));
+  };
+  const caller = people.caller(req);
+  if (step === "start") {
+    const site = req.headers["sec-fetch-site"];
+    if (site !== undefined && site !== "same-origin" && site !== "none") {
+      return send(res, 403, text, "refused: this can be asked only from the Landrace page itself");
+    }
+    people.panel.begin(caller, id).then((url) => redirect(res, url), failed);
+    return;
+  }
+  const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+  const param = (name: string): string | undefined => query.get(name) ?? undefined;
+  people.panel.finish(caller, id, {
+    state: param("state"), code: param("code"), error: param("error"), errorDescription: param("error_description"),
+  }).then(() => redirect(res, INTEGRATIONS_TAB), failed);
+}
+
 /** What every board write answers while no runtime stands behind it: the page shows it beside the control. */
 const UNREADY = "refused: Landrace is not running yet; connect what the Integrations tab lists first";
 
@@ -339,6 +399,11 @@ export function boardListener(opts: UiOptions): (req: IncomingMessage, res: Serv
     // is not ready becomes ready, so nothing below may stand in its way.
     if (path === "/people/me" || CONNECT_PATH.test(path)) {
       servePeople(opts, req, res, path);
+      return;
+    }
+    const oauth = OAUTH_PATH.exec(path);
+    if (oauth) {
+      serveOAuth(opts, req, res, oauth[1] ?? "", oauth[2] ?? "");
       return;
     }
 

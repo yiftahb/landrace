@@ -26,9 +26,13 @@ export { GitHubPages } from "./pages.js";
 export const GRAPHQL_QUERIES = { ...ISSUE_QUERIES, ...FORGE_QUERIES };
 
 /**
- * A person's own GitHub token, pasted into the Integrations tab, for a
- * per-person secret to name as `github.token`. Its check asks `GET /user`
- * with it: GitHub's answer to anything but a 2xx is why it does not work.
+ * A person's own GitHub token, for a per-person secret to name as
+ * `github.token`: pasted into the Integrations tab, or — when the instance
+ * has a GitHub OAuth app, its id and secret in `githubOauthClientId` and
+ * `githubOauthClientSecret` — connected with GitHub, for the `repo` scope.
+ * An OAuth app's token does not expire, so it is never renewed. Its check
+ * asks `GET /user` with it: GitHub's answer to anything but a 2xx is why it
+ * does not work.
  */
 export const githubConnection = defineConnection({
   id: "github",
@@ -36,6 +40,13 @@ export const githubConnection = defineConnection({
   kind: "credential",
   fields: ["token"],
   paste: { hint: "A personal access token (github.com → Settings → Developer settings → Personal access tokens)" },
+  oauth: (ctx) => ({
+    authorizeUrl: "https://github.com/login/oauth/authorize",
+    tokenUrl: "https://github.com/login/oauth/access_token",
+    clientId: ctx.secrets.get("githubOauthClientId") ?? "",
+    clientSecret: ctx.secrets.get("githubOauthClientSecret") ?? "",
+    scope: "repo",
+  }),
   async check(value) {
     const res = await fetch("https://api.github.com/user", {
       headers: { authorization: `Bearer ${value.fields["token"] ?? ""}`, accept: "application/vnd.github+json", "user-agent": "landrace" },
