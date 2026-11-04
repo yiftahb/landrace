@@ -23,6 +23,6 @@ export { EffectRefused, isEffectRefused } from "#conventions.js";
 
 export type {
   BranchHeads, BriefTable, ChangedFile, CreateRequest, ChangedFiles, CheckCounts, CheckState, ComposedHooks, EffectHandler, EffectTable, FailedCheck, Finding,
-  Git, HistoryItem, MergeAnswer, OpenRelations, PullRecord, RelatedRecord, Reply, ReviewThread, Roles, SnapshotComment, ThreadComment, ThreadCounts,
+  Git, HistoryItem, HttpLimit, MergeAnswer, OpenRelations, PullRecord, RelatedRecord, Reply, ReviewThread, Roles, SnapshotComment, ThreadComment, ThreadCounts,
   ItemRecord, TrackerComment, CommentVisibility, WorklogRecord,
 } from "#namespace.js";

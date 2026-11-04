@@ -1,6 +1,53 @@
 import { createLogger } from "#runner/events.js";
 import type { LandraceEvent } from "#namespace.js";
 
+describe("createLogger(...).with", () => {
+  it("stamps every event with its fields, and an event's own field wins", () => {
+    const seen: LandraceEvent[] = [];
+    const log = createLogger({ sink: (e) => seen.push(e) }).with({ person: "local", personEmail: "a@b.c" });
+    log("tick.started", { items: 1 });
+    log("tick.started", { person: "someone" });
+    expect(seen).toEqual([
+      { name: "tick.started", person: "local", personEmail: "a@b.c", items: 1 },
+      { name: "tick.started", person: "someone", personEmail: "a@b.c" },
+    ]);
+  });
+
+  it("nests, the inner stamp over the outer, and leaves the parent unstamped", () => {
+    const seen: LandraceEvent[] = [];
+    const base = createLogger({ sink: (e) => seen.push(e) });
+    const inner = base.with({ person: "local", workflow: "outer" }).with({ workflow: "main" });
+    inner("step.finished", {});
+    base("step.finished", {});
+    expect(seen).toEqual([{ name: "step.finished", person: "local", workflow: "main" }, { name: "step.finished" }]);
+  });
+
+  it("redacts with the parent's set, including a value the stamped logger was told about", () => {
+    const seen: LandraceEvent[] = [];
+    const base = createLogger({ sink: (e) => seen.push(e), redactValues: ["ghp_parent_secret"] });
+    const log = base.with({ person: "local" });
+    log.redact(["late_server_secret"]);
+    log("step.invoked", { a: "ghp_parent_secret", b: "late_server_secret" });
+    base("step.invoked", { b: "late_server_secret" });
+    expect(JSON.stringify(seen)).not.toMatch(/ghp_parent_secret|late_server_secret/);
+    expect(seen).toHaveLength(2);
+    expect(log.scrub("x late_server_secret")).toBe("x [redacted]");
+  });
+
+  it("redacts a stamped field too", () => {
+    const seen: LandraceEvent[] = [];
+    const log = createLogger({ sink: (e) => seen.push(e), redactValues: ["a-secret@b.c"] }).with({ personEmail: "a-secret@b.c" });
+    log("tick.started", {});
+    expect(seen).toEqual([{ name: "tick.started", personEmail: "[redacted]" }]);
+  });
+
+  it("keeps the debug-only gate", () => {
+    const seen: LandraceEvent[] = [];
+    createLogger({ sink: (e) => seen.push(e) }).with({ person: "local" })("agent.event", {});
+    expect(seen).toEqual([]);
+  });
+});
+
 describe("createLogger", () => {
   it("emits an event with its name and data", () => {
     const seen: LandraceEvent[] = [];

@@ -1,5 +1,19 @@
-import { httpError, httpReason } from "#kit/http.js";
+import { httpError, httpLimit, httpReason } from "#kit/http.js";
 import { gatewayPage } from "#tests/support/http-pages.js";
+
+describe("httpLimit", () => {
+  it("is a 429, with Retry-After as it came", () => {
+    expect(httpLimit(429, new Headers({ "Retry-After": "30" }))).toEqual({ status: 429, retryAfter: "30" });
+  });
+
+  it("is a 429 with no retryAfter when the header is absent", () => {
+    expect(httpLimit(429, new Headers())).toEqual({ status: 429 });
+  });
+
+  it.each([200, 403, 500, 503])("is nothing for %i", (status) => {
+    expect(httpLimit(status, new Headers({ "Retry-After": "30" }))).toBeNull();
+  });
+});
 
 describe("httpReason", () => {
   it("names an HTML page by its title, with no markup and none of its images", () => {

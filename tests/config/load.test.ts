@@ -241,6 +241,56 @@ describe("agent.git's references", () => {
   });
 });
 
+/** #179: whose this instance's events are, `people.local`, its email per instance as `agent.git`'s is. */
+describe("people.local", () => {
+  const TOKEN = "GITHUB_TOKEN=ghp_xxxxxxxxxxxx\n";
+
+  it("is optional: a config without it loads with no problem", async () => {
+    const dir = await fixture(TOKEN);
+    const loaded = await loadConfig(dir);
+    expect(loaded.config.people).toBeUndefined();
+    expect(loaded.missingPerson).toEqual([]);
+    expect(configProblems(dir, loaded)).toEqual([]);
+  });
+
+  it.each([
+    ["$VAR", "people: { local: { email: $LR_EMAIL, name: $LR_NAME } }\n"],
+    ["${VAR}", 'people: { local: { email: "${LR_EMAIL}", name: "${LR_NAME}" } }\n'],
+  ])("resolves a %s reference from .env into config.people.local", async (_, people) => {
+    const dir = await fixture(`${TOKEN}LR_EMAIL=dev1@example.invalid\nLR_NAME=Dev One\n`, people);
+    const loaded = await loadConfig(dir);
+    expect(loaded.config.people?.local).toEqual({ email: "dev1@example.invalid", name: "Dev One" });
+    expect(configProblems(dir, loaded)).toEqual([]);
+  });
+
+  it("keeps a literal as written", async () => {
+    const dir = await fixture(TOKEN, "people: { local: { email: dev1@example.invalid } }\n");
+    expect((await loadConfig(dir)).config.people?.local).toEqual({ email: "dev1@example.invalid" });
+  });
+
+  it.each([
+    ["unset", TOKEN],
+    ["empty", `${TOKEN}LR_EMAIL=\n`],
+  ])("refuses an email variable that is %s, as people.local.email, for validate and start", async (_, env) => {
+    const dir = await fixture(env, "people: { local: { email: $LR_EMAIL } }\n");
+    const loaded = await loadConfig(dir);
+    expect(configProblems(dir, loaded)).toEqual([{
+      rule: "people.local.email",
+      message: expect.stringMatching(/^people\.local\.email is \$LR_EMAIL, which does not resolve to a usable value; set it in .*\.env/),
+    }]);
+    expect(() => assertConfigUsable(dir, loaded)).toThrow(/people\.local\.email: people\.local\.email is \$LR_EMAIL/);
+  });
+
+  it("refuses an unset name variable as people.local.name", async () => {
+    const dir = await fixture(TOKEN, "people: { local: { name: $LR_NAME } }\n");
+    expect(configProblems(dir, await loadConfig(dir)).map((p) => p.rule)).toEqual(["people.local.name"]);
+  });
+
+  it("refuses a key it does not read", async () => {
+    await expect(loadConfig(await fixture(TOKEN, "people: { local: { mail: a@b.c } }\n"))).rejects.toThrow(/people\.local/);
+  });
+});
+
 describe("the item branch", () => {
   it("is landrace/{item} when none is set, and takes the one set", async () => {
     expect((await loadConfig(await fixture(""))).config.branch).toBe("landrace/{item}");

@@ -3,6 +3,7 @@ import { basename, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
+import { localPerson, personFields } from "#people/person.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
 import { durationMs, RECORD_EFFECT } from "#conventions.js";
@@ -581,12 +582,14 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // status`, which must make no call beyond the ones reading requires.
   const otel = opts.readOnly ? null : telemetrySettings(loaded.telemetry, opts.otel);
   const telemetry = otel ? await createOtelSink(otel) : undefined;
+  // Every event the runtime logs is the one local person's: its own log, every
+  // hook's through ctx.log, and each workflow's deps and notify below.
   const log: RedactingLogger = createLogger({
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
     redactValues: redactionValues(loaded),
     ...(opts.sink === undefined ? {} : { sink: opts.sink }),
     ...(telemetry ? { exporter: telemetry.sink } : {}),
-  });
+  }).with(personFields(localPerson(loaded)));
 
   // With `vars` already substituted in: the graphs the daemon runs are the
   // graphs `landrace validate` checked, filled in from the same map.
@@ -691,6 +694,9 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     // built once for each, against that workflow's steps (see `executorFor`).
     const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps, pairingStages: pairingStages(workflow) };
     const screener = opts.readOnly ? undefined : await screenerFor(loaded.config, registry, ectx);
+    // Named on what converge and notify log for it — `agent.limited` among
+    // them — without a field of its own in deps.
+    const workflowLog = log.with({ workflow: id });
     workflows.push({
       id, name: workflow.name, description: workflow.description, source,
       ...(registry.operator ? { operator: registry.operator } : {}),
@@ -709,13 +715,13 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
         ...(sandbox === null ? {} : { sandbox }),
         ...(screener ? { screen: screener } : {}),
         ctx,
-        log,
+        log: workflowLog,
         scrub: log.scrub,
         ...(activity ? { activity } : {}),
         // Not for `landrace status`: reading must not message anyone.
         ...(opts.readOnly || !loaded.config.notify ? {} : {
           notify: createNotify({
-            id, workflow, notify: loaded.config.notify, notifiers: registry.notifiers, ctx, log, board: opts.board ?? (() => null),
+            id, workflow, notify: loaded.config.notify, notifiers: registry.notifiers, ctx, log: workflowLog, board: opts.board ?? (() => null),
           }),
         }),
       },

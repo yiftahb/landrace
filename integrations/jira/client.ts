@@ -6,13 +6,16 @@
  * goes out until the account it is written as is known.
  */
 import type { RuntimeContext } from "landrace/hooks";
-import { httpError } from "landrace/kit";
+import { httpError, httpLimit } from "landrace/kit";
+import type { HttpLimit } from "landrace/kit";
 
 export interface ClientOptions {
   baseUrl: string;
   email: string;
   token: string;
   fetchImpl?: typeof fetch | undefined;
+  /** Told of each response refused for a limit, with the path on the site it was refused on. */
+  onLimit?: ((where: string, limit: HttpLimit) => void) | undefined;
 }
 
 /**
@@ -58,6 +61,8 @@ export function createClient(opts: ClientOptions) {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     const text = await res.text();
+    const limit = httpLimit(res.status, res.headers);
+    if (limit !== null) opts.onLimit?.(path, limit);
     // The status rides on the error, so "is this a 404?" is never a search of the message.
     if (res.status === 401) {
       throw Object.assign(
@@ -123,7 +128,10 @@ export function clientFor(ctx: RuntimeContext, fetchImpl?: typeof fetch): Client
     throw new Error(`the Jira integration needs ${missing.map((n) => `"${n}"`).join(", ")} declared under secrets in landrace.yaml`);
   }
   const secret = (name: (typeof SECRETS)[number]): string => (ctx.secrets.get(name) ?? "").trim();
-  const client = createClient({ baseUrl: secret("jiraBaseUrl"), email: secret("jiraEmail"), token: secret("jiraToken"), fetchImpl });
+  const client = createClient({
+    baseUrl: secret("jiraBaseUrl"), email: secret("jiraEmail"), token: secret("jiraToken"), fetchImpl,
+    onLimit: (where, limit) => ctx.log("integration.limited", { integration: "jira", where, ...limit }),
+  });
   clients.set(ctx.config, client);
   return client;
 }

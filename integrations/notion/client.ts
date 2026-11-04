@@ -4,12 +4,15 @@
  * calls is `pages.ts`'s.
  */
 import type { RuntimeContext } from "landrace/hooks";
-import { httpError } from "landrace/kit";
+import { httpError, httpLimit } from "landrace/kit";
+import type { HttpLimit } from "landrace/kit";
 
 export interface NotionOptions {
   /** An internal integration's secret, which the parent page is shared with. */
   token: string;
   fetchImpl?: typeof fetch | undefined;
+  /** Told of each response refused for a limit — every one waited out, and the last — with its path below the API. */
+  onLimit?: ((where: string, limit: HttpLimit) => void) | undefined;
 }
 
 const API = "https://api.notion.com/v1";
@@ -57,6 +60,9 @@ export function createClient(opts: NotionOptions) {
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
+      // Each one, not only the last: a burst waited out is still time spent.
+      const limit = httpLimit(res.status, res.headers);
+      if (limit !== null) opts.onLimit?.(path, limit);
       if (res.status === 429 && attempt < TRIES) {
         // Seconds, per the header; a missing or unreadable one waits one.
         const seconds = Number(res.headers.get("retry-after") ?? NaN);
@@ -110,7 +116,10 @@ export function clientFor(ctx: RuntimeContext): Client {
   if (existing) return existing;
   const token = ctx.secrets.get("notionToken");
   if (!token) throw new Error('the Notion integration needs a "notionToken" secret declared in landrace.yaml');
-  const client = createClient({ token });
+  const client = createClient({
+    token,
+    onLimit: (where, limit) => ctx.log("integration.limited", { integration: "notion", where, ...limit }),
+  });
   clients.set(ctx.config, client);
   return client;
 }

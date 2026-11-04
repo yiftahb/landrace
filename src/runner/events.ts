@@ -121,7 +121,7 @@ export function createLogger(opts: {
   });
   const sink = opts.sink ?? ((e: LandraceEvent) => console.log(JSON.stringify(e)));
 
-  const log = ((name, data = {}) => {
+  const emit = (name: EventName, data: Record<string, unknown>): void => {
     // Agent output is voluminous and carries attacker-influenced text. It is
     // printed only on request, and it is data — never interpreted. The same
     // goes for the per-pass snapshot, which quotes the issue body verbatim.
@@ -136,16 +136,26 @@ export function createLogger(opts: {
       console.error(`landrace: telemetry failed to export an event: ${messageOf(e)}`);
     }
     if (printed) sink(event);
-  }) as RedactingLogger;
+  };
   // After construction, for what an executor's setup turns up. Skipped rather
   // than refused below the minimum: a server env of "1" is a setting, not a
   // secret, and refusing it would stop the process over nothing.
-  log.redact = (values) => {
+  const redact = (values: readonly string[]): void => {
     for (const value of values) {
       const trimmed = value.trim();
       if (trimmed.length >= MIN_SECRET_LENGTH && !secrets.includes(trimmed)) secrets.push(trimmed);
     }
   };
-  log.scrub = (text, extra = []) => redactValue(text, [...secrets, ...extra]) as string;
-  return log;
+  const scrub = (text: string, extra: readonly string[] = []): string => redactValue(text, [...secrets, ...extra]) as string;
+
+  // Every stamped logger shares `secrets`: one redaction set, whichever of
+  // them an executor's setup was handed.
+  const stamped = (fields: Record<string, unknown>): RedactingLogger => {
+    const log = ((name, data = {}) => emit(name, { ...fields, ...data })) as RedactingLogger;
+    log.redact = redact;
+    log.scrub = scrub;
+    log.with = (more) => stamped({ ...fields, ...more });
+    return log;
+  };
+  return stamped({});
 }
