@@ -540,6 +540,12 @@ export interface LoadedConfig {
    * into `config.agent.git`.
    */
   missingGit: Array<{ key: string; variable: string }>;
+  /**
+   * `people.local` keys written as a `$VAR` that is unset or empty, with the
+   * variable each names. One that resolved is already written back into
+   * `config.people.local`.
+   */
+  missingPerson: Array<{ key: string; variable: string }>;
 }
 
 /* -------------------------------------------------------------- workflow -- */
@@ -1724,7 +1730,8 @@ export type EventName =
   | "display.failed"
   | "source.failed"
   | "wake.failed"
-  | "notify.sent" | "notify.failed";
+  | "notify.sent" | "notify.failed"
+  | "agent.limited" | "integration.limited";
 
 export interface LandraceEvent {
   name: EventName;
@@ -1764,7 +1771,32 @@ export interface OtelSink {
 export type RedactingLogger = Logger & {
   redact(values: readonly string[]): void;
   scrub(text: string, extra?: readonly string[]): string;
+  /**
+   * The same logger, every event stamped with `fields` — a field the event
+   * carries itself wins. Redaction and the debug gate are the parent's, so a
+   * value `redact` is told about through either reaches both.
+   */
+  with(fields: Record<string, unknown>): RedactingLogger;
 };
+
+/**
+ * Whose an event is. Locally there is one, `LOCAL_PERSON_ID`, named by
+ * `people.local` in `landrace.yaml` when the operator wants their email on it.
+ */
+export interface Person {
+  id: string;
+  email?: string;
+  name?: string;
+}
+
+/** Which limit an agent's failure says it hit: its plan's usage, a rate, or the provider being overloaded. */
+export type LimitKind = "usage" | "rate" | "overloaded";
+
+/** A response a vendor refused for a limit: its status, and `Retry-After` as it came when it sent one. */
+export interface HttpLimit {
+  status: number;
+  retryAfter?: string;
+}
 
 export type LockKind = "tick" | "conversation" | "execution" | "goto" | "pair";
 

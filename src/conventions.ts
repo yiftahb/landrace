@@ -31,6 +31,9 @@ export const LABELS = {
 const STAGE_RE = /^lr:stage:(.+)$/;
 export const STAGE_LABEL_PREFIX = "lr:stage:";
 
+/** The one person a local instance runs for: every event `landrace start` logs is theirs. */
+export const LOCAL_PERSON_ID = "local";
+
 /** Every label `LABELS` names, as a tracker compares them. */
 const ENGINE_LABELS: ReadonlySet<string> = new Set(
   Object.values(LABELS).filter((l): l is Exclude<typeof l, (id: string) => string> => typeof l === "string"),

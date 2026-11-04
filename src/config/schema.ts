@@ -93,6 +93,16 @@ export const runtimeConfigSchema = z.object({
    */
   vars: z.record(z.string()).default({}),
   /**
+   * Who this instance's events belong to: every event `landrace start` logs
+   * carries `person: "local"`, and `personEmail` when `email` is set. Each
+   * value may be a `$VAR`, resolved per instance as `agent.git`'s is, since one
+   * committed file names nobody in particular.
+   */
+  people: z
+    .object({ local: z.object({ email: z.string().min(1).optional(), name: z.string().min(1).optional() }).strict() })
+    .strict()
+    .optional(),
+  /**
    * Who is told when an item comes to rest waiting on a person: `on` the
    * events, `via` the notifier hooks by id. Strict, and `needs-you` is the one
    * event there is — a notify block naming anything else would promise a

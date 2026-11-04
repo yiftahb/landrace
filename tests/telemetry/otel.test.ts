@@ -174,6 +174,18 @@ describe("createOtelSink", () => {
     expect(records[0]?.resource.attributes["service.name"]).toBe("lr-test");
   });
 
+  it("carries the person who owns an event, and marks a limit hit as WARN", async () => {
+    const exporter = memory();
+    const otel = await createOtelSink(telemetrySettings(on())!, exporter);
+    otel.sink({ name: "agent.limited", item: "19", person: "local", personEmail: "a@b.c", kind: "usage" });
+    otel.sink({ name: "integration.limited", integration: "github", status: 429, where: "/issues", retryAfter: "30" });
+    await otel.shutdown();
+
+    const records = exporter.getFinishedLogRecords();
+    expect(records[0]?.attributes).toMatchObject({ "landrace.person": "local", "landrace.personEmail": "a@b.c" });
+    expect(records.map((r) => r.severityText)).toEqual(["WARN", "WARN"]);
+  });
+
   it("holds records in the batch until shutdown flushes them", async () => {
     const exporter = memory();
     const otel = await createOtelSink(telemetrySettings(on())!, exporter);

@@ -1,6 +1,16 @@
-import type { ConvergeDeps, Graph, LockOptions, RunningItem, RuntimeContext, Source, TickRow } from "#namespace.js";
+import type {
+  ConvergeDeps, EventName, Graph, LockOptions, Logger, RedactingLogger, RunningItem, RuntimeContext, Source, TickRow,
+} from "#namespace.js";
 import { scrubberOf } from "#runner/events.js";
 import { listingFailures, tickWorkspace } from "#runner/tick.js";
+
+/** The workspace's logger over the caller's plain one: redacts nothing, and stamps what `with` is given. */
+const passThrough = (log: Logger, fields: Record<string, unknown> = {}): RedactingLogger =>
+  Object.assign((name: EventName, data: Record<string, unknown> = {}) => log(name, { ...fields, ...data }), {
+    redact: () => {},
+    scrub: (text: string) => text,
+    with: (more: Record<string, unknown>) => passThrough(log, { ...fields, ...more }),
+  });
 
 /** The workflow id a one-workflow tick runs its items under. */
 export const ONLY = "main";
@@ -46,7 +56,7 @@ export async function tick(opts: TickOptions): Promise<TickRow[]> {
       stop: new AbortController(),
       running: opts.running ?? new Map(),
       seen: new Map(),
-      log: Object.assign((...args: Parameters<typeof deps.log>) => deps.log(...args), { redact: () => {}, scrub: (text: string) => text }),
+      log: passThrough(deps.log),
       ctx: deps.ctx,
     },
     ...(opts.lock ? { lock: opts.lock } : {}),

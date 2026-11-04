@@ -89,6 +89,12 @@ export function configProblems(dir: string, loaded: LoadedConfig): Problem[] {
         `agent.git.${key} is $${variable}, which does not resolve to a usable value; set it in ${env}. ` +
         "An unset or empty variable would leave every commit an agent or a hook makes without the identity it names",
     })),
+    ...loaded.missingPerson.map(({ key, variable }) => ({
+      rule: `people.local.${key}`,
+      message:
+        `people.local.${key} is $${variable}, which does not resolve to a usable value; set it in ${env}. ` +
+        "It names whose this instance's events are, and an unset or empty variable names no one",
+    })),
     ...varsHoldingSecrets(loaded).map((name) => ({
       rule: "vars",
       message:
@@ -162,24 +168,29 @@ export async function loadConfig(dir: string): Promise<LoadedConfig> {
    * A refused reference stays as written, so the executor's shape check does
    * not report the same mistake a second time in other words.
    */
-  const missingGit: Array<{ key: string; variable: string }> = [];
-  const git: unknown = config.agent.git;
-  if (typeof git === "object" && git !== null && !Array.isArray(git)) {
-    const block = git as Record<string, unknown>;
-    for (const key of ["name", "email"]) {
+  const resolveIn = (block: Record<string, unknown>, keys: readonly string[]): Array<{ key: string; variable: string }> => {
+    const missing: Array<{ key: string; variable: string }> = [];
+    for (const key of keys) {
       const reference = block[key];
       const variable = typeof reference === "string" ? referenceOf(reference) : undefined;
       if (variable === undefined) continue;
       const value = env.get(variable);
-      if (value === undefined || value.trim() === "") missingGit.push({ key, variable });
+      if (value === undefined || value.trim() === "") missing.push({ key, variable });
       else block[key] = value;
     }
-  }
+    return missing;
+  };
+  const git: unknown = config.agent.git;
+  const missingGit = typeof git === "object" && git !== null && !Array.isArray(git)
+    ? resolveIn(git as Record<string, unknown>, ["name", "email"])
+    : [];
+  // The same, for whose events these are: the email is each operator's own.
+  const missingPerson = config.people ? resolveIn(config.people.local, ["email", "name"]) : [];
 
   const telemetry = new Map(TELEMETRY_KEYS.flatMap((key) => {
     const value = env.get(key);
     return value === undefined ? [] : [[key, value] as const];
   }));
 
-  return { config, missing, secretValues, vars, missingVars, missingGit, telemetry };
+  return { config, missing, secretValues, vars, missingVars, missingGit, missingPerson, telemetry };
 }

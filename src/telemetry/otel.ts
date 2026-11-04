@@ -99,7 +99,7 @@ export function telemetrySettings(env: ReadonlyMap<string, string>, overrides: r
   };
 }
 
-const WARN = /\.(failed|denied|blocked)$/;
+const WARN = /\.(failed|denied|blocked|limited)$/;
 
 /**
  * A logger sink that ships every event to a collector as an OTel log record.
