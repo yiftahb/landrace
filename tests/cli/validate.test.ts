@@ -303,6 +303,23 @@ describe("landrace validate, and the notify block", () => {
     await rm(join(dir, "landrace.yaml"));
     expect((await runValidate(dir)).problems).toEqual([]);
   });
+
+  // `validate` says what `start` refuses: a door bound wider than loopback,
+  // with nothing to authenticate who walks through it.
+  it.each(["0.0.0.0", "10.0.0.5"])("reports serve.host %s as an unauthenticated door", async (host) => {
+    const r = await runValidate(await dirFor(`serve: { host: "${host}" }\n`));
+    expect(r.ok).toBe(false);
+    expect(r.problems.filter((p) => p.rule === "serve.unauthenticated")).toHaveLength(1);
+    expect(r.problems.find((p) => p.rule === "serve.unauthenticated")?.message).toContain(host);
+  });
+
+  // The fixture loads no executor, so `validate` has that to say whatever the
+  // host; the claim here is only that a loopback door draws nothing.
+  it("passes a loopback serve.host", async () => {
+    const r = await runValidate(await dirFor('serve: { host: "127.0.0.1" }\n'));
+    expect(r.problems.filter((p) => p.rule.startsWith("serve"))).toEqual([]);
+    expect(r.problems.map((p) => p.rule)).toEqual(["executor"]);
+  });
 });
 
 describe("landrace next", () => {
