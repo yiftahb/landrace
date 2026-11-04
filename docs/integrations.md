@@ -493,7 +493,7 @@ When the instance has the forge's OAuth app, the GitLab or GitHub row in the Int
 - **GitLab:** on gitlab.com or your instance, open Applications (user Preferences, a group's settings, or the Admin area). Add an application with the callback above, the `api` scope, and **Confidential** checked. Off gitlab.com, the app lives on `gitlabBaseUrl`, and so do its consent and token URLs.
 - **GitHub:** open Settings → Developer settings → OAuth Apps → New OAuth App. Set the "Authorization callback URL" to the callback above with `github` as its id, such as `http://127.0.0.1:4545/connect/github/callback`. Landrace asks for the `repo` scope.
 
-**Give Landrace its id and secret.** The four secrets are `gitlabOauthClientId` and `gitlabOauthClientSecret` for GitLab, and `githubOauthClientId` and `githubOauthClientSecret` for GitHub. A forge offers the link only when both of its secrets are non-empty. Redaction is by the names `log.redact` lists, so add each client secret there beside your other credentials:
+**Give Landrace its id and secret.** The four secrets are `gitlabOauthClientId` and `gitlabOauthClientSecret` for GitLab, and `githubOauthClientId` and `githubOauthClientSecret` for GitHub. A forge offers the link only when both of its secrets are non-empty. GitLab also needs a `gitlabBaseUrl` its client accepts, `https://host[:port]`; any other base shows the paste form, so no client secret, code or refresh token is posted over plain HTTP. Redaction is by the names `log.redact` lists, so add each client secret there beside your other credentials:
 
 ```yaml
 # .landrace/landrace.yaml
