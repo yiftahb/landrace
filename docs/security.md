@@ -40,10 +40,10 @@ agent:
 
 - **Writes** land only in the step's worktree and in the repository's shared `.git` — never in your checkout, your home, `.git/hooks` or `.git/config`.
 - **Network** is confined for commands, not for every tool. The allowlist confines what the shell and anything it runs can reach to `hosts`: a host name, or the sandbox's own `*.example.com` wildcard, with no scheme, port or path. With no `hosts`, a write step's commands have no network at all, and cannot fetch or push. In-process tools such as WebFetch and WebSearch do not go through the sandbox; they follow Claude Code's own permission rules, which deny them under `-p`. Your own settings reach no step, so they cannot allow them; only managed settings, which `--setting-sources` does not govern, could.
-- **Reads** are refused under each `deny` path — by the sandbox for commands, and by a `Read` rule for the Read tool, which the sandbox does not cover. A path starts with `~/`. With no `deny`, the four paths above apply; a list you write replaces them, so keep the ones you still want.
+- **Reads** are refused under each `deny` path — by the sandbox for commands, and by a `Read` rule for the Read tool, which the sandbox does not cover. A path starts with `~/`. With no `deny`, the four paths above and `~/.landrace/credentials` apply; a list you write replaces them, so keep the ones you still want. `~/.landrace/credentials` is denied whatever the list says — see [Stored credentials](#stored-credentials).
 - **No way out.** If the sandbox cannot start, the step is refused rather than run unconfined, and no command may ask to run outside it.
 - **Strict keys.** `sandbox` takes `hosts` and `deny` and nothing else; a misspelt key is refused at startup.
-- **Read-only steps and the screener** have no shell to confine.
+- **Read-only steps** have no shell to confine. They get a `Read` rule for each denied path, `~/.landrace/credentials` included. **The screener** has no tool at all.
 
 What it does not do:
 
@@ -52,6 +52,14 @@ What it does not do:
 - **No settings file loads.** A write step passes `--setting-sources ""`, so it loads neither a worktree's `.claude/settings.json` or `.claude/settings.local.json` — a step could commit one to the item's branch, and its hooks would run outside the sandbox on the next write step that checks the branch out — nor your user-level Claude settings, whose plugins would otherwise run in every write step whoever's they are. Your own `sandbox.filesystem.allowRead`, `sandbox.excludedCommands` and `sandbox.network.allowedDomains` no longer reach a write step either. Managed settings, which `--setting-sources` does not govern, still apply.
 
 Codex's sandbox is different and keeps less — see [Integrations](integrations.md#codex).
+
+## Stored credentials
+
+`~/.landrace/credentials/<person>.json` holds what each person has connected — see [Per-person keys](configuration.md#per-person-keys). Nothing in Landrace writes it yet. The store the connect flow will write through makes each file mode 0600, in a directory of mode 0700, and refuses to write over a file it cannot read rather than drop the connections in it. Every value read from it is cut from the log.
+
+The Claude Code integration denies `~/.landrace/credentials` to every step and turn, whatever `agent.sandbox.deny` says: a list you write replaces the defaults, and this repository's own `landrace.yaml` writes one. A write step gets it in the sandbox's `denyRead` and as `Read` rules; a read-only step gets the `Read` rules.
+
+**Codex does not keep it.** Codex cannot keep a command from reading a path, so it runs only with `deny: []` (see [Integrations](integrations.md#codex)). Under Codex, every step and turn can read `~/.landrace/credentials`. Do not store a connection you would not hand a step while running Codex.
 
 ### Copied files and setup
 

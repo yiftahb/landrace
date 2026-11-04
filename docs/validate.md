@@ -13,12 +13,12 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 
 ## The order it checks in
 
-1. **The configuration** (`landrace.yaml` and `.env`). It is optional, so a workflow can be checked where no credentials exist. A var that does not resolve stops here: loading the workflows without it would report every `{vars.x}` a second time as a name nothing declares.
+1. **The configuration** (`landrace.yaml`, `.env`, and the local person's stored connections when a key is [per person](configuration.md#per-person-keys)). It is optional, so a workflow can be checked where no credentials exist. A var that does not resolve stops here, and so does a per-person key nothing answers: loading the workflows without it would report every `{vars.x}` a second time as a name nothing declares.
 2. **The workspace layout and each workflow's files.** A workflow that will not load is reported under its folder, and the others are still checked.
 3. **Each workflow's graph and steps**, from the files alone.
 4. **Each workflow's hooks.** Only a workflow whose graph is already sound gets this far: importing a hook module runs its code, and the engine has already decided not to run an unsound workflow.
 5. **The executors and notifiers** the configuration names, built exactly as `landrace start` builds them.
-6. **Claims between workflows.**
+6. **Claims between workflows**, and the local person's per-person keys against the connections the hooks define.
 7. **`.env` exposure**, on every path out, including the ones that gave up early.
 
 ## The rules
@@ -32,6 +32,7 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 | `secret` | A secret whose `$VAR` does not resolve; a `.env` that exists and git does not ignore |
 | `vars` | A var that does not resolve or resolves to an empty value; an `agent.git` `$VAR` that does not resolve or resolves to an empty value; a `{vars.x}` nothing defines; a declared var nothing references; a var holding a secret's value |
 | `people.local.email`, `people.local.name` | A `people.local` value written as `$VAR` or `${VAR}` that does not resolve or resolves to an empty value — see [people](configuration.md#people) |
+| `connection.missing`, `connection.failed` | A [per-person key](configuration.md#per-person-keys) whose variable is unset or empty and whose connection is not stored or lacks the field (`missing`), or whose credentials file cannot be read (`failed`, with the reason). `start`, `status` and `landrace mcp` refuse in the same words |
 | `serve.unauthenticated` | A `serve.host` that is not loopback, `0.0.0.0` included: the board and its MCP endpoint would be open to the network with nothing asking who a caller is — see [The front door](configuration.md#the-front-door). `start` refuses it too |
 | `layout` | A workspace that is not one: the old single `workflow.yaml` at its root, no workflows, a workflow id that is not usable (lowercase letters, digits and `-`, starting with a letter or digit), a `workflows` folder or a workflow folder that is a symbolic link, a `workflows:` list in `landrace.yaml` that does not name exactly the folders |
 | `schema` | A `workflow.yaml` or step front matter that does not match its strict schema — an unknown key included; an `extends` that is empty; a step in an `extends` chain with one `## ` heading twice (a step that extends nothing and that nothing extends is read whole, repeats and all) |
@@ -93,6 +94,7 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 | `path-coverage` | A condition — in a trigger, an `identity`, a `requires`, a `goto` entry or an `eligible` rule — reading a path no hook provides. What counts as provided is the engine's own (`run.*`, `node`, `graph`, and `rel.<type>.in|out.*` for every type a source declares) plus each pre hook's declared paths. Reading `rel.<type>.in` of an outward-only type is refused here too |
 | `executor` | An executor that cannot start: an `agent.*` key it does not read, a step's `effort` it has no level for, a step's `mcp` server or tool outside `agent.mcp`, a step's `skills` no `.claude/skills/*/SKILL.md` defines, a step's `skills` or `plugins` the executor cannot enforce, an `agent.sandbox` it cannot keep or whose `hosts` reach the [front door](configuration.md#the-front-door), an `agent.git` that is not `{ name, email }` with both non-empty (each wrong key named), a `waits: pairing` stage under an executor that cannot start a fresh pairing (one with no `handoff`, a plain `Executor` hook included, or Codex, which can only carry on the agent's own session). One problem per line, as `executor "<id>" could not start: <reason>`. A problem with `agent.mcp` reads `… could not start: mcp: <reason>`: a server named with no `.mcp.json` at the repository root, a name `.mcp.json` does not define, a server named twice or with an empty `tools` list, or Landrace's own operator server — by name, by a command that runs `landrace mcp`, or by a URL at the [front door](configuration.md#the-front-door) |
 | `notify` | A `notify.via` id no loaded notifier answers to |
+| `connection.unknown`, `connection.expired`, `connection.duplicate` | A per-person key naming a connection no hook defines or a field it does not list; a stored connection older than its `lifetimeDays`; two different connection objects with one id in two workflows' hooks. `start` and `status` refuse each |
 | `admit` | A label a workflow admits items with that one of its own `eligible` rules (labels only) turns away, so the item would be started and never worked; an admitted label the engine writes itself (`lr:working`, `lr:stage:…`) |
 | `claims` | Two workflows over one source — the same loaded hook object — where the labels one admits satisfy the other's `eligible` rules, all label-only, so an item started in one would be claimed by both and halt |
 
@@ -107,6 +109,7 @@ A validator that flags healthy workflows gets switched off, and one that silentl
 - **`entry`** reads a trigger's `run.stage` only as a plain value or `{ $eq: <value> }`, alone or under `$and`. With several entry stages, a trigger whose `run.stage` sits inside anything else — `$or`, `$in`, `$not`, `$ne` — neither counts as the `null` anchor nor is refused as unanchored.
 - **`self-loop`** and **`unknown-stage`** read only a plain top-level `"run.stage": "<id>"`. A stage named any other way, even `{ "run.stage": { $eq: "<id>" } }`, is not checked, so a mistyped id there passes.
 - **`note`** and **`children`** abstain on relationship types when the hooks' declarations are unknown.
+- **`connection.unknown`, `connection.expired` and `connection.duplicate`** abstain when any workflow did not load, or its hooks were not imported: a connection a hook that did not load defines cannot be seen.
 
 The graph rules work from two derived views. An earlier version abstained wherever a trigger could fire from anywhere, which turned out to mean always — the entry trigger every real workflow needs switched three rules off graph-wide. Now `dead-end` and `reachability` use a superset that treats an unanchored trigger as an edge from every stage, and `cycle-bound` uses the anchored edges alone.
 

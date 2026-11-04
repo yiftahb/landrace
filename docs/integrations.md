@@ -505,7 +505,7 @@ A step's `capabilities` decide how it starts the agent:
 
 | Step declares | Permission mode | Also |
 |---|---|---|
-| no `repo:write` (read-only) | `manual` | `--restricted`, and `Bash`, `Edit`, `MultiEdit`, `NotebookEdit`, `Write` denied by name |
+| no `repo:write` (read-only) | `manual` | `--restricted`, `Bash`, `Edit`, `MultiEdit`, `NotebookEdit`, `Write` denied by name, and a `Read` rule for each denied path, `~/.landrace/credentials` among them |
 | `repo:write` | `acceptEdits` | Bash and every other tool, each command run inside Claude Code's sandbox — see [Security](security.md#a-write-steps-sandbox) |
 | nothing (the screener) | `manual` | `--restricted`, `--tools ""` (no built-in tool at all), and an empty strict MCP config |
 
@@ -559,7 +559,7 @@ Every run passes `--ignore-user-config` and `--ignore-rules`, so your own `confi
 **What it refuses.** What Codex cannot do is refused rather than run without. At startup, and by `validate`:
 
 - **`agent.sandbox.hosts`.** Its sandbox has the network on or off, with no list of hosts, so list none: a write step then has no network, and cannot install or push.
-- **`agent.sandbox.deny`.** It cannot keep a command from reading a path under your home, and every step and turn — read-only ones too, whose answer is posted to the item — has a shell. The default list applies when `deny` is not written, so write `deny: []` to accept that every step and turn can read those paths.
+- **`agent.sandbox.deny`.** It cannot keep a command from reading a path under your home, and every step and turn — read-only ones too, whose answer is posted to the item — has a shell. The default list applies when `deny` is not written, so write `deny: []` to accept that every step and turn can read those paths, `~/.landrace/credentials` included — see [Stored credentials](security.md#stored-credentials).
 - **An effort outside `none`, `low`, `medium`, `high`, `xhigh`.** No shipped step asks for one. A step of yours that asks for Claude's `max` is refused, and `validate` names it.
 - **`agent.plugins`**, which is Claude's.
 - **A step's own `skills` or `plugins`.** Codex loads neither project skills nor plugins, so it cannot keep a step to a list of them. A step's `mcp` is kept, as `agent.mcp` is.
