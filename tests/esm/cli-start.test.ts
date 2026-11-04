@@ -11,7 +11,7 @@ import { runStatus } from "#cli/status.js";
 import { portCommand, readInstance, writeInstance } from "#cli/port.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
-import type { BoardView, BuildOptions, CredentialStore, FrontDoorOptions, LandraceEvent, StartOptions, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
+import type { BoardView, BuildOptions, CredentialStore, FrontDoorOptions, LandraceEvent, RunningItem, StartOptions, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
 import { frontDoorListener } from "#front/server.js";
 import { runValidate } from "#cli/validate.js";
 import { createCredentialStore } from "#people/store.js";
@@ -680,6 +680,29 @@ ${EXECUTOR}`);
 
     await until(async () => (await applied(record)).length > 0, "the notification");
     expect(await applied(record)).toEqual([{ notified: ITEM, workflow: "main", stage: "reviewing", why: "waiting on you" }]);
+  });
+
+  /*
+   * #182: `start` rebuilds its runtime on a connect, and the replaced one
+   * never ticks again. A run it left in flight must still stop when its item
+   * closes, so the new runtime's ticks judge the runs of the one map handed in.
+   */
+  it("stops, on its own tick, a closed item's run that a runtime it replaced started", async () => {
+    const { dir } = await fixture({ items: [{ id: ITEM, labels: ["lr:auto"], closed: "done" }] });
+    const controller = new AbortController();
+    const running = new Map<string, RunningItem>([[ITEM, { controller, workflow: "main", done: Promise.resolve(), closed: false }]]);
+    const events: LandraceEvent[] = [];
+    const rt = await buildWorkspaceRuntime(dir, { running, sink: (e) => events.push(e) });
+
+    expect(rt.running).toBe(running);
+    await tickWorkspace({ runtime: rt });
+    expect(controller.signal.aborted).toBe(true);
+    expect(events.filter((e) => e.name === "item.aborted")).toEqual([
+      expect.objectContaining({ item: ITEM, reason: "the item was closed" }),
+    ]);
+
+    const own = await buildWorkspaceRuntime(dir, {});
+    expect(own.running).not.toBe(running);
   });
 
   /**

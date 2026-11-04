@@ -2867,6 +2867,12 @@ export interface BuildOptions {
   log?: RedactingLogger;
   /** The process's one Ctrl-C, for the same reason: one stop ends every runtime it built. Absent, the build makes its own. */
   stop?: AbortController;
+  /**
+   * The process's one map of the runs in flight, for the same reason: a run
+   * a replaced runtime started is judged by the current runtime's ticks, so
+   * closing its item still stops it. Absent, the build makes its own.
+   */
+  running?: Map<string, RunningItem>;
 }
 
 /* ------------------------------------------------------- sandbox (§15) -- */

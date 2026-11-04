@@ -43,6 +43,7 @@ import type {
   ReadRoute,
   Problem,
   RedactingLogger,
+  RunningItem,
   Registry,
   RuntimeConfig,
   RuntimeContext,
@@ -898,7 +899,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     asking: [],
     turnedAway: [],
     stop,
-    running: new Map(),
+    running: opts.running ?? new Map(),
     seen: new Map(),
     log,
     ctx,
@@ -1333,6 +1334,10 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const { secretValues } = first.local.loaded;
   log.redact([...config.log.redact.flatMap((name) => secretValues.get(name) ?? []), ...credentialValues(first.credentials)]);
   const stop = new AbortController();
+  // Shared too: a run an old runtime started is still stopped by closing its
+  // item or taking its admit label, which only the current runtime's ticks
+  // can see, so they must judge every run this process has in flight.
+  const runs = new Map<string, RunningItem>();
   // What a notification links to, once the page below is up; null without one.
   const pageRef: { url: string | null } = { url: null };
 
@@ -1345,7 +1350,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       const gate = await localGate(dir, store);
       if (!gate.resolution.ready) return null;
       const rt = await buildWorkspaceRuntime(dir, {
-        log, stop, credentials: store,
+        log, stop, running: runs, credentials: store,
         ...(opts.debug === undefined ? {} : { debug: opts.debug }),
         board: () => pageRef.url,
         ...(opts.uiPort === undefined ? {} : { port: opts.uiPort }),
