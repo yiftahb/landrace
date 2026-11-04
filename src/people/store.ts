@@ -72,18 +72,30 @@ export function createCredentialStore(root: string = join(homedir(), CREDENTIALS
     return parsed.data as PersonCredentials;
   };
 
-  const change = async (personId: string, edit: (c: PersonCredentials) => void): Promise<void> => {
-    const current = await read(personId);
-    if (current.problem !== undefined) throw new Error(`refusing to write over a credentials file that does not read: ${current.problem}`);
-    edit(current);
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    // `mode` applies only to a directory mkdir made; one already there keeps its own.
-    await chmod(root, 0o700);
-    const file = fileOf(personId);
-    const temporary = `${file}.${process.pid}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600 });
-    await chmod(temporary, 0o600);
-    await rename(temporary, file);
+  // One write at a time: each reads the file, edits it and writes it whole,
+  // so two at once — two forms submitted together on the Integrations tab —
+  // would each write over the other's connection. Each temporary file is its
+  // own, so two writes never rename one path out from under each other.
+  let queue: Promise<void> = Promise.resolve();
+  let written = 0;
+  const change = (personId: string, edit: (c: PersonCredentials) => void): Promise<void> => {
+    const next = queue.then(async () => {
+      const current = await read(personId);
+      if (current.problem !== undefined) throw new Error(`refusing to write over a credentials file that does not read: ${current.problem}`);
+      edit(current);
+      await mkdir(root, { recursive: true, mode: 0o700 });
+      // `mode` applies only to a directory mkdir made; one already there keeps its own.
+      await chmod(root, 0o700);
+      const file = fileOf(personId);
+      written += 1;
+      const temporary = `${file}.${process.pid}.${written}.tmp`;
+      await writeFile(temporary, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600 });
+      await chmod(temporary, 0o600);
+      await rename(temporary, file);
+    });
+    // The queue itself never rejects, so one refused write does not refuse every later one.
+    queue = next.catch(() => {});
+    return next;
   };
 
   return {

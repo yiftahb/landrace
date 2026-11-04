@@ -630,11 +630,14 @@ function refuseUnsoundBeforeHooks(dir: string, ws: Workspace, config: RuntimeCon
  * start, and what only keeps the board behind the Integrations tab.
  *
  * Refused, as the build refuses them: the configuration's own problems, a
- * door open to the network, an unsound workflow, a hook that will not load,
- * two hooks defining one connection, and a key naming a connection no hook
- * defines or a field it does not hold — none of which a paste could mend.
- * Not refused: a connection missing, expired or failed, or a store that does
- * not read, which the Integrations tab shows and a paste or a disconnect mends.
+ * door open to the network, a workflow that fails the rules judged before
+ * any hook is imported, a hook that will not load, two hooks defining one
+ * connection, and a key naming a connection no hook defines or a field it
+ * does not hold — none of which a paste could mend. Not refused: a
+ * connection missing, expired or failed, which the Integrations tab shows
+ * and a paste mends, nor a store that does not read, which the tab shows
+ * until the file is mended by hand. Every rule judged once the hooks run is
+ * the build's, and waits for the person to be ready.
  *
  * A per-person var nothing answers is loaded as "", only so the workflow
  * loads far enough to import its hooks and learn their connections: the

@@ -105,6 +105,21 @@ describe("the people panel", () => {
     expect(changes).toEqual([]);
   });
 
+  // Two forms submitted together: each read-edit-write of the one file must
+  // see the other's, and neither may lose a connection or fail the other.
+  it("stores both of two connects made at once, and a disconnect beside them", async () => {
+    const other = defineConnection({ id: "tracker", label: "Tracker", kind: "credential", fields: ["token"] });
+    const third = defineConnection({ id: "docs", label: "Docs", kind: "credential", fields: ["token"] });
+    const { panel, store } = await panelOf([forge(), other, third]);
+    await panel.connect(ME, "docs", { token: `${TOKEN}-docs` });
+    await Promise.all([
+      panel.connect(ME, "forge", { token: TOKEN }),
+      panel.connect(ME, "tracker", { token: `${TOKEN}-2` }),
+      panel.disconnect(ME, "docs"),
+    ]);
+    expect(Object.keys((await store.read("local")).connections).sort()).toEqual(["forge", "tracker"]);
+  });
+
   it("keeps the connection stored when the reload after it fails, and says why", async () => {
     const { panel, store } = await panelOf([forge()], { onChange: async () => { throw new Error("hooks would not load"); } });
     await expect(panel.connect(ME, "forge", { token: TOKEN })).rejects.toThrow("hooks would not load");

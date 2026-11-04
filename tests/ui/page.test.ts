@@ -1756,6 +1756,24 @@ describe("the Integrations tab", () => {
     expect(shown(true, "#/integrations")).toEqual({ board: false, tab: true, tick: true, panel: true, asked: true });
   });
 
+  // Submitted with Enter, focus stays in the input the form just emptied, and
+  // a focused input is what keeps a poll from redrawing the list.
+  it("lets go of the focus a connect left in its form, so the row is redrawn as connected", async () => {
+    let blurred = 0;
+    let asked = 0;
+    const input = { value: "", blur: () => { blurred++; } };
+    const form = { tagName: "FORM", reset: () => {}, querySelectorAll: () => [], contains: (e: unknown) => e === input };
+    const c: Record<string, unknown> = {
+      document: { activeElement: input, getElementById: () => ({ textContent: "" }) },
+      fetch: async () => ({ ok: true, text: async () => "{}" }),
+      loadMe: async () => { asked++; }, schedulePoll: () => {}, meKey: "old",
+    };
+    runInNewContext(fnSource("connectionWrite"), c);
+    runInNewContext('connectionWrite("connect", "forge", { fields: { token: "t" } }, FORM)', { ...c, FORM: form });
+    await new Promise((r) => setTimeout(r, 10));
+    expect([blurred, asked]).toEqual([1, 1]);
+  });
+
   it("shows an identity's state only: nothing to paste and nothing to press", () => {
     const row = build({ id: "chat", label: "Chat", kind: "identity", state: "missing" });
     expect(all(row, "input")).toEqual([]);

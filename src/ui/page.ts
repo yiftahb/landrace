@@ -1563,7 +1563,13 @@ function connectionWrite(action, id, body, control) {
   fetch("/" + action + "/" + encodeURIComponent(id), init)
     .then(async (res) => {
       const said = await res.text();
-      if (res.ok && control.tagName === "FORM") control.reset();
+      if (res.ok && control.tagName === "FORM") {
+        control.reset();
+        // Submitted with Enter, the focus is still in an input the reset just
+        // emptied, and a focused input keeps every poll from redrawing the row.
+        const focused = document.activeElement;
+        if (focused && control.contains(focused) && focused.blur) focused.blur();
+      }
       status.textContent = res.ok ? (action === "connect" ? "Connected." : "Disconnected.") : said;
       meKey = null;
       await loadMe();
