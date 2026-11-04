@@ -518,12 +518,16 @@ export async function stepExecutorFor(config: RuntimeConfig, registry: Registry,
  *
  * Only the token the run was handed is marked: one pasted again while it
  * ran is a new one nobody has refused.
+ *
+ * `adapter` names the executor that ran, `agent.adapter`'s by default: the
+ * screener's is `security.adapter`'s, and a refusal blamed on the other
+ * executor's connection marked a token nobody had refused, or none at all.
  */
 export function connectionFailedFor(
   config: RuntimeConfig, registry: Registry, logins: PersonLogins,
-  opts: { store: CredentialStore; person: Person; log: RedactingLogger; then?: () => Promise<void>; now?: () => Date },
+  opts: { store: CredentialStore; person: Person; log: RedactingLogger; then?: () => Promise<void>; now?: () => Date; adapter?: string },
 ): ((reason: string) => Promise<void>) | undefined {
-  const hook = registry.executors.get(config.agent.adapter);
+  const hook = registry.executors.get(opts.adapter ?? config.agent.adapter);
   const connection = hook !== undefined && "create" in hook ? hook.connection : undefined;
   if (connection === undefined || personEnvOf(connection, logins.connections, logins.credentials) === undefined) return undefined;
   const used = JSON.stringify(logins.credentials.connections[connection.id]?.fields ?? null);
@@ -942,14 +946,21 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     // A context of its own per workflow, so a factory two workflows share is
     // built once for each, against that workflow's steps (see `executorFor`).
     const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps, pairingStages: pairingStages(workflow), frontDoor };
-    const screener = opts.readOnly ? undefined : await screenerFor(loaded.config, registry, ectx, logins);
     // Named on what converge and notify log for it — `agent.limited` among
     // them — without a field of its own in deps.
     const workflowLog = log.with({ workflow: id });
+    const failedOpts = { store, person, log: workflowLog, ...(opts.onConnectionFailed ? { then: opts.onConnectionFailed } : {}) };
+    const screening = opts.readOnly ? undefined : await screenerFor(loaded.config, registry, ectx, logins);
+    // The screener's refused login is its own executor's connection, which
+    // `security.adapter` may make another than the steps'.
+    const screenerFailed = screening && connectionFailedFor(loaded.config, registry, logins, {
+      ...failedOpts, adapter: loaded.config.security.adapter ?? loaded.config.agent.adapter,
+    });
+    const screener = screening && (screenerFailed ? { ...screening, connectionFailed: screenerFailed } : screening);
     const executor = opts.readOnly
       ? readOnlyExecutor(registeredExecutor(loaded.config, registry))
       : await stepExecutorFor(loaded.config, registry, ectx, logins);
-    const connectionFailed = opts.readOnly ? undefined : connectionFailedFor(loaded.config, registry, logins, { store, person, log: workflowLog, ...(opts.onConnectionFailed ? { then: opts.onConnectionFailed } : {}) });
+    const connectionFailed = opts.readOnly ? undefined : connectionFailedFor(loaded.config, registry, logins, failedOpts);
     const childServer = childServerCommand(dir, id);
     // The same hooks, executor, screener and pairing server as the steps', so
     // a turn asked through the front door's `/mcp` runs as one asked on the page.

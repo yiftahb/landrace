@@ -1065,6 +1065,19 @@ describe("connectionFailedFor", () => {
     expect(connectionFailedFor(config, plain, { credentials: credsWith("tok-person-123456"), connections }, opts)).toBeUndefined();
   });
 
+  it("takes the connection of the executor it is asked for, not always agent.adapter's", async () => {
+    const plainStep = { id: "step", create: async () => ({ run: async () => ({ text: "", sessionId: null }) }) } as ExecutorFactory;
+    const split = { executors: new Map<string, ExecutorFactory>([["agent", factory], ["step", plainStep]]) } as unknown as Registry;
+    const stepsOnPlain = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "step" } });
+    const store = await storeWith("tok-person-123456");
+    const opts = { store, person: ME, log: createLogger({ sink: () => {} }) };
+    const logins = { credentials: credsWith("tok-person-123456"), connections };
+    expect(connectionFailedFor(stepsOnPlain, split, logins, opts)).toBeUndefined();
+    const screener = connectionFailedFor(stepsOnPlain, split, logins, { ...opts, adapter: "agent" });
+    await screener?.("OAuth token has expired");
+    expect((await store.read("local")).connections["agent"]).toHaveProperty("failedAt");
+  });
+
   it("leaves a token pasted again while the run ran alone", async () => {
     const store = await storeWith("tok-new-pasted-99");
     let reloads = 0;

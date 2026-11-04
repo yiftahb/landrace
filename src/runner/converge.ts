@@ -454,9 +454,12 @@ async function converging(
         // the agent refusing their login one call early, and is answered as
         // that below — not recorded as a verdict, which would spend a round
         // on every item and leave the connection "connected".
-        const tokenRefused = deps.connectionFailed !== undefined && (result.kind === "unavailable"
-          ? isAuthFailure(result.reason)
-          : result.kind === "refused" && result.outage !== undefined && isAuthFailure(result.outage));
+        // Each is answered by its own executor's connection: the screener
+        // runs on `security.adapter`'s, which need not be the steps'.
+        const refusedLogin = result.kind === "unavailable"
+          ? (isAuthFailure(result.reason) ? deps.connectionFailed : undefined)
+          : result.kind === "refused" && result.outage !== undefined && isAuthFailure(result.outage) ? deps.screen?.connectionFailed : undefined;
+        const tokenRefused = refusedLogin !== undefined;
 
         if (result.kind === "unavailable" || tokenRefused) {
           // The step never ran at all — the executor itself threw (a
@@ -474,9 +477,9 @@ async function converging(
           // The agent refused the person's own login: their connection is
           // marked failed, so nothing runs until they make it again. Still
           // no record — the step never ran, and is still owed.
-          if (deps.connectionFailed && tokenRefused) {
+          if (refusedLogin) {
             deps.log("connection.failed", { item, stage: stage.id, round });
-            await deps.connectionFailed(result.reason);
+            await refusedLogin(result.reason);
           }
           return { passes: pass, settled: "halt", why: result.reason };
         }

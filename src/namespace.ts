@@ -727,6 +727,14 @@ export interface ArtifactHook extends PostHook {
 export interface Screener {
   executor: Executor;
   model: string | undefined;
+  /**
+   * Set only when the screener's own executor runs on a person's stored
+   * connection: a screening its agent could not start because it refused
+   * that login marks that connection failed. Its own, never the steps'
+   * (`ConvergeDeps.connectionFailed`): `security.adapter` may name another
+   * executor, on another login.
+   */
+  connectionFailed?: (reason: string) => Promise<void>;
 }
 
 /**

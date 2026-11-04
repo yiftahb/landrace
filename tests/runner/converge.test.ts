@@ -456,11 +456,47 @@ describe("converge", () => {
       const failed: string[] = [];
       const r = await converge("1", deps(w, {
         workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]), executor: agent, log,
-        screen: { executor: screener }, connectionFailed: async (reason: string) => { failed.push(reason); },
+        screen: { executor: screener, connectionFailed: async (reason: string) => { failed.push(reason); } },
       }));
       expect(r.settled).toBe("halt");
       expect(failed).toEqual([expect.stringMatching(/OAuth token has expired/)]);
       expect(events.filter((e) => e.name === "connection.failed")).toHaveLength(1);
+      expect(w.entries).toHaveLength(0);
+    });
+
+    /*
+     * The screener may run on another executor than the steps
+     * (`security.adapter`): its refused login is its own connection's, never
+     * the steps'. Blamed on the steps' handler, an operator's own 401 on the
+     * screener marked the person's step token failed.
+     */
+    it("leaves the steps' connection alone when the screener, on its own login, is refused", async () => {
+      const w = world();
+      const steps: string[] = [];
+      const r = await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
+        executor: { id: "agent", run: async () => ({ text: "", sessionId: null }) },
+        screen: { executor: { id: "screen", run: async () => { throw new Error("codex exited 1: status 401"); } } },
+        connectionFailed: async (reason: string) => { steps.push(reason); },
+      }));
+      expect(r.settled).toBe("halt");
+      expect(steps).toEqual([]);
+      expect(w.entries).toHaveLength(1);
+    });
+
+    it("marks the screener's connection when only the screener runs on a person's token", async () => {
+      const w = world();
+      const screened: string[] = [];
+      const r = await converge("1", deps(w, {
+        workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
+        executor: { id: "agent", run: async () => { throw new Error("the step itself must not run"); } },
+        screen: {
+          executor: { id: "screen", run: async () => { throw new Error("claude exited 1: OAuth token has expired"); } },
+          connectionFailed: async (reason: string) => { screened.push(reason); },
+        },
+      }));
+      expect(r.settled).toBe("halt");
+      expect(screened).toEqual([expect.stringMatching(/OAuth token has expired/)]);
       expect(w.entries).toHaveLength(0);
     });
 
@@ -476,7 +512,7 @@ describe("converge", () => {
       await converge("1", deps(w, {
         workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
         executor: { id: "agent", run: async () => ({ text: "", sessionId: null }) },
-        screen: { executor: screener }, connectionFailed: async (reason: string) => { failed.push(reason); },
+        screen: { executor: screener, connectionFailed: async (reason: string) => { failed.push(reason); } },
       }));
       expect(failed).toEqual([]);
       expect(w.entries).toHaveLength(1);
@@ -488,8 +524,7 @@ describe("converge", () => {
       await converge("1", deps(w, {
         workflow: stepWorkflowFor(), steps: new Map([["spec", stepFor({ capabilities: ["items:create"] })]]),
         executor: { id: "agent", run: async () => ({ text: "", sessionId: null }) },
-        screen: { executor: { id: "screen", run: async () => { throw new Error("spawn claude ENOENT"); } } },
-        connectionFailed: async (reason: string) => { failed.push(reason); },
+        screen: { executor: { id: "screen", run: async () => { throw new Error("spawn claude ENOENT"); } }, connectionFailed: async (reason: string) => { failed.push(reason); } },
       }));
       expect(failed).toEqual([]);
       expect(w.entries).toHaveLength(1);

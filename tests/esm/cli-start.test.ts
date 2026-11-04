@@ -2222,6 +2222,27 @@ export const chatIdentity = brand("connection", {
     await expect(buildWorkspaceRuntime(dir, { credentials })).rejects.toThrow(/connection\.failed: .*"claude" connection \(Claude\) is failed: claude exited 1: OAuth token has expired/);
   }, 30_000);
 
+  /*
+   * The screener runs on `security.adapter`'s executor, which need not be
+   * the steps': a refused login is blamed on the connection of the executor
+   * that ran, so steps on the operator's login never mark a screener's token,
+   * and the reverse.
+   */
+  it("hands the screener its own executor's connection handler when the two adapters differ", async () => {
+    const screenOnClaude = await fixture({ agent: "fake", screen: true, securityKeys: "adapter: claude, model: haiku", hookExtra: CLAUDE_CONNECTION + EXECUTOR });
+    const credentials = await storeOf(claudeStored);
+    const rt = await buildMain(screenOnClaude.dir, { credentials });
+    expect(rt.deps.connectionFailed).toBeUndefined();
+    await rt.deps.screen?.connectionFailed?.("claude exited 1: OAuth token has expired");
+    expect((await credentials.read("local")).connections["claude"]).toHaveProperty("failedAt");
+
+    const stepsOnClaude = await fixture({ screen: true, securityKeys: "adapter: fake, model: fake-small", hookExtra: CLAUDE_CONNECTION + EXECUTOR });
+    const other = await buildMain(stepsOnClaude.dir, { credentials: await storeOf(claudeStored) });
+    expect(other.deps.connectionFailed).toBeDefined();
+    expect(other.deps.screen?.executor.id).toBe("fake");
+    expect(other.deps.screen?.connectionFailed).toBeUndefined();
+  }, 30_000);
+
   it("looks the person's identity up by their email at the gate, stores it, and keeps it out of every log line and telemetry record", async () => {
     const { dir } = await fixture({ hookExtra: CHAT_IDENTITY, configExtra: EMAIL });
     const credentials = await storeOf(null);
