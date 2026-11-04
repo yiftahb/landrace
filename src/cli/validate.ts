@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { screenerFor, stepExecutorFor } from "#cli/start.js";
-import { configProblems, loadConfig } from "#config/load.js";
+import { configProblems } from "#config/load.js";
+import { connectionsOf, loadLocalConfig, resolvePerson } from "#people/resolve.js";
 import { frontDoorOrigins, serveProblems } from "#front/hosts.js";
 import { ITEM_BRANCH } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
@@ -13,7 +14,7 @@ import { snapshotProvides } from "#runner/snapshot.js";
 import { WorkflowLoadError } from "#workflow/load.js";
 import { admitProblems, branchIsolationProblems, claimProblems, createProblems, pairingIsolationProblems, pairingStages, validate } from "#workflow/validate.js";
 import { readWorkspace } from "#workflow/workspace.js";
-import type { ExecutorContext, LoadedConfig, LoadedWorkflow, Problem, Registry, Source, Step, Workflow, Workspace, WorkspaceRead } from "#namespace.js";
+import type { CredentialStore, ExecutorContext, LoadedConfig, LocalConfig, LoadedWorkflow, Problem, Registry, Source, Step, Workflow, Workspace, WorkspaceRead } from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -131,7 +132,7 @@ async function executorProblems(dir: string, loaded: LoadedConfig, registry: Reg
   }
 }
 
-export async function runValidate(dir: string): Promise<{ ok: boolean; problems: Problem[] }> {
+export async function runValidate(dir: string, opts: { credentials?: CredentialStore } = {}): Promise<{ ok: boolean; problems: Problem[] }> {
   const problems: Problem[] = [];
 
   /*
@@ -143,12 +144,16 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
    * instance, where no tracker credentials exist. A `{vars.x}` in the graph
    * then has nothing to resolve against and is reported as exactly that.
    */
-  const loaded = await loadConfig(dir).catch((e: unknown) => {
+  //
+  // With the local person's stored connections answering each per-person key
+  // their variable left unset, as `start` reads it.
+  const local: LocalConfig | null = await loadLocalConfig(dir, opts.credentials).catch((e: unknown) => {
     // Absent is the CI case above; present and unreadable is what `start`
     // refuses, and reading it as absent would pass what start will not.
     if ((e as { code?: unknown } | null)?.code !== "ENOENT") problems.push({ rule: "config", message: messageOf(e) });
     return null;
   });
+  const loaded = local?.loaded ?? null;
   // `start` refuses a door it would serve to anyone; `mcp --pairing` and the
   // child server serve none, so the rule lives here and in `start`.
   if (loaded) problems.push(...configProblems(dir, loaded), ...serveProblems(loaded.config.serve));
@@ -159,7 +164,10 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
    * time as a name nothing declares — which is a misdescription of the one
    * thing that is wrong, in a file where the entry is right there.
    */
-  if (loaded?.missingVars.length) return { ok: false, problems: [...problems, ...(await exposedEnv(dir))] };
+  // A per-person key nothing answered stops here for the same reason, and
+  // in the words `start` refuses with.
+  if (local?.problems.length) problems.push(...local.problems);
+  if (loaded?.missingVars.length || local?.problems.length) return { ok: false, problems: [...problems, ...(await exposedEnv(dir))] };
 
   // A workspace whose layout cannot be read is itself the thing `validate`
   // exists to report — §11.1-§11.2 — so a load failure must become a Problem
@@ -185,8 +193,10 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
   const shared = new Map<string, { problem: Problem; ids: string[] }>();
   const sourceKeys = new Map<string, string>();
   const sources: unknown[] = [];
+  const registries: Array<{ id: string; registry: Registry | null }> = [];
   for (const wf of ws.workflows) {
     const found = await workflowProblems(ws, wf, loaded);
+    registries.push({ id: wf.id, registry: found.registry });
     // Sameness is the identity of the loaded source object, as the tick's own
     // claims go by it. A workflow whose hooks did not load, or that has no
     // source, has no key, and the claim check abstains for it.
@@ -204,6 +214,15 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
   }
   // Between workflows, so named by neither's prefix.
   problems.push(...claimProblems(ws, (id) => sourceKeys.get(id) ?? ""));
+  // The local person against the connections the hooks define, as `start`
+  // refuses over them. Only when every workflow loaded and its hooks with
+  // it: a connection a hook that would not import defines is one this
+  // cannot see, and calling the key naming it unknown would be a guess.
+  const all = registries.flatMap(({ id, registry }) => (registry ? [{ id, registry }] : []));
+  if (local && ws.failures.length === 0 && all.length === registries.length) {
+    const people = connectionsOf(all);
+    problems.push(...people.problems, ...resolvePerson(local, people.connections, { now: Date.now() }).problems);
+  }
   for (const { problem, ids } of shared.values()) {
     problems.push(named && ids.length < ws.ids.length ? { ...problem, message: `${ids.join(", ")}: ${problem.message}` } : problem);
   }
@@ -217,7 +236,9 @@ export async function runValidate(dir: string): Promise<{ ok: boolean; problems:
  * hooks' coverage of it; and those `shared` with every workflow built against
  * the same configuration — the executors and the notifiers it names.
  */
-async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: LoadedConfig | null): Promise<{ own: Problem[]; shared: Problem[]; source: Source | null }> {
+async function workflowProblems(
+  ws: Workspace, wf: LoadedWorkflow, loaded: LoadedConfig | null,
+): Promise<{ own: Problem[]; shared: Problem[]; source: Source | null; registry: Registry | null }> {
   const { workflow, steps } = wf;
   const own: Problem[] = [];
 
@@ -261,7 +282,7 @@ async function workflowProblems(ws: Workspace, wf: LoadedWorkflow, loaded: Loade
   const shared = loaded && registry
     ? [...(await executorProblems(ws.dir, loaded, registry, workflow, steps)), ...notifyProblems(loaded.config, registry)]
     : [];
-  return { own, shared, source: registry?.source ?? null };
+  return { own, shared, source: registry?.source ?? null, registry };
 }
 
 /**

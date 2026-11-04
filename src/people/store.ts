@@ -2,7 +2,7 @@ import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/prom
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { CREDENTIALS_DENY } from "#kit/executor.js";
+import { CREDENTIALS_ROOT } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
 import type { CredentialStore, PersonCredentials, PersonCredentialsRead } from "#namespace.js";
 
@@ -25,14 +25,14 @@ const PERSON = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 
 /**
  * The store at `root`, by default the directory every run is denied reading
- * (`CREDENTIALS_DENY`): one is the other, so the two cannot drift apart.
+ * (the kit's `CREDENTIALS_DENY`, `CREDENTIALS_ROOT` here): one is the other, so the two cannot drift apart.
  *
  * Written whole to a temporary file beside the real one and renamed over it,
  * so a crash mid-write leaves the old file rather than half of a new one —
  * and a file it cannot read is refused rather than replaced, since writing
  * one connection over a file it could not parse would drop every other.
  */
-export function createCredentialStore(root: string = join(homedir(), CREDENTIALS_DENY.slice(2))): CredentialStore {
+export function createCredentialStore(root: string = join(homedir(), CREDENTIALS_ROOT.slice(2))): CredentialStore {
   const fileOf = (person: string): string => {
     if (!PERSON.test(person)) throw new Error(`person id ${JSON.stringify(person)} cannot name a credentials file`);
     return join(root, `${person}.json`);

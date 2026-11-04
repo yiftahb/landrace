@@ -1,5 +1,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
+import { redactionValues } from "#config/load.js";
+import { assertLocalUsable, loadLocalConfig } from "#people/resolve.js";
+import { credentialValues } from "#people/store.js";
 import { mayCreateItems, itemIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import type { ChildBinding, ChildTool, ExecutorContext, LoadedWorkflow, Registry, RuntimeContext, Tools, ToolWorkflow } from "#namespace.js";
@@ -31,10 +33,12 @@ import { childServerCommand, sandboxFor, screenerFor, stepExecutorFor } from "#c
  * the person's session, which acts for that one workflow alone.
  */
 export async function buildMcpTools(dir: string, scope?: string): Promise<Tools> {
-  const loaded = await loadConfig(dir);
+  // With the local person's stored values merged in, as the loop reads it.
+  const local = await loadLocalConfig(dir);
+  const { loaded } = local;
   // The same refusal the loop makes, from the same place: a conversation turn
   // runs the same workflow under the same configuration.
-  assertConfigUsable(dir, loaded);
+  assertLocalUsable(local);
 
   const ws = await loadWorkspace(dir, loaded.vars, loaded.config.workflows);
   // By name, before any hook module is imported: a server bound to a workflow
@@ -68,6 +72,8 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
     sink: (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
     ...(telemetry ? { exporter: telemetry.sink } : {}),
   });
+  // What the person's store holds is kept out of the log as a secret is.
+  events.redact(credentialValues(local.credentials));
   // This server runs until its client closes stdin, with no `finally` of its
   // own to flush from; the event loop draining is the one moment it has.
   if (telemetry) process.once("beforeExit", () => void telemetry.shutdown());
@@ -230,8 +236,11 @@ export async function buildChildTool(dir: string, binding: ChildBinding, workflo
     throw new Error(`round must be a positive integer, got ${binding.round}`);
   }
 
-  const loaded = await loadConfig(dir);
-  assertConfigUsable(dir, loaded);
+  // A var a person's connection answers is in the graph too: without the
+  // store, the child server would refuse a workflow the loop runs.
+  const local = await loadLocalConfig(dir);
+  const { loaded } = local;
+  assertLocalUsable(local);
   // The workflow whose step this server was started for, named on its command
   // line by the loop that started it. It is also what says how a child is
   // labelled, so a workspace of several workflows labels each one's children
@@ -250,6 +259,7 @@ export async function buildChildTool(dir: string, binding: ChildBinding, workflo
     redactValues: redactionValues(loaded),
     sink: (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
   });
+  events.redact(credentialValues(local.credentials));
   const ctx: RuntimeContext = {
     config: loaded.config, secrets: loaded.secretValues, signal: new AbortController().signal,
     log: (event, data) => events(event as EventName, data),

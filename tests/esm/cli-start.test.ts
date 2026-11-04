@@ -9,7 +9,9 @@ import { promisify } from "node:util";
 import { buildWorkspaceRuntime, childServerCommand, runStart } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
 import { portCommand, readInstance, writeInstance } from "#cli/port.js";
-import type { BoardView, BuildOptions, LandraceEvent, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
+import type { BoardView, BuildOptions, CredentialStore, LandraceEvent, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
+import { runValidate } from "#cli/validate.js";
+import { createCredentialStore } from "#people/store.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { createActivityLog } from "#runner/activity.js";
 import { acquire, release } from "#runner/lock.js";
@@ -1795,4 +1797,72 @@ export const preflight = brand("preflight", {
       restore();
     }
   }, 30_000);
+});
+
+/*
+ * A per-person key answered from the local person's stored connection, the
+ * connection defined by a hook the workflow loads. The store is a temporary
+ * one handed in: the operator's own `~/.landrace/credentials` is never read.
+ */
+describe("buildWorkspaceRuntime, for a per-person key", () => {
+  const STORED_TOKEN = "ghp_stored_token_long_enough";
+  const CONNECTION = (lifetime = "") => `
+export const forge = brand("connection", { id: "forge", fields: ["login", "token"]${lifetime}, resolve: async (): Promise<Record<string, string>> => ({}) });
+`;
+  const PER_PERSON = "vars: { assignee: { perPerson: true, env: LR_TEST_ASSIGNEE, connection: forge.login } }\n" +
+    "people: { local: { email: dev1@example.invalid } }\n";
+  const usingAssignee = WORKFLOW.replace("Writing the spec, round {round}.", "Writing the spec for {vars.assignee}, round {round}.");
+
+  async function storeOf(connections: Record<string, unknown> | null): Promise<CredentialStore> {
+    const root = join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials");
+    if (connections !== null) {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, "local.json"), JSON.stringify({ person: "local", connections }));
+    }
+    return createCredentialStore(root);
+  }
+
+  const connected = (daysAgo: number) => ({
+    forge: { values: { login: "dev1", token: STORED_TOKEN }, connectedAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString() },
+  });
+
+  it("runs with the stored value when the env is unset, and redacts what the store holds", async () => {
+    const { dir } = await fixture({ hookExtra: CONNECTION(), configExtra: PER_PERSON, workflow: usingAssignee });
+    const seen: LandraceEvent[] = [];
+    const rt = await buildMain(dir, { sink: (e) => seen.push(e), credentials: await storeOf(connected(1)) });
+    expect(rt.deps.workflow.stages[0]?.on_enter?.[0]).toMatchObject({ body: "Writing the spec for dev1, round {round}." });
+    rt.deps.log("step.invoked", { cmd: `curl -H "Authorization: Bearer ${STORED_TOKEN}"` });
+    const line = JSON.stringify(seen.find((e) => e.name === "step.invoked"));
+    expect(line).not.toContain(STORED_TOKEN);
+    expect(line).toContain("[redacted]");
+  });
+
+  it("refuses with connection.missing, in validate's words, when neither the env nor a connection answers", async () => {
+    const { dir } = await fixture({ hookExtra: CONNECTION(), configExtra: PER_PERSON, workflow: usingAssignee });
+    const credentials = await storeOf(null);
+    const { ok, problems } = await runValidate(dir, { credentials });
+    expect(ok).toBe(false);
+    const missing = problems.find((p) => p.rule === "connection.missing");
+    expect(missing?.message).toMatch(/vars entry "assignee" has no value: LR_TEST_ASSIGNEE is unset/);
+    await expect(buildWorkspaceRuntime(dir, { credentials })).rejects.toThrow(`connection.missing: ${missing?.message ?? "?"}`);
+  });
+
+  it("refuses an expired connection, and a key naming a connection no hook defines", async () => {
+    const lasting = await fixture({ hookExtra: CONNECTION(", lifetimeDays: 365"), configExtra: PER_PERSON, workflow: usingAssignee });
+    await expect(buildWorkspaceRuntime(lasting.dir, { credentials: await storeOf(connected(366)) })).rejects.toThrow(/connection\.expired: .*365 days/);
+    await expect(buildWorkspaceRuntime(lasting.dir, { credentials: await storeOf(connected(1)) })).resolves.toBeDefined();
+    const unknown = await fixture({ hookExtra: "", configExtra: PER_PERSON, workflow: usingAssignee });
+    await expect(buildWorkspaceRuntime(unknown.dir, { credentials: await storeOf(connected(1)) })).rejects.toThrow(/connection\.unknown: .*"forge", which no hook defines/);
+  });
+
+  it("needs no stored connection, locally, for a key its env answers, nor a store that reads", async () => {
+    const { dir } = await fixture({ hookExtra: CONNECTION(), configExtra: PER_PERSON, workflow: usingAssignee });
+    await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\nLR_TEST_ASSIGNEE=dev2\n`);
+    const corrupt = await storeOf(null);
+    await mkdir(corrupt.root, { recursive: true });
+    await writeFile(join(corrupt.root, "local.json"), "{ not json");
+    expect((await runValidate(dir, { credentials: corrupt })).problems.filter((p) => p.rule.startsWith("connection."))).toEqual([]);
+    const rt = await buildMain(dir, { credentials: corrupt });
+    expect(rt.deps.workflow.stages[0]?.on_enter?.[0]).toMatchObject({ body: "Writing the spec for dev2, round {round}." });
+  });
 });

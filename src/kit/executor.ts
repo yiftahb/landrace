@@ -16,7 +16,7 @@ import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { CAPABILITIES, CHILD_SERVER_NAME, INHERITED_ENV_KEYS, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
+import { CAPABILITIES, CHILD_SERVER_NAME, CREDENTIALS_ROOT, INHERITED_ENV_KEYS, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { isLoopback } from "#kit/http.js";
 import type {
@@ -499,7 +499,7 @@ function readGit(git: unknown, id: string): { git?: GitIdentity; problems: strin
  * so an entry only there would leave the store readable to any operator who
  * wrote their own. An integration adds it to the list it is handed.
  */
-export const CREDENTIALS_DENY = "~/.landrace/credentials";
+export const CREDENTIALS_DENY: string = CREDENTIALS_ROOT;
 
 /**
  * What a write step's commands may not read when `agent.sandbox.deny` names

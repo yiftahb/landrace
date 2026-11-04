@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { loadConfig } from "#config/load.js";
+import { configProblems, loadConfig } from "#config/load.js";
 import { LOCAL_PERSON_ID } from "#conventions.js";
 import { perPersonKeys } from "#people/keys.js";
 import { createCredentialStore } from "#people/store.js";
@@ -65,6 +65,28 @@ export async function loadLocalConfig(dir: string, store: CredentialStore = crea
   const fromEnv = new Set(keys.filter((k) => mapOf(loaded, k).has(k.name)).map(keyId));
   const credentials = await store.read(LOCAL_PERSON_ID);
   return { dir, ...personValues(dir, loaded, credentials), credentials, fromEnv };
+}
+
+/** One refusal of every problem, each line `rule: message`, as `validate` prints them. */
+const refusal = (problems: readonly Problem[]): Error => new Error(problems.map((p) => `${p.rule}: ${p.message}`).join("\n"));
+
+/**
+ * The refusal a process about to run makes over its configuration: what
+ * `assertConfigUsable` refuses, and each per-person key nothing answered.
+ */
+export function assertLocalUsable(local: LocalConfig): void {
+  const problems = [...configProblems(local.dir, local.loaded), ...local.problems];
+  if (problems.length) throw refusal(problems);
+}
+
+/**
+ * The refusal `start` makes once the hooks are loaded: a local instance has
+ * one person, so nothing runs while their connections are not ready. A
+ * notice — `people.env-ignored` — is not a refusal.
+ */
+export function assertPersonReady(resolution: PersonResolution, duplicates: readonly Problem[] = []): void {
+  const problems = [...duplicates, ...resolution.problems.filter((p) => p.rule.startsWith("connection."))];
+  if (problems.length) throw refusal(problems);
 }
 
 /**

@@ -2766,6 +2766,8 @@ export interface BuildOptions {
   board?: () => string | null;
   /** The front door's port, `--ui-port` over `serve.port`: what every step is held from. Absent, `serve.port`. */
   port?: number;
+  /** Where the local person's connections are read from. Absent, `~/.landrace/credentials`. */
+  credentials?: CredentialStore;
 }
 
 /* ------------------------------------------------------- sandbox (§15) -- */
