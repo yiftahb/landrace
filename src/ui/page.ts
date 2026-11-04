@@ -1449,8 +1449,11 @@ function integrationsLink(selected) {
   return a;
 }
 
-// One connection's row. Never a value: the server sends states, hints and
-// field names only. An identity is looked up, so it has nothing to paste.
+// One connection's row. A credential's value is never sent: the server sends
+// states, hints and field names for it. An identity is looked up, so it has
+// nothing to paste; its looked-up fields are sent to, and shown as text for,
+// their own person only, so they can spot a lookup that matched the wrong
+// account.
 function integrationRow(conn, hint, fields, identity) {
   const muted = "text-xs text-neutral-500 dark:text-neutral-400";
   const li = el("li", "flex flex-col gap-2 py-3");
