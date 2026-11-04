@@ -1586,7 +1586,7 @@ describe("a person's own Claude connection", () => {
 
   it("names the connection a step runs on, and the variable its token goes in", async () => {
     const { claudeConnection } = await import("landrace/integrations/claude");
-    expect(claudeConnection).toMatchObject({ id: "claude", kind: "credential", fields: ["token"], lifetimeDays: 365 });
+    expect(claudeConnection).toMatchObject({ id: "claude", kind: "credential", fields: ["token"], required: "remote", lifetimeDays: 365 });
     expect(claude.connection).toEqual({ id: "claude", env: { CLAUDE_CODE_OAUTH_TOKEN: "token" } });
   });
 

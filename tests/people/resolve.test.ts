@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConnection } from "#hooks/contracts.js";
 import { createCredentialStore } from "#people/store.js";
+import { claudeConnection } from "landrace/integrations/claude";
 import { connectionsOf, loadLocalConfig, localCredentials, lookupIdentities, personEnvOf, resolvePerson } from "#people/resolve.js";
 import type { ConnectionDef, ConnectionValue, CredentialStore, Person, Registry, RuntimeContext } from "#namespace.js";
 
@@ -178,6 +179,16 @@ describe("resolvePerson", () => {
     expect(remote.ready).toBe(false);
     const made = await judged(await workspace(""), await store({ chat: value(1, { user: "U1" }) }), both);
     expect(made).toMatchObject({ ready: true, problems: [] });
+  });
+
+  it("requires a person's own Claude login on a remote instance, so no step there runs on the operator's, and never locally", async () => {
+    const claudeOnly = new Map<string, ConnectionDef>([["claude", claudeConnection]]);
+    const remote = await judged(await workspace(""), await store(null), claudeOnly, true);
+    expect(remote.ready).toBe(false);
+    expect(remote.statuses).toEqual([expect.objectContaining({ id: "claude", state: "missing" })]);
+    expect(remote.problems).toEqual([{ rule: "connection.missing", message: expect.stringMatching(/"claude" connection \(Claude\) is required/) }]);
+    const local = await judged(await workspace(""), await store(null), claudeOnly);
+    expect(local).toMatchObject({ ready: true, problems: [], statuses: [] });
   });
 
   it("opens the store for a configuration with no per-person key only when a hook defines a connection", async () => {

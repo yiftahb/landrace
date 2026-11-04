@@ -476,7 +476,7 @@ export const claude = new Claude();
 
 | Integration | Export | Kind | Fields | How it is made |
 |---|---|---|---|---|
-| Claude Code | `claudeConnection` (id `claude`) | credential | `token` | Pasted: the output of `claude setup-token`. It lasts 365 days. Every step and turn runs on it — see [Claude Code](#claude-code) |
+| Claude Code | `claudeConnection` (id `claude`) | credential | `token` | Pasted: the output of `claude setup-token`. It lasts 365 days. Required on a remote instance. Every step and turn runs on it — see [Claude Code](#claude-code) |
 | Slack | `slackConnection` (id `slack`) | identity | `userId` | Looked up by your email with `slackBotToken` — see [Slack](#slack) |
 | Jira | `jiraConnection` (id `jira`) | identity | `accountId` | Looked up by your email with the Jira secrets, as `jiraAssignee` is — see [Jira](#jira) |
 | GitHub | `githubConnection` (id `github`) | credential | `token` | Pasted: a personal access token, checked with `GET /user` |
@@ -532,7 +532,7 @@ export { claudeConnection } from "landrace/integrations/claude";
 export const claude = new Claude();
 ```
 
-**Your own Claude login.** `claudeConnection` puts a Claude row in the board's Integrations tab. Run `claude setup-token`, sign in, and paste the token it prints (`sk-ant-oat01-…`). From then on, every step and turn runs with that token as `CLAUDE_CODE_OAUTH_TOKEN`, and uses your Claude subscription's limits rather than the operator's. Without it, steps run on the operator's own `claude` login, as before. No run is handed `ANTHROPIC_API_KEY`, and no run passes `--bare`, which would ignore the token.
+**Your own Claude login.** `claudeConnection` puts a Claude row in the board's Integrations tab. Run `claude setup-token`, sign in, and paste the token it prints (`sk-ant-oat01-…`). From then on, every step and turn runs with that token as `CLAUDE_CODE_OAUTH_TOKEN`, and uses your Claude subscription's limits rather than the operator's. Without it, locally, steps run on the operator's own `claude` login, as before. On a remote instance it is required: a person who never connected it has no items run. No run is handed `ANTHROPIC_API_KEY`, and no run passes `--bare`, which would ignore the token.
 
 - The token lasts a year. From 30 days before its end, `start` logs `connection.expiring` once a day. After it, the row is Expired, and nothing runs until you paste a new one.
 - When Claude refuses the token — its text says an invalid API key or bearer token, `authentication_error`, an expired OAuth token, or `401` — the step is unavailable and records no round, the row is Not working with Claude's reason, `connection.failed` is logged, and nothing runs until you paste a new one. It never falls back to the operator's login. See [Telemetry](configuration.md#telemetry).

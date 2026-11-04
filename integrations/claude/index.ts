@@ -344,6 +344,9 @@ async function buildPluginDir(cwd: string, dir: string, only: readonly string[] 
  * which lasts a year. A hook file exports it beside the executor, and every
  * step and turn then runs on it — never on the operator's login, nor an
  * `ANTHROPIC_API_KEY` in their shell, which no run is ever handed.
+ * Required on a remote instance, where the operator's login is nobody's to
+ * lend: a person who never connected it has no items run. Locally the
+ * operator is the person, and their own login still runs every step.
  */
 export const claudeConnection = defineConnection({
   id: "claude",
@@ -351,6 +354,7 @@ export const claudeConnection = defineConnection({
   kind: "credential",
   fields: ["token"],
   paste: { hint: "Run `claude setup-token` and paste the token it prints (sk-ant-oat01-…)" },
+  required: "remote",
   lifetimeDays: 365,
 });
 
