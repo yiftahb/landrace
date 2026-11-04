@@ -479,10 +479,56 @@ export const claude = new Claude();
 | Claude Code | `claudeConnection` (id `claude`) | credential | `token` | Pasted: the output of `claude setup-token`. It lasts 365 days. Required on a remote instance. Every step and turn runs on it — see [Claude Code](#claude-code) |
 | Slack | `slackConnection` (id `slack`) | identity | `userId` | Looked up by your email with `slackBotToken` — see [Slack](#slack) |
 | Jira | `jiraConnection` (id `jira`) | identity | `accountId` | Looked up by your email with the Jira secrets, as `jiraAssignee` is — see [Jira](#jira) |
-| GitHub | `githubConnection` (id `github`) | credential | `token` | Pasted: a personal access token, checked with `GET /user` |
-| GitLab | `gitlabConnection` (id `gitlab`) | credential | `token` | Pasted: a personal access token, checked with `GET /user` on `gitlabBaseUrl`, or gitlab.com |
+| GitHub | `githubConnection` (id `github`) | credential | `token` | Pasted: a personal access token, checked with `GET /user`. Or connected with GitHub, when the instance has a GitHub OAuth app — see [below](#connect-with-gitlab-or-github) |
+| GitLab | `gitlabConnection` (id `gitlab`) | credential | `token` | Pasted: a personal access token, checked with `GET /user` on `gitlabBaseUrl`, or gitlab.com. Or connected with GitLab, and renewed, when the instance has a GitLab OAuth application — see [below](#connect-with-gitlab-or-github) |
 
 An identity is looked up by [`people.local.email`](configuration.md#people), so set it. Each looked-up value shows, as plain text, in your own Integrations tab, so you can see whether the lookup matched your account. A forge token answers a [per-person key](configuration.md#per-person-keys) that names it, such as `githubToken: { perPerson: true, env: GITHUB_TOKEN, connection: github.token }`. Nothing else uses it yet. Notion and Codex define no connection.
+
+### Connect with GitLab or GitHub
+
+When the instance has the forge's OAuth app, the GitLab or GitHub row in the Integrations tab shows a **Connect with GitLab** (or **Connect with GitHub**) link in place of the paste form. Without it, the row shows the paste form, as before.
+
+**Create the app.** Its callback, or redirect URI, is the board's address followed by `connect/<id>/callback`: `serve.publicUrl` when it is set, and otherwise the host and port `start` binds, such as `http://127.0.0.1:4545/connect/gitlab/callback`. The provider compares it exactly, so register the host the board prints at startup — `127.0.0.1` and `localhost` are two different callbacks.
+
+- **GitLab:** on gitlab.com or your instance, open Applications (user Preferences, a group's settings, or the Admin area). Add an application with the callback above, the `api` scope, and **Confidential** checked. Off gitlab.com, the app lives on `gitlabBaseUrl`, and so do its consent and token URLs.
+- **GitHub:** open Settings → Developer settings → OAuth Apps → New OAuth App. Set the "Authorization callback URL" to the callback above with `github` as its id, such as `http://127.0.0.1:4545/connect/github/callback`. Landrace asks for the `repo` scope.
+
+**Give Landrace its id and secret.** The four secrets are `gitlabOauthClientId` and `gitlabOauthClientSecret` for GitLab, and `githubOauthClientId` and `githubOauthClientSecret` for GitHub. A forge offers the link only when both of its secrets are non-empty. Redaction is by the names `log.redact` lists, so add each client secret there beside your other credentials:
+
+```yaml
+# .landrace/landrace.yaml
+secrets:
+  gitlabToken: { perPerson: true, env: GITLAB_TOKEN, connection: gitlab.token }
+  gitlabOauthClientId: $GITLAB_OAUTH_CLIENT_ID
+  gitlabOauthClientSecret: $GITLAB_OAUTH_CLIENT_SECRET
+log:
+  redact: [gitlabOauthClientSecret]
+```
+
+Set the two variables in `.landrace/.env`, from the application's page. As with every secret, a declared one whose variable is unset refuses the start.
+
+**What a connect does.**
+
+1. The link (`GET /connect/<id>/start`) sends you to the provider's consent page with a PKCE challenge (`S256`) and a fresh `state`. The state is 32 random bytes, held in `start`'s memory for 10 minutes, and bound to you, the connection, the PKCE verifier and the callback. A browser that says another site asked for the link is refused.
+2. The provider sends you back to the callback with a code. The state is spent on that first look, whatever happens next, so a code cannot be replayed. An unknown, expired, reused or someone else's state is refused, and so is the provider's own error, such as `access_denied`.
+3. Landrace exchanges the code for a token, then checks the token with `GET /user`, exactly as a paste is checked. It stores the token with `source: oauth`, its end as `expiresAt` when the provider gives one, and its refresh token. Then it reloads, and sends you back to the Integrations tab, where the row reads Connected.
+
+A refusal is a plain-text page saying why, with every secret taken out: `409` for a refusal — the state, the provider's error, the check — and `502` for a failure, such as a provider that could not be reached or answered `5xx`. Neither stores anything, except a reload that fails after the token was stored, which says so. When the token endpoint gives no token, the page names its `error` and `error_description` only, and never quotes the rest of its answer. A restart forgets every connect still in progress: click the link again.
+
+**Renewal.** A GitLab token lasts 2 hours. While `start` runs, it checks every 60 seconds, and renews a token made by OAuth once it is within 10 minutes of its end, or past it. It keeps the connection's `connectedAt`, and keeps the old refresh token when GitLab sends no new one.
+
+- Renewed: the new token is stored and written into the secrets every hook already holds, for each per-person secret that names the connection and whose variable is unset, so the runs going on and the clients they keep send it without a reload. `connection.refreshed` is logged. A secret whose variable is set is answered by the variable locally, as before, and is left alone. If a connect stored a new token while the provider answered, the renewal is dropped and the connect's token stays.
+- Refused — a `4xx`, or an answer carrying `error`: the row becomes Not working with the provider's reason, `connection.failed` is logged, and nothing runs until you connect again.
+- Not answered — a network error or a `5xx`: `connection.failed` is logged, the token stays, and the next pass tries again.
+
+A GitHub OAuth app's token does not expire, and gives no `expires_in`, so it is never renewed. Both an access token and a refresh token join the log's redaction set before they are checked or stored, as a pasted value does. `connection.expiring` is not logged for a connection that holds a refresh token. The events are described in [Telemetry](configuration.md#telemetry).
+
+**GitLab's preflight.** An OAuth token is not a personal access token, so GitLab answers its `/personal_access_tokens/self` with nothing. The forge's preflight then reads the token's scopes from GitLab's `/oauth/token/info`, and still refuses a token without `api`.
+
+**Limits.**
+
+- Checked against stub providers in the test suite only: no live run against a real GitLab or GitHub app is part of this repository's scripts yet.
+- GitHub is asked for `repo` alone. A build that changes `.github/workflows/` needs `workflow` too, which this connect does not ask for: paste a classic token with `workflow` instead.
 
 ## Slack
 
