@@ -24,7 +24,7 @@ describe("the claude hook's settings", () => {
       sandbox: { hosts: ["github.com"], deny: ["~/.kube"] },
     });
     expect(readClaudeSettings({ adapter: "claude" })).toEqual({
-      plugins: [], mcp: [], sandbox: { hosts: [], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] },
+      plugins: [], mcp: [], sandbox: { hosts: [], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"] },
     });
   });
 
@@ -84,7 +84,7 @@ describe("the claude hook's sandbox settings", () => {
 
   it("gives a write step no network and the four credential paths when there is no sandbox block", () => {
     expect(readClaudeSettings({ adapter: "claude" }).sandbox)
-      .toEqual({ hosts: [], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] });
+      .toEqual({ hosts: [], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"] });
   });
 
   it("reads hosts and deny as written, the sandbox's own wildcard and a path with a space included", () => {
@@ -93,7 +93,7 @@ describe("the claude hook's sandbox settings", () => {
   });
 
   it("defaults each key on its own", () => {
-    expect(sandboxOf({ hosts: ["github.com"] })).toEqual({ hosts: ["github.com"], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"] });
+    expect(sandboxOf({ hosts: ["github.com"] })).toEqual({ hosts: ["github.com"], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"] });
     expect(sandboxOf({ deny: ["~/.kube"] })).toEqual({ hosts: [], deny: ["~/.kube"] });
   });
 

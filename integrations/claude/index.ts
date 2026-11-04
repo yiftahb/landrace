@@ -12,7 +12,7 @@ import { constants, existsSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, open, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
-import { BaseExecutor, DEFAULT_DENY, shortPath } from "landrace/kit";
+import { BaseExecutor, CREDENTIALS_DENY, DEFAULT_DENY, shortPath } from "landrace/kit";
 import type {
   AgentSettings, EventReading, FrontDoor, HandoffPlan, HookLog, McpServerConfig, PairingKind, RunPlan, SandboxSettings, StepKey,
 } from "landrace/kit";
@@ -61,10 +61,21 @@ function sandboxSettings({ hosts, deny }: SandboxSettings, built: string | undef
     },
     // `//` is an absolute path in a permission rule, where `/` is the settings' own root.
     permissions: {
-      deny: [...deny.flatMap((path) => [`Read(${path})`, `Read(${path}/**)`]), ...(built === undefined ? [] : [`Edit(/${built}/**)`])],
+      deny: [...readRules(deny), ...(built === undefined ? [] : [`Edit(/${built}/**)`])],
     },
   };
 }
+
+/** A denied path as the Read tool's rules: itself and everything under it. */
+const readRules = (deny: readonly string[]): string[] => deny.flatMap((path) => [`Read(${path})`, `Read(${path}/**)`]);
+
+/**
+ * The paths a run is denied: the sandbox's list, and Landrace's credentials
+ * whatever that list says — a written `agent.sandbox.deny` replaces the
+ * defaults, and the store must not become readable because an operator
+ * listed their own paths.
+ */
+const deniedPaths = ({ deny }: SandboxSettings): string[] => (deny.includes(CREDENTIALS_DENY) ? [...deny] : [...deny, CREDENTIALS_DENY]);
 
 /** Per tool, the argument worth a glance — the file it read, the command it ran — in the names the CLI's own tools use. */
 const TOOL_ARGS = ["file_path", "notebook_path", "path", "command", "pattern", "url", "query", "description"];
@@ -449,9 +460,13 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     // step's own `plugins:`, else `agent.plugins`. The sandbox is for a run
     // that may write: the only one with Bash.
     const plugins = own ?? extras.plugins;
+    // A read-only step has the Read tool and no sandbox, so the denied paths
+    // reach it as Read rules alone. The screener has no Read to deny.
+    const deny = deniedPaths(sandbox);
     const settings = {
       ...(declared && plugins.length ? { enabledPlugins: Object.fromEntries(plugins.map((id) => [id, true])) } : {}),
-      ...(mayWrite ? sandboxSettings(sandbox, built) : {}),
+      ...(mayWrite ? sandboxSettings({ ...sandbox, deny }, built) : {}),
+      ...(declared && !mayWrite ? { permissions: { deny: readRules(deny) } } : {}),
       ...(built !== undefined ? { env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" } } : {}),
     };
     if (Object.keys(settings).length) args.push("--settings", JSON.stringify(settings));
