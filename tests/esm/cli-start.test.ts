@@ -1104,6 +1104,14 @@ async function stdoutOf(fn: () => Promise<unknown>): Promise<string[]> {
   return printed;
 }
 
+/**
+ * The events among what `runStart` printed. Stdout carries the human item
+ * rows (`#4242 …`) beside the JSON events, and whether a row lands before an
+ * assertion is timing: parsing every line passed locally and failed in CI.
+ */
+const eventsIn = (printed: readonly string[]): LandraceEvent[] =>
+  printed.filter((l) => l.startsWith("{")).map((l) => JSON.parse(l) as LandraceEvent);
+
 describe("runStart --once over two workflows", () => {
   it("works each item under the workflow that claims it, running the shared preflight once", async () => {
     const { dir, record } = await fixture({ preflight: "pass", items: [{ id: ITEM, labels: ["lr:auto"] }, { id: "4343", labels: ["lr:fast"] }] });
@@ -2277,7 +2285,7 @@ export const chatIdentity = brand("connection", {
     console.error = (line: unknown): void => { said.push(String(line)); };
     const running = runStart(dir, { interactive: false, credentials, serve });
     const expiring = (): LandraceEvent[] =>
-      printed.map((l) => JSON.parse(l) as LandraceEvent).filter((e) => e.name === "connection.expiring");
+      eventsIn(printed).filter((e) => e.name === "connection.expiring");
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       await until(() => expiring().length > 0, "the tick's expiry warning");
@@ -2388,7 +2396,9 @@ export const spy = brand("preflight", {
         return me.connections.some((c) => c.id === "forge" && c.state === "failed") && !me.ready;
       }, "the row to be Not working");
       expect((await credentials.read("local")).connections["forge"]?.failure).toMatch(/invalid_grant: The refresh token is revoked/);
-      const failed = printed.map((l) => JSON.parse(l) as LandraceEvent).filter((e) => e.name === "connection.failed");
+      // A row printed beside the events, the way timing lets one land in CI.
+      printed.push(`#4242 term after 1 pass(es)`);
+      const failed = eventsIn(printed).filter((e) => e.name === "connection.failed");
       expect(failed[0]).toMatchObject({ connection: "forge", error: expect.stringMatching(/invalid_grant/) });
       for (const secret of [OLD, REFRESH]) expect(printed.join("\n")).not.toContain(secret);
     });
