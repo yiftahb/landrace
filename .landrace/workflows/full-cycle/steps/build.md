@@ -76,7 +76,10 @@ change, and leaned on its old value — another element at the z-index you take,
 a scroll into view that assumed nothing covers the window's top, every
 existing caller and test of a function you give a side effect — a spawned
 process, a network call — reaching it through the outermost entry point, each
-of which must be able to inject a stub. And when what was built once becomes
+of which must be able to inject a stub. A value you hand what runs work — a
+person's credential, a setting — reaches it on every path that builds it — a
+step, a screener, a tool's turn — and each path judges the value and catches its
+failure as the first does, blamed on the part that path built. And when what was built once becomes
 built again — a reload, a rebuild — it means each value that build makes, not
 only those the spec names: a record of what is in flight or already sent is
 shared across builds, what is read from configuration is judged from the
