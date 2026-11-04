@@ -32,7 +32,8 @@ src/agent/           prompt screening, the worktree sandbox, reading an agent's 
 src/runner/          tick, converge, step, lock, effect dispatch, events
 src/config/          landrace.yaml and .env
 src/telemetry/       OpenTelemetry export of events, loaded only when it is on
-src/mcp/             operator tools over stdio
+src/mcp/             the operator tools, and the stdio servers for a pairing and a child
+src/front/           the front door: the board and the operator tools on one port, and its host rules
 src/cli/             validate, next, mcp, start, status
 src/ui/              the board: the triage page, its server, and the display-only table
                      of the systems a link points into

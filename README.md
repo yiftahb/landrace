@@ -138,7 +138,7 @@ Both also stop for a person at a halt: a step whose output was broken, a push th
 
 ## The board
 
-`landrace start` serves the board on `127.0.0.1` only. It shows:
+`landrace start` serves the board on `127.0.0.1` only, at port 4545 unless [`serve.port`](docs/configuration.md#the-front-door) moves it. It shows:
 
 - **Needs You**, the home page: every item waiting for a person, across all workflows, most urgent first.
 - **A page per workflow**, with its items in lanes: Needs you, Agent running, Held elsewhere, Waiting, Not admitted and Done.
@@ -150,7 +150,7 @@ A Claude Code plugin shows the same board in a pane beside the chat: see [The bo
 
 ## MCP
 
-`landrace mcp` is Landrace's operator server: an MCP server over stdio, whose tools read and drive items as the board does, and also open and edit them. Claude Code, Codex or Cursor use it from a chat, where you type requests such as:
+Landrace's operator server is an MCP endpoint that `landrace start` serves beside the board, at `http://127.0.0.1:4545/mcp`. Its tools read and drive items as the board does, and also open and edit them. Claude Code, Codex or Cursor use it from a chat, where you type requests such as:
 
 - *"What needs me?"*
 - *"File a fastlane item to fix the bell."*
@@ -158,7 +158,7 @@ A Claude Code plugin shows the same board in a pane beside the chat: see [The bo
 - *"Send #65 back to build with this note."*
 - *"Make #59 wait for #56."*
 
-The agent answers them with tools such as `landrace_waiting`, `landrace_create_item`, `landrace_reply`, `landrace_goto`, and `landrace_update_item`, whose `relate` field links one item to another. Every tool is in [the operator tools](docs/cli.md#the-operator-tools). How this repository connects Claude Code and Codex is in [Connecting an editor](docs/cli.md#connecting-an-editor).
+The agent answers them with tools such as `landrace_waiting`, `landrace_create_item`, `landrace_reply`, `landrace_goto`, and `landrace_update_item`, whose `relate` field links one item to another. Every tool is in [the operator tools](docs/cli.md#the-operator-tools). To connect Claude Code, run `claude mcp add --transport http landrace http://127.0.0.1:4545/mcp` while `landrace start` runs; the rest is in [Connecting an editor](docs/cli.md#connecting-an-editor).
 
 The Chat entries in an item's ⋯ menu on the board open a chat about it over this server, with the prompt filled in. A step allowed to create sub-items gets the engine's own server instead, a separate one bound to its item, with exactly one tool, `landrace_create_child`: see [Workflows](docs/workflows.md#splitting-work-into-sub-items).
 

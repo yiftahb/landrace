@@ -200,8 +200,8 @@ export async function buildMcpTools(dir: string, scope?: string): Promise<Tools>
  */
 export const STDIO_REMOVED =
   "the operator's tools are no longer served over stdio. `landrace start` serves them over HTTP beside the board, " +
-  "at /mcp on serve.port (4545 by default). Point your editor at it instead, for Claude Code: " +
-  "claude mcp add --transport http landrace http://127.0.0.1:4545/mcp";
+  "at /mcp on serve.port (4545 by default). Point your editor's MCP client at it instead, over HTTP: " +
+  "http://127.0.0.1:4545/mcp";
 
 /**
  * The stdio server a pairing's session is handed (`--pairing`), bound to one

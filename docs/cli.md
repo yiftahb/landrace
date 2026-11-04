@@ -10,8 +10,7 @@ landrace start    [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] 
                   [--telemetry] [--otel KEY=VALUE]...
 landrace port     [-w, --workspace <dir>]
 landrace next     -w, --workspace <dir> [--workflow <id>] -s, --snapshot <file>
-landrace mcp      [-w, --workspace <dir>] [--workflow <id>]
-                  [--child <parent> --stage <stage> --round <round>]
+landrace mcp      -w, --workspace <dir> --workflow <id> --child <parent> --stage <stage> --round <round>
 landrace version
 landrace update
 ```
@@ -69,12 +68,12 @@ As it starts, it asks npm whether a newer Landrace is out and, if one is, prints
 | `-w, --workspace <dir>` | The workspace. Default `.landrace` |
 | `--once` | Run a single tick and exit. Serves no board |
 | `--debug` | Print every event, including the agent process's own output and the snapshot behind each decision, so you can watch a decision before it becomes a write |
-| `--ui-port <port>` | The board's port. Default `4545` |
+| `--ui-port <port>` | The port of the board and its MCP endpoint, over [`serve.port`](configuration.md#the-front-door). Absent, `serve.port`, which defaults to `4545` |
 | `--headless` | Serve no board and open no browser. `--no-ui` is an older name for it |
 | `--telemetry` | Export every event to an OpenTelemetry collector (sets `LANDRACE_ENABLE_TELEMETRY=1`) |
 | `--otel KEY=VALUE` | Set one telemetry variable, over `.env` and the shell. Repeatable. See [Configuration](configuration.md#telemetry) |
 
-Before the first tick, `start` loads the configuration and every workflow, runs `validate`'s checks with a few differences ([listed there](validate.md#what-start-checks-differently)), runs each hook's preflight — the GitHub integration's checks the token's permissions — and resolves the executors and their MCP servers. Any problem refuses to start, naming it. A start that serves a board also refuses when another start already serves this workspace's board, naming its URL and process id; a record a crashed start left behind does not block it ([landrace port](#landrace-port)).
+Before the first tick, `start` loads the configuration and every workflow, runs `validate`'s checks with a few differences ([listed there](validate.md#what-start-checks-differently)), runs each hook's preflight — the GitHub integration's checks the token's permissions — and resolves the executors and their MCP servers. Any problem refuses to start, naming it. `start` also refuses a [`serve.host`](configuration.md#the-front-door) that is not loopback, with the `serve.unauthenticated` problem `validate` reports, even with `--headless`. A start that serves a board also refuses when another start already serves this workspace's board, naming its URL and process id; a record a crashed start left behind does not block it ([landrace port](#landrace-port)).
 
 Ticks overlap: the lock is per item, so an item busy with a ten-minute agent run delays only itself. **A step run spends real money**, and the round caps are the `$lt` counters in your workflow, not something the engine imposes. The first time, escalate: `validate`, then `status`, then `start --once --debug`, then `start`.
 
@@ -88,7 +87,7 @@ To stop a step while it runs, close its item or take its admit label (`lr:auto` 
 
 ### The board
 
-`start` serves a **board**, the triage page, at `http://127.0.0.1:4545/`, and opens it in your default browser once, when its output is a terminal, after it has written the board's record. A start refused because another already serves the workspace's board opens nothing. A start under a supervisor, in CI or with its output piped serves the board and opens nothing. A browser that fails to open prints `landrace: could not open a browser (<reason>); the board is at <url>`, and the start carries on. The board shows every candidate item, with its sub-items and pull requests nested beneath it, in lanes:
+`start` serves a **board**, the triage page, at `http://127.0.0.1:4545/` (or `serve.publicUrl` when set), and opens it in your default browser once, when its output is a terminal, after it has written the board's record. A start refused because another already serves the workspace's board opens nothing. A start under a supervisor, in CI or with its output piped serves the board and opens nothing. A browser that fails to open prints `landrace: could not open a browser (<reason>); the board is at <url>`, and the start carries on. The board shows every candidate item, with its sub-items and pull requests nested beneath it, in lanes:
 
 - **Needs you** — an item at a `waits: person` or `waits: pairing` stage, and every halt;
 - **Agent running** — an agent this process started is running on it;
@@ -96,7 +95,7 @@ To stop a step while it runs, close its item or take its admit label (`lr:auto` 
 - **Waiting**;
 - **Not admitted** and **Done**, collapsed.
 
-It costs no tracker calls: it polls the process every two seconds and shows what the tick already fetched and what the process knows is running. `--ui-port` moves it, `--headless` turns it off, and `--once` never serves it. It binds loopback only and answers only its own host name.
+It costs no tracker calls: it polls the process every two seconds and shows what the tick already fetched and what the process knows is running. `--ui-port` or `serve.port` moves it, `--headless` turns it off, and `--once` never serves it. It binds `serve.host`, loopback only, and answers only its own host names: `127.0.0.1` and `localhost` on its port, the host it bound, and `serve.publicUrl`'s host. Any other `Host` gets `421`. The [operator tools](#the-operator-tools) are served on the same port, at `/mcp`.
 
 **Before the first tick.** Until the first tick has listed the tracker, a spinner covers every page with "Waiting for the first tick…", and nothing behind it takes a click or keyboard focus. It goes once the first listing reaches the board and does not come back while the page stays open; later ticks show the last listing as before. If the first listing fails, the spinner stays, and the terminal running `landrace start` says why.
 
@@ -149,9 +148,9 @@ landrace port [-w, --workspace <dir>]
 
 Prints the URL of the board that the `landrace start` running for this workspace serves, so a script or an editor pane that knows only the folder finds that project's own board when several projects run `landrace start` on one machine. The [Claude Code pane](board-pane.md) finds its board this way. The workspace defaults to `.landrace` in the current folder.
 
-A start that serves a board writes a record once the board listens: its process id, the port it bound, the repository checkout the board shows, and when it started. The record lives under `$TMPDIR/landrace/<repo>/boards/`, keyed by the workspace folder's real path, never inside the working tree. A clean stop removes it. `--headless` and `--once` serve no board and write none.
+A start that serves a board writes a record once the board listens: its process id, the host and port it bound, the repository checkout the board shows, and when it started. The record lives under `$TMPDIR/landrace/<repo>/boards/`, keyed by the workspace folder's real path, never inside the working tree. A clean stop removes it. `--headless` and `--once` serve no board and write none.
 
-`port` never trusts the record alone. It asks the board for `/board.json` on `127.0.0.1`, giving up after two seconds, and the board must answer for the record's checkout. When it does, stdout is the URL alone and the exit code is 0:
+`port` never trusts the record alone. It asks the board for `/board.json` on the host it bound, `127.0.0.1` unless `serve.host` names another, giving up after two seconds, and the board must answer for the record's checkout. When it does, stdout is the URL alone and the exit code is 0:
 
 ```text
 http://127.0.0.1:4545
@@ -177,25 +176,25 @@ landrace next -w, --workspace <dir> [--workflow <id>] -s, --snapshot <file>
 
 Prints, as JSON, the decision and the planned effects the engine would make for a saved snapshot: `{ "decision": …, "effects": … }`. It derives the run from the snapshot's `entries` and `run.stage`, imports no hooks and does no I/O beyond reading the files, which makes it the way to test a workflow's routing by hand. With no post hooks to say what is already satisfied, the effects are the plan before reconciling. `--workflow` names the workflow, by its folder under `workflows/`, and is needed when the workspace has several.
 
-## landrace mcp
+## The operator server
 
-```text
-landrace mcp [-w, --workspace <dir>] [--workflow <id>]
-```
+Landrace's **operator server** is an MCP endpoint through which an editor's agent reads and drives items. `landrace start` serves it over Streamable HTTP at `/mcp`, on the board's own port: `http://127.0.0.1:4545/mcp` by default. It runs in `start`'s own process, over the workflows, hooks and executors the loop runs, so it is up once the board is, and only while it is. `--headless` and `--once` serve neither.
 
-Runs Landrace's **operator server**: an MCP server over stdio, through which an editor's agent reads and drives items. `--workflow <id>` scopes it to one workflow — it lists, creates and acts for that workflow alone, and says so in each tool's description.
+`/mcp?workflow=<id>` scopes a session to one workflow: it lists, creates and acts for that workflow alone, and says so in each tool's description. The scope is fixed when the session initializes. An id the workspace does not have is refused with `400` and no session. Claims are still judged over every workflow, so an item another workflow claims is refused.
 
-Like `start`, it runs each hook's preflight before anything else, reads `.landrace/.env` and the shell for telemetry, and refuses `OTEL_LOGS_EXPORTER=console`, which would write into its protocol.
-
-It answers the client only after it has listed every distinct tracker once, all at the same time, so a tracker it cannot read stops it before it connects. Startup therefore takes as long as the slowest tracker's full list. A client that gives up first shows the server as failed to connect; in Claude Code, raise its timeout, in milliseconds, in `~/.claude/settings.json` and restart Claude Code:
-
-```json
-{ "env": { "MCP_TIMEOUT": "90000" } }
-```
+The endpoint gets the board's checks first: a `Host` other than the board's own names gets `421`. A request whose `Origin` names another site gets `403`. A request with no `Origin`, as an editor's client sends, is served. Nothing asks who a caller is, which is why `start` refuses a [`serve.host`](configuration.md#the-front-door) that is not loopback.
 
 ### Connecting an editor
 
-This repository defines the server in `.agsync/mcp/landrace.yaml`, and [agsync](https://github.com/yiftahb/agsync) writes it out per agent — `.mcp.json` for Claude Code, `.codex/config.toml` for Codex:
+For Claude Code, with `landrace start` running:
+
+```bash
+claude mcp add --transport http landrace http://127.0.0.1:4545/mcp
+```
+
+`claude mcp list` then shows `landrace` as connected, with its 15 `landrace_*` tools. Use the port `serve.port` or `--ui-port` names if you moved it.
+
+This repository defines the same server in `.agsync/mcp/landrace.yaml`, and [agsync](https://github.com/yiftahb/agsync) writes it out per agent — `.mcp.json` for Claude Code, `.codex/config.toml` for Codex:
 
 ```bash
 agsync sync
@@ -227,15 +226,25 @@ The generated files are gitignored, so run it after cloning. Then ask your clien
 
 **Edits.** `landrace_update_item` is an edit, as on the tracker — a workflow's admit labels included, so taking `lr:auto` off stops an item and taking `lr:fast` off sends a fastlane item to full-cycle. The engine's own labels — `lr:working`, `lr:awaiting`, `lr:blocked`, `lr:screened` and every `lr:stage:*` — are refused, there and in `landrace_create_item`. An item no one workflow claims is edited through the one operator every workflow that could claim it shares, and refused, naming them, when they edit through different ones. How `relate` and `unrelate` are checked is in [Workflows](workflows.md#relating-items).
 
-**Waking the loop.** Every write — reply, goto, clear, ask, resolve, create, admit or update — wakes `landrace start`, so a person does not wait out the interval. The MCP server is a separate process: it touches a `wake` file beside the locks, and `start` checks that file every second. On the board, Start work, Retry, Clear & retry, "Go to step…" and every panel write but Reply wake it too.
+**Waking the loop.** Every write — reply, goto, clear, ask, resolve, create, admit or update — wakes the loop at once, so a person does not wait out the interval. A pairing's own server, below, is a separate process: it touches a `wake` file beside the locks instead, and `start` checks that file every second. On the board, Start work, Retry, Clear & retry, "Go to step…" and every panel write but Reply wake it too.
+
+## landrace mcp
+
+```text
+landrace mcp -w, --workspace <dir> --workflow <id> --child <parent> --stage <stage> --round <round>
+```
+
+`landrace mcp` runs only the stdio servers Landrace starts for itself. Run bare, as an editor configured before the operator server moved to `/mcp` still runs it, it reads no configuration, prints this on stderr and exits 1:
+
+```text
+landrace mcp: the operator's tools are no longer served over stdio. `landrace start` serves them over HTTP beside the board, at /mcp on serve.port (4545 by default). Point your editor's MCP client at it instead, over HTTP: http://127.0.0.1:4545/mcp
+```
+
+**A pairing's server.** `start` hands a pairing's session `landrace mcp --workspace <dir> --workflow <id> --pairing`: the operator tools over stdio, scoped to that workflow. Like `start`, it runs each hook's preflight and lists every distinct tracker once before it answers, and refuses `OTEL_LOGS_EXPORTER=console`, which would write into its protocol. `--pairing` is hidden from `--help` and needs `--workflow`.
 
 ### The child server
 
-```text
-landrace mcp --workspace <dir> --workflow <id> --child <parent> --stage <stage> --round <round>
-```
-
-The runner starts this itself, beside the agent of a step that declares `items:create`. It serves exactly one tool, `landrace_create_child`, bound on its command line to the parent item, the creating stage and round, and the workflow. `--child` needs `--stage`, `--round` and `--workflow`. See [Workflows](workflows.md#splitting-work-into-sub-items).
+The runner starts this itself, beside the agent of a step that declares `items:create`, as the pairing's command with `--child <parent> --stage <stage> --round <round>` added. It serves exactly one tool, `landrace_create_child`, bound on its command line to the parent item, the creating stage and round, and the workflow. `--child` needs `--stage`, `--round` and `--workflow`, and takes precedence over `--pairing`. See [Workflows](workflows.md#splitting-work-into-sub-items).
 
 ## landrace version
 

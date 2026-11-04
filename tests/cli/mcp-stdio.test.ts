@@ -13,7 +13,7 @@ describe("landrace mcp over stdio", () => {
     // No such workspace: a refusal that read the configuration first would say that instead.
     await expect(runMcp(join(tmpdir(), "no-such-workspace"), { pairing: false })).rejects.toThrow(STDIO_REMOVED);
     await expect(runMcp(join(tmpdir(), "no-such-workspace"), { scope: "main", pairing: false })).rejects.toThrow(STDIO_REMOVED);
-    expect(STDIO_REMOVED).toContain("claude mcp add --transport http landrace http://127.0.0.1:4545/mcp");
+    expect(STDIO_REMOVED).toContain("over HTTP: http://127.0.0.1:4545/mcp");
   });
 
   it("says so on stderr and exits 1, from the CLI an editor spawns", async () => {

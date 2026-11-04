@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking
+
+- **The operator server moved from stdio to the board's port.** `landrace start` now serves the MCP tools over Streamable HTTP at `/mcp`, beside the board: `http://127.0.0.1:4545/mcp` by default. A bare `landrace mcp`, as an editor configured before this still runs it, now reads no configuration, prints where the tools moved and exits 1. Point the editor at the endpoint instead — for Claude Code, `claude mcp add --transport http landrace http://127.0.0.1:4545/mcp` — or run `agsync sync` in a checkout of this repository. `/mcp?workflow=<id>` scopes a session as `--workflow` once scoped the stdio server. Writes through it wake the loop directly, with no wake file. `--headless` and `--once` serve no endpoint. See [The operator server](docs/cli.md#the-operator-server).
+- **`--ui-port` has no default of its own.** Absent, the new `serve.port` decides, so a `--ui-port` you never passed no longer overrides it.
+
+### Added
+
+- **`serve: { host, port, publicUrl }`** in `landrace.yaml`: where the board and its MCP endpoint bind, and the URL a proxy of your own serves them at. `host` must be loopback; `validate` reports any other, `0.0.0.0` included, as `serve.unauthenticated`, and `start` refuses it. See [The front door](docs/configuration.md#the-front-door).
+- **No step reaches the front door.** An `agent.mcp` server whose URL is the door's, under any name, and an `agent.sandbox.hosts` entry matching its host names are refused at startup. The Claude executor denies every run `WebFetch` of the door's host names. See [Security](docs/security.md#the-front-door).
+
 ## [1.8.0] - 2026-11-03
 
 ### Added
