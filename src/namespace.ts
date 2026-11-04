@@ -1788,7 +1788,7 @@ export type EventName =
   | "notify.sent" | "notify.failed"
   | "agent.limited" | "integration.limited"
   | "person.connected" | "person.disconnected"
-  | "connection.expiring" | "connection.failed";
+  | "connection.expiring" | "connection.failed" | "connection.refreshed";
 
 export interface LandraceEvent {
   name: EventName;
@@ -1885,6 +1885,42 @@ export interface ConnectionDef {
   lifetimeDays?: number;
   resolve?(email: string, ctx: RuntimeContext): Promise<Record<string, string> | null>;
   check?(value: ConnectionValue, ctx: RuntimeContext): Promise<string | null>;
+  /**
+   * The provider's OAuth app for this connection, out of the instance's own
+   * secrets: a function of `ctx`, since where the app lives can be a secret
+   * too. Offered only for a credential of one field, and only when both
+   * `clientId` and `clientSecret` are non-empty; otherwise the paste form.
+   */
+  oauth?(ctx: RuntimeContext): OAuthSpec;
+}
+
+/**
+ * One provider's OAuth app, as a connection's `oauth` answers it: where a
+ * person consents, where a code and a refresh token are exchanged, the
+ * app's own id and secret, and the scope asked for, space-separated.
+ */
+export interface OAuthSpec {
+  authorizeUrl: string;
+  tokenUrl: string;
+  clientId: string;
+  clientSecret: string;
+  scope: string;
+}
+
+/**
+ * OAuth flows begun and not yet finished, by their `state`: whose, for which
+ * connection, the PKCE verifier and the redirect URI the code is bound to,
+ * and when it stops being accepted, epoch ms. In memory only: a restart
+ * forgets them, and a person begins again.
+ */
+export type PendingConnects = Map<string, { person: string; connection: string; verifier: string; redirectUri: string; expires: number }>;
+
+/** What a provider's redirect back carries in its query: a code and the state, or why it gave none. */
+export interface ConnectCallback {
+  state?: string | undefined;
+  code?: string | undefined;
+  error?: string | undefined;
+  errorDescription?: string | undefined;
 }
 
 /**
