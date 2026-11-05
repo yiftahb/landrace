@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { appendFile, chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { buildWorkspaceRuntime, childServerCommand, localGate, runStart } from "#cli/start.js";
 import { buildChildTool } from "#cli/mcp.js";
@@ -842,9 +842,13 @@ ${EXECUTOR}`);
    * with either dropped.
    */
   describe("a step's deny list, from the people beside it", () => {
-    const readDenied = async (opts: BuildOptions): Promise<{ dir: string; deny: string[] }> => {
-      const { dir } = await fixture();
+    const readDenied = async (
+      opts: BuildOptions, before?: (dir: string) => Promise<void>, through?: (dir: string) => Promise<string>,
+    ): Promise<{ dir: string; deny: string[] }> => {
+      const { dir: made } = await fixture();
+      const dir = through ? await through(made) : made;
       const rt = await buildMain(dir, opts);
+      await before?.(dir);
       const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
       await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));
       await chmod(join(bin, "claude"), 0o755);
@@ -870,10 +874,84 @@ ${EXECUTOR}`);
       expect(deny).toContain("Read(~/.landrace/credentials/**)");
     });
 
-    it("denies only the credentials to a runtime with nobody beside it", async () => {
+    it("denies only the credentials, the .env and git's stored passwords to a runtime with nobody beside it", async () => {
       const { dir, deny } = await readDenied({});
       expect(deny).toContain("Read(~/.landrace/credentials/**)");
+      expect(deny).toContain(`Read(/${join(dir, ".env")})`);
+      expect(deny).toEqual(expect.arrayContaining(["Read(~/.git-credentials)", "Read(~/.config/git/credentials)"]));
       expect(deny.join("\n")).not.toContain(join(sandboxRoot(dir), "worktrees"));
+    });
+
+    /*
+     * Started through a symlink, the .env has two spellings: the one `-w`
+     * named, and the real one a worktree's `.git` file points at, which a step
+     * can `cat` it by. A rule naming only the first leaves the second readable.
+     */
+    it("denies the .env by the path the start was given and by its real path, started through a symlink", async () => {
+      let real = "";
+      const { dir, deny } = await readDenied({}, undefined, async (made) => {
+        real = await realpath(made);
+        const link = join(await mkdtemp(join(tmpdir(), "lr-link-")), "workspace");
+        await symlink(made, link);
+        return link;
+      });
+      expect(dir).not.toBe(real);
+      expect(deny).toEqual(expect.arrayContaining([`Read(/${join(dir, ".env")})`, `Read(/${join(real, ".env")})`]));
+    });
+
+    /*
+     * A `.env` that is itself a symlink — a dotfiles manager, a secrets
+     * mount — is read by `loadConfig` from its target, and a step can `cat`
+     * that target by its own path, which neither spelling of `dir` matches.
+     */
+    it("denies the file a symlinked .env points at, by its real path", async () => {
+      let target = "";
+      const { dir, deny } = await readDenied({}, undefined, async (made) => {
+        target = join(await realpath(await mkdtemp(join(tmpdir(), "lr-secrets-"))), "workspace.env");
+        await writeFile(target, `LR_TEST_TOKEN=${TOKEN}\n`);
+        await rm(join(made, ".env"));
+        await symlink(target, join(made, ".env"));
+        return made;
+      });
+      expect(deny).toEqual(expect.arrayContaining([`Read(/${join(dir, ".env")})`, `Read(/${target})`]));
+    });
+
+    // A `.env` that is there but will not resolve leaves its real path unknown: refused, never skipped.
+    it("refuses the run when the .env is a symlink that will not resolve, other than not being there", async () => {
+      await expect(readDenied({}, async (d) => {
+        await rm(join(d, ".env"));
+        await symlink(join(d, ".env"), join(d, ".env"));
+      })).rejects.toThrow(/ELOOP/);
+    });
+
+    // Gone by the time a step starts is nothing more to deny, never a refused run.
+    it("runs with no .env, denying the path it would have", async () => {
+      const { dir, deny } = await readDenied({}, async (d) => {
+        await rm(join(d, ".env"));
+      });
+      expect(deny).toContain(`Read(/${join(dir, ".env")})`);
+    });
+
+    /*
+     * #207: alice is a person with a folder of her own, as everyone is
+     * remotely. Bob was on the roster when her runtime was built and a sync
+     * dropped him before her step; his folder is still there, his runs still
+     * unwinding in it, and the roster no longer names him.
+     */
+    it("denies one person's step the .env, git's stored passwords, and the folder of a person who just left the roster", async () => {
+      const roster = [{ id: "bob" }];
+      const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials"));
+      let worktrees = "";
+      const { dir, deny } = await readDenied({ person: { id: "alice" }, credentials, others: () => roster }, async (d) => {
+        worktrees = join(sandboxRoot(d), "worktrees");
+        await mkdir(join(worktrees, "bob", "7.write"), { recursive: true });
+        await mkdir(join(worktrees, "alice", "8.write"), { recursive: true });
+        roster.length = 0;
+      });
+      expect(deny).toEqual(expect.arrayContaining([
+        `Read(/${join(dir, ".env")})`, "Read(~/.git-credentials)", "Read(~/.config/git/credentials)", `Read(/${join(worktrees, "bob")}/**)`,
+      ]));
+      expect(deny.join("\n")).not.toContain(join(worktrees, "alice"));
     });
   });
 });
@@ -2798,9 +2876,11 @@ describe("runStart with people.oidc", () => {
   it("files each person's sub-items with their own token, and shows each only their own activity for an item both list", async () => {
     const [ALICE_TOKEN, BOB_TOKEN, LOCAL_TOKEN] = ["ghp_alice_pasted_token_long_enough", "ghp_bob_pasted_token_long_enough_x", "ghp_local_stored_token_long_enough"];
     const { dir, record } = await fixture({
-      agent: "fake", agentKeys: "isolation: none", hookExtra: FORGE_CONNECTION, configExtra: REMOTE, workflow: stepped(true),
+      agent: "fake", hookExtra: FORGE_CONNECTION, configExtra: REMOTE, workflow: stepped(true),
       items: [{ id: ITEM, labels: ["lr:auto", "lr:stage:breakdown"] }, { id: "202", labels: ["lr:auto", "lr:stage:breakdown"] }],
     });
+    // Remote steps run in worktrees (#207), which are cut from a commit.
+    await exec("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: dirname(dir) });
     await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
     await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), breakdownStep("repo:read, items:create"));
     const yaml = join(dir, "landrace.yaml");
@@ -2975,6 +3055,17 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
     const { dir } = await fixture({ configExtra: REMOTE, items: [] });
     const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
     await expect(runStart(dir, { interactive: false, credentials, ui: false })).rejects.toThrow(/people\.oidc is set.*--headless/);
+  });
+
+  // #207: with isolation off, every person's agent would run in the operator's own checkout.
+  it("refuses agent.isolation: none, in validate's words", async () => {
+    const { dir } = await fixture({ configExtra: REMOTE, agentKeys: "isolation: none", items: [] });
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    const { problems } = await runValidate(dir, { credentials });
+    const refused = problems.find((p) => p.rule === "agent.isolation");
+    expect(refused?.message).toMatch(/each person's agent would run in the operator's checkout/);
+    await expect(runStart(dir, { interactive: false, credentials, serve: inProcessDoor().serve }))
+      .rejects.toThrow(`agent.isolation: ${refused?.message ?? "?"}`);
   });
 
   it("refuses people.oidc with no serve.publicUrl, in validate's words", async () => {

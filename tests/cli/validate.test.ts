@@ -330,6 +330,17 @@ describe("landrace validate, and the notify block", () => {
     const unnamed = await runValidate(await dirFor(`serve: { host: "0.0.0.0" }\n${OIDC}`));
     expect(unnamed.problems.filter((p) => p.rule.startsWith("serve")).map((p) => p.rule)).toEqual(["serve.public-url"]);
   });
+
+  // #207: remotely, isolation off would run every person's agent in the operator's checkout. Locally it is yours to choose.
+  it.each([["with people.oidc", OIDC, ["agent.isolation"]], ["without it", "", []]])(
+    "judges agent.isolation: none %s", async (_when, people, rules) => {
+      const dir = await dirFor("");
+      await writeFile(join(dir, "landrace.yaml"),
+        `version: 1\nagent: { adapter: claude, isolation: none }\nserve: { publicUrl: "https://landrace.example.org/" }\n${people}`);
+      const r = await runValidate(dir);
+      expect(r.problems.filter((p) => p.rule === "agent.isolation").map((p) => p.rule)).toEqual(rules);
+    },
+  );
 });
 
 describe("landrace next", () => {

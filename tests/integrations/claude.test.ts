@@ -95,7 +95,7 @@ const INSTRUCTIONS = { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" };
 const reads = (...paths: string[]): string[] => paths.flatMap((p) => [`Read(${p})`, `Read(${p}/**)`]);
 const CREDENTIALS = "~/.landrace/credentials";
 /** What a read-only step is denied with the default deny list: every path's Read rules, Landrace's credentials among them. */
-const READ_DENIED = { deny: reads("~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", CREDENTIALS) };
+const READ_DENIED = { deny: reads("~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.git-credentials", "~/.config/git/credentials", CREDENTIALS) };
 /** The copy of a step's instructions that `--add-dir` names, written `<instructions>` so a whole argv can be compared. */
 const atInstructions = (argv: string[]): string[] =>
   argv.map((a, i) => (argv[i - 1] === "--add-dir" ? "<instructions>" : a));
@@ -1360,10 +1360,10 @@ describe("a writing step's sandbox", () => {
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       network: { allowedDomains: [], strictAllowlist: true },
-      filesystem: { denyRead: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"] },
+      filesystem: { denyRead: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.git-credentials", "~/.config/git/credentials", "~/.landrace/credentials"] },
     },
     permissions: {
-      deny: reads("~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", CREDENTIALS),
+      deny: reads("~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.git-credentials", "~/.config/git/credentials", CREDENTIALS),
     },
   };
   /** CONFINED for the step that printed `argv`, denied writing the copies of its instructions and skills. */
@@ -1568,7 +1568,7 @@ describe("the factory's wiring, end to end", () => {
       const write = JSON.parse(flag(await argvOf(executor, { capabilities: ["repo:read", "repo:write"] }), "--settings") as string);
       expect(write.enabledPlugins).toEqual({ "p@m": true });
       expect(write.sandbox.network).toEqual({ allowedDomains: ["github.com"], strictAllowlist: true });
-      expect(write.sandbox.filesystem.denyRead).toEqual(["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"]);
+      expect(write.sandbox.filesystem.denyRead).toEqual(["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.git-credentials", "~/.config/git/credentials", "~/.landrace/credentials"]);
     } finally {
       process.env.PATH = savedPath;
     }

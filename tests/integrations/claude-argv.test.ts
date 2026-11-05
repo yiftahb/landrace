@@ -27,12 +27,12 @@ describe("the Claude integration's command lines", () => {
     expect(Object.keys(ARGV_CASES).sort()).toEqual(Object.keys(recorded).sort());
   });
 
-  // A person alone on the instance — every local start — is denied the
-  // credentials and no one else's work, which every run already was: `start`
-  // hands every runtime a `denyPaths`, and alone it changes no flag (#186).
+  // With nobody else on the instance, the people half of `denyPaths` is empty
+  // and adds no flag (#186): the credentials alone, which every run already
+  // was denied, leave the argv as it was recorded.
   it.each(Object.entries(ARGV_CASES).flatMap(([name, c]) => [
     [name, c, undefined],
-    [`${name}, alone on the instance`, c, () => Promise.resolve(["~/.landrace/credentials"])],
+    [`${name}, alone on the instance`, c, () => Promise.resolve({ always: ["~/.landrace/credentials"], people: [] })],
   ] as const))("builds today's argv for %s", async (label, c, denyPaths) => {
     const name = label.replace(/, alone on the instance$/, "");
     const home = mkdtempSync(join(tmpdir(), "fake-home-"));
