@@ -81,7 +81,7 @@ A person opens the public URL.
 
 1. Nobody is signed in, so the board sends them to `/login`, which sends them to the provider.
 2. The provider sends them back to `/login/callback`. Landrace checks the answer and sets a `landrace_session` cookie: `HttpOnly`, `SameSite=Lax`, and `Secure` when `serve.publicUrl` is `https`.
-3. They land on the page they asked for. Until their connections are ready, that is the Integrations tab; then it is their own board. In the moment before Landrace has judged their connections, the tab answers "not ready yet; try again in a moment", and the page asks again on its next poll.
+3. They land on the page they asked for. Until their connections are ready, that is the Integrations tab; then it is their own board. In the moment before Landrace has judged their connections, the tab answers "not ready yet; try again in a moment", and the page asks again on its next poll. If judging them failed, the tab says their connections "could not be judged" and gives the error, with secrets removed. Waiting does not fix that: the operator reads the same error in the log, as "could not build their runtime".
 
 Their connections are ready when every connection their steps need is connected and none they stored has expired or failed. On a remote instance that means:
 

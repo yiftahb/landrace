@@ -83,7 +83,7 @@ When a person's step starts, Landrace lists what it may not read: `~/.landrace/c
 - **An agent that cannot keep the list refuses the run.** Codex cannot keep a command from a path, so while anyone else is on the roster each of its runs is refused. Alone, it runs as before.
 - **Sub-items are filed as the step's person.** The server that serves a step's `landrace_create_child` is started with that person's id, and reads only their connections. It refuses an id the credentials store does not hold.
 - **Agent activity is kept per person.** Each person's runs write to their own activity log, `$TMPDIR/landrace/<repo>/activity/<person id>.person/`, with the id URL-encoded. The board's item panel reads only the caller's own, and only for an item on their board.
-- **Nobody is served under someone else's judging.** Until Landrace has judged a person who signed in, their Integrations tab is refused with "not ready yet", and their connections are not renewed. The start's own judging belongs to the local person, and stands in for nobody else.
+- **Nobody is served under someone else's judging.** Until Landrace has judged a person who signed in, their Integrations tab is refused with "not ready yet" (or "could not be judged", with the scrubbed error, when judging them failed), and their connections are not renewed. The start's own judging belongs to the local person, and stands in for nobody else.
 
 What it does not do:
 

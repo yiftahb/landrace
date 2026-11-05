@@ -1711,6 +1711,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     const local = first.person;
     // Each person's last judging, for their refresher and their expiry warnings.
     const gates = new Map<string, LocalGate>([[local.id, first]]);
+    // Each person whose last judging threw, by its scrubbed error: they have no
+    // gate either, but waiting will not give them one, so their tab says why.
+    const unjudgeable = new Map<string, string>();
     // What `start` serves of each runtime the roster builds: its board, the
     // listing its ticks feed, its writes and its MCP endpoint.
     const served = new WeakMap<WorkspaceRuntime, ServedRuntime>();
@@ -1727,7 +1730,14 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       // Judged afresh: the connection just made or removed is in the store
       // now, and a reload re-reads the hooks lists and `landrace.yaml`.
       judge: async (person) => {
-        const gate = await personGate(dir, store, { person, remote: mode.remote, log: log.with(personFields(person)), signal: stop.signal });
+        let gate: LocalGate;
+        try {
+          gate = await personGate(dir, store, { person, remote: mode.remote, log: log.with(personFields(person)), signal: stop.signal });
+        } catch (e) {
+          unjudgeable.set(person.id, log.scrub(messageOf(e)));
+          throw e;
+        }
+        unjudgeable.delete(person.id);
         gates.set(person.id, gate);
         if (person.id === local.id) latest = gate;
         return gate;
@@ -1804,10 +1814,13 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     // Each caller by their own last judging; locally the one person's. One
     // who signed in and was never judged yet is refused until they are: the
     // start's judging is the local person's, and stands in for nobody else.
+    // A judging that threw is said as such: "try again" would be polled forever.
     const judged = (personId: string): LocalGate => {
       const gate = gates.get(personId);
-      if (gate === undefined) throw new Refusal(`${personId}'s connections are not ready yet; try again in a moment`);
-      return gate;
+      if (gate !== undefined) return gate;
+      const failed = unjudgeable.get(personId);
+      if (failed !== undefined) throw new Refusal(`${personId}'s connections could not be judged: ${failed}`);
+      throw new Refusal(`${personId}'s connections are not ready yet; try again in a moment`);
     };
     const gateOf = (personId: string): LocalGate => (mode.remote ? judged(personId) : latest);
     const people = createPeoplePanel({

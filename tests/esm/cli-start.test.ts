@@ -2931,6 +2931,46 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
     }
   }, 30_000);
 
+  /*
+   * A person whose judging threw has no gate either, but waiting will not
+   * give them one: their tab says it could not be judged, and why, rather
+   * than "try again in a moment" on every poll for as long as it keeps failing.
+   */
+  it("says a person's connections could not be judged, with the judging's error, when it threw", async () => {
+    const { dir } = await fixture({ hookExtra: FORGE_CONNECTION, configExtra: REMOTE, items: [] });
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("secrets: { githubToken: $LR_TEST_TOKEN }", PER_PERSON_SECRET));
+    const store = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    await store.put("local", { id: "local" }, "forge", { fields: { token: "ghp_local_stored_token_long_enough" }, source: "paste", connectedAt: new Date().toISOString() });
+    const carol = { id: "sub-carol", email: "carol@example.invalid" };
+    await store.remember(carol);
+    // Carol's file cannot be read, so every judging of her throws.
+    const credentials: typeof store = { ...store, read: async (id) => { if (id === carol.id) throw new Error("carol's file is unreadable near ghp_local_stored_token_long_enough"); return store.read(id); } };
+    const { serve, drive, options } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (line: unknown): void => { said.push(String(line)); };
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    try {
+      await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
+      await until(() => said.some((l) => l.includes("could not build their runtime")), `carol's judging to fail: ${said.join("\n")}`);
+      const sessions = options().remote?.sessions;
+      if (!sessions) throw new Error("runStart handed a remote door no sessions");
+      const cookie = sessions.issue(carol).split(";")[0] ?? "";
+      const me = await drive("/people/me", { headers: { cookie } });
+      expect(me.status).toBe(409);
+      expect(me.body).toContain("sub-carol's connections could not be judged");
+      expect(me.body).toContain("carol's file is unreadable");
+      expect(me.body).not.toContain("try again in a moment");
+      expect(me.body).not.toContain("ghp_local_stored_token_long_enough");
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
   it("refuses --headless, which leaves nobody a door to sign in through", async () => {
     const { dir } = await fixture({ configExtra: REMOTE, items: [] });
     const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
