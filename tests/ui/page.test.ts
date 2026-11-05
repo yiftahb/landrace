@@ -1,5 +1,6 @@
 import { runInNewContext, Script } from "node:vm";
 import type { BoardRow } from "#namespace.js";
+import { ownRepository } from "#cli/version.js";
 import { APP_CSS, APP_JS, FAVICON_SVG, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
 /**
@@ -42,7 +43,11 @@ class FakeElement {
   setAttribute(k: string, v: string): void { this.attrs.set(k, String(v)); }
   getAttribute(k: string): string | null { return this.attrs.get(k) ?? null; }
   append(...nodes: FakeElement[]): void { this.children.push(...nodes); }
-  addEventListener(): void {}
+  replaceChildren(...nodes: FakeElement[]): void { this.children = [...nodes]; }
+  readonly handlers = new Map<string, Array<() => void>>();
+  addEventListener(type: string, fn: () => void): void { this.handlers.set(type, [...(this.handlers.get(type) ?? []), fn]); }
+  /** What a click on it runs, as the browser would. */
+  click(): void { for (const fn of this.handlers.get("click") ?? []) fn(); }
 }
 const fakeDocument = {
   createElement: (tag: string) => new FakeElement(tag),
@@ -96,13 +101,13 @@ describe("the top bar and the sidebar while the page scrolls", () => {
 
   // Unstuck, the container's py-6 holds the sidebar 1.5rem below the top bar;
   // stuck at the bar's height alone, "Needs You" touched the bar's border.
-  it("sticks the sidebar 1.5rem below the top bar from sm up, scrolling on its own when taller than the space left", () => {
+  it("sticks the sidebar 1.5rem below the top bar from lg up, scrolling on its own when taller than the space left", () => {
     expect(PAGE_HTML).toMatch(/<div id="content" class="[^"]*\bpy-6\b[^"]*"[^>]*>\n<nav id="sidebar"/);
     expect(sidebar).toEqual(expect.arrayContaining([
-      "sm:sticky", "sm:self-start", "sm:top-[calc(var(--header-h)+1.5rem)]",
-      "sm:max-h-[calc(100vh-var(--header-h)-3rem)]", "sm:overflow-y-auto",
+      "lg:sticky", "lg:self-start", "lg:top-[calc(var(--header-h)+1.5rem)]",
+      "lg:max-h-[calc(100vh-var(--header-h)-3rem)]", "lg:overflow-y-auto",
     ]));
-    expect(sidebar).not.toContain("sm:top-[var(--header-h)]");
+    expect(sidebar).not.toContain("lg:top-[var(--header-h)]");
     expect(APP_CSS).toContain("top:calc(var(--header-h) + 1.5rem)");
     expect(APP_CSS).toContain("max-height:calc(100vh - var(--header-h) - 3rem)");
   });
@@ -114,7 +119,7 @@ describe("the top bar and the sidebar while the page scrolls", () => {
     expect(APP_CSS).toContain(".scroll-pt-\\[var\\(--header-h\\)\\]{");
   });
 
-  it("leaves the sidebar unstuck below sm", () => {
+  it("leaves the sidebar unstuck below lg", () => {
     expect(sidebar.filter((c) => !c.includes(":") && /sticky|top-|max-h-|overflow/.test(c))).toEqual([]);
   });
 
@@ -163,6 +168,19 @@ describe("the filter row", () => {
     expect(PAGE_HTML).not.toMatch(/id="(collapse|expand)-all"/);
   });
 
+  // #199: below 640px a w-full #search inside a wrapping row took a line of
+  // its own above the buttons.
+  it("keeps the search box on one row with Collapse all and Refresh at every width, the box taking what is left", () => {
+    const open = /<div id="filters" class="([^"]*)">/.exec(PAGE_HTML)?.[1]?.split(" ") ?? [];
+    expect(open).toContain("flex");
+    expect(open).not.toContain("flex-wrap");
+    const search = /<input id="search"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ") ?? [];
+    expect(search).toEqual(expect.arrayContaining(["min-w-0", "flex-1"]));
+    expect(search.filter((c) => /(^|:)w-/.test(c))).toEqual([]);
+    const buttons = /<input id="search"[^>]*>\n<div class="([^"]*)">\n<button id="toggle-all"/.exec(PAGE_HTML)?.[1]?.split(" ") ?? [];
+    expect(buttons).toContain("shrink-0");
+  });
+
   // A live region toggled in and out of display is not reliably announced;
   // one that stays put and changes its text is.
   it("says nothing matched through a polite status region that stays in place and changes its text", () => {
@@ -200,10 +218,11 @@ describe("the filter row", () => {
       expect(button.split(" ")).toEqual(expect.arrayContaining(["disabled:opacity-50", "disabled:cursor-not-allowed"]));
     });
 
-    it("shares the icon-button styling family the theme toggle already uses", () => {
-      const button = /<button id="refresh"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1] ?? "";
-      const themeToggle = /<button id="theme-toggle"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1] ?? "";
-      expect(button).toBe(themeToggle);
+    it("shares the icon-button styling family the top bar's ⋯ uses", () => {
+      const button = /<button id="refresh"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ") ?? [];
+      const more = /<button id="board-more"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ") ?? [];
+      expect(more.length).toBeGreaterThan(0);
+      expect(button).toEqual(expect.arrayContaining(more));
     });
   });
 });
@@ -1285,10 +1304,14 @@ describe("an artifact row", () => {
     system: { name: string; icon: { bg: string; glyph: string } | null } | null;
   }
   const NOW = Date.parse("2026-09-28T12:00:00Z");
-  const build = (row: Artifact, depth = 1): FakeElement => runInNewContext(`
-    ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}
-    ${["rowKey", "el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "kindMark", "ago", "external", "treeItem", "toggleFor", "toggleSlot", "artifactRowFor"].map(fnSource).join("")}
-    artifactRowFor(ROW, ${depth}, ROW.children.length > 0, NOW, "waiting")`, { ROW: row, NOW, document: fakeDocument }) as FakeElement;
+  // The row builder and the module state it keeps, in one context a test can
+  // draw the row into again, as a poll's render does.
+  const page = (extra: Record<string, unknown> = {}): ((row: Artifact, depth?: number) => FakeElement) => runInNewContext(`
+    ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${constSource("COPY_SHAPES")}${constSource("CHECK_SHAPES")}
+    ${constSource("copyNotes")}${constSource("copyTimers")}${constSource("copyButtons")}
+    ${["rowKey", "el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "kindMark", "ago", "external", "treeItem", "toggleFor", "toggleSlot", "copyText", "strokeIcon", "drawCopyLink", "copyLinkFor", "artifactRowFor"].map(fnSource).join("")}
+    (row, depth) => artifactRowFor(row, depth, row.children.length > 0, NOW, "waiting")`, { NOW, document: fakeDocument, navigator: {}, ...extra }) as (row: Artifact, depth?: number) => FakeElement;
+  const build = (row: Artifact, depth = 1, extra: Record<string, unknown> = {}): FakeElement => page(extra)(row, depth);
   const spec: Artifact = {
     id: "spec-19", kind: "document", title: "Spec: Payments revamp", link: "https://acme.github.io/widgets/specs/19/",
     system: { name: "GitHub Pages", icon: { bg: "#24292f", glyph: "GH" } }, closed: null, children: [],
@@ -1407,9 +1430,145 @@ describe("an artifact row", () => {
   it("keeps the toggle in its own column ahead of the link, so the mark lines up with an item's number", () => {
     const leaf = build(spec, 2);
     expect(leaf.className.split(" ")).toContain("pl-16");
-    expect(leaf.children.map((c) => c.tag)).toEqual(["span", "a"]);
+    expect(leaf.children.map((c) => c.tag)).toEqual(["span", "a", "button"]);
     const parent = build({ ...pr, children: [spec] }, 2);
-    expect(parent.children.map((c) => [c.tag, c.getAttribute("data-key")])).toEqual([["button", "waiting/pr:118:toggle"], ["a", "waiting/pr:118:link"]]);
+    expect(parent.children.map((c) => [c.tag, c.getAttribute("data-key")])).toEqual([
+      ["button", "waiting/pr:118:toggle"], ["a", "waiting/pr:118:link"], ["button", "waiting/pr:118:copy-link"],
+    ]);
+  });
+
+  // #199: the row's one action opened the link, with no way to copy it.
+  describe("its copy-link button", () => {
+    const copyOf = (li: FakeElement): FakeElement | undefined => li.children.find((c) => c.getAttribute("data-key")?.endsWith(":copy-link"));
+    const shapes = (b: FakeElement | undefined): string[] => (b?.children[0]?.children ?? []).map((c) => c.tag);
+    const said = (b: FakeElement | undefined): [string | null, string | undefined] => [b?.getAttribute("aria-label") ?? null, b?.title];
+    // A clipboard that answers as the test says, and timers it runs by hand.
+    const harness = (clipboard: { writeText: (t: string) => Promise<void> } | undefined) => {
+      const timers: Array<{ fn: () => void; ms: number; live: boolean }> = [];
+      const draw = page({
+        navigator: clipboard ? { clipboard } : {},
+        setTimeout: (fn: () => void, ms: number) => { timers.push({ fn, ms, live: true }); return timers.length - 1; },
+        clearTimeout: (id: number) => { const t = timers[id]; if (t) t.live = false; },
+      });
+      const fire = (): void => { for (const t of timers) if (t.live) { t.live = false; t.fn(); } };
+      // A poll's render: the row drawn afresh, its old button off the page.
+      const rerender = (): FakeElement | undefined => copyOf(draw(spec, 1));
+      return { button: copyOf(draw(spec, 1)), timers, fire, rerender, draw };
+    };
+    const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+    it("follows the row's link as its sibling, never inside it, an icon button keyed apart from the row menu's Copy prompt", () => {
+      const li = build(spec);
+      const a = link(li);
+      const button = copyOf(li);
+      expect(a).toBeDefined();
+      expect(li.children.indexOf(button as FakeElement)).toBe(li.children.indexOf(a as FakeElement) + 1);
+      expect(descendants(a as FakeElement)).not.toContain(button);
+      expect(a?.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "flex-1"]));
+      expect([button?.tag, button?.type]).toEqual(["button", "button"]);
+      // ICON_BUTTON, as the top bar's ⋯ is drawn: shrink-0, so the link grows instead.
+      expect(button?.className).toBe(/<button id="board-more"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1]);
+      expect(button?.className.split(" ")).toContain("shrink-0");
+      expect(said(button)).toEqual(["Copy link", "Copy link"]);
+      expect(button?.getAttribute("data-key")).toBe("waiting/spec-19:copy-link");
+      // Two overlapping squares, inline, in the page's stroke style.
+      expect(shapes(button)).toEqual(["rect", "path"]);
+      expect(button?.children[0]?.getAttribute("stroke")).toBe("currentColor");
+      expect(button?.children[0]?.getAttribute("aria-hidden")).toBe("true");
+    });
+
+    it("is not drawn on a row with no link", () => {
+      const li = build({ ...spec, link: "", system: null });
+      expect(copyOf(li)).toBeUndefined();
+      expect(descendants(li).filter((d) => d.tag === "button")).toEqual([]);
+    });
+
+    it("writes row.link to the clipboard, says Copied with a check for 2 seconds, then restores", async () => {
+      const written: string[] = [];
+      const h = harness({ writeText: (t) => { written.push(t); return Promise.resolve(); } });
+      h.button?.click();
+      await settle();
+      expect(written).toEqual([spec.link]);
+      expect(said(h.button)).toEqual(["Copied", "Copied"]);
+      expect(shapes(h.button)).toEqual(["polyline"]);
+      expect(h.timers.map((t) => t.ms)).toEqual([2000]);
+      h.fire();
+      expect(said(h.button)).toEqual(["Copy link", "Copy link"]);
+      expect(shapes(h.button)).toEqual(["rect", "path"]);
+    });
+
+    it("says Copy failed for 2 seconds, keeping its icon, when the write is refused", async () => {
+      const h = harness({ writeText: () => Promise.reject(new Error("denied")) });
+      h.button?.click();
+      await settle();
+      expect(said(h.button)).toEqual(["Copy failed", "Copy failed"]);
+      expect(shapes(h.button)).toEqual(["rect", "path"]);
+      expect(h.timers.map((t) => t.ms)).toEqual([2000]);
+      h.fire();
+      expect(said(h.button)).toEqual(["Copy link", "Copy link"]);
+    });
+
+    it("says Copy failed where the browser has no clipboard at all", async () => {
+      const h = harness(undefined);
+      h.button?.click();
+      await settle();
+      expect(said(h.button)).toEqual(["Copy failed", "Copy failed"]);
+    });
+
+    // Review of #199: every 2 s poll redraws every row, so an answer kept on
+    // the button lasted until the next poll, not 2 seconds.
+    it("keeps Copied and its check through a poll's redraw, until its 2 seconds end", async () => {
+      const h = harness({ writeText: () => Promise.resolve() });
+      h.button?.click();
+      await settle();
+      const redrawn = h.rerender();
+      expect(redrawn).not.toBe(h.button);
+      expect(said(redrawn)).toEqual(["Copied", "Copied"]);
+      expect(shapes(redrawn)).toEqual(["polyline"]);
+      h.fire();
+      expect(said(redrawn)).toEqual(["Copy link", "Copy link"]);
+      expect(shapes(redrawn)).toEqual(["rect", "path"]);
+      expect(said(h.rerender())).toEqual(["Copy link", "Copy link"]);
+    });
+
+    it("keeps Copy failed through a poll's redraw too", async () => {
+      const h = harness({ writeText: () => Promise.reject(new Error("denied")) });
+      h.button?.click();
+      await settle();
+      const redrawn = h.rerender();
+      expect(said(redrawn)).toEqual(["Copy failed", "Copy failed"]);
+      expect(shapes(redrawn)).toEqual(["rect", "path"]);
+    });
+
+    it("shows an answer that arrives after a poll on the button the poll drew", async () => {
+      let answer: () => void = () => undefined;
+      const h = harness({ writeText: () => new Promise<void>((r) => { answer = r; }) });
+      h.button?.click();
+      const redrawn = h.rerender();
+      expect(said(redrawn)).toEqual(["Copy link", "Copy link"]);
+      answer();
+      await settle();
+      expect(said(redrawn)).toEqual(["Copied", "Copied"]);
+      expect(shapes(redrawn)).toEqual(["polyline"]);
+    });
+
+    it("keeps one row's answer off another row's button", async () => {
+      const h = harness({ writeText: () => Promise.resolve() });
+      h.button?.click();
+      await settle();
+      expect(said(copyOf(h.draw(pr, 1)))).toEqual(["Copy link", "Copy link"]);
+      expect(said(h.rerender())).toEqual(["Copied", "Copied"]);
+    });
+
+    it("restarts its 2 seconds on a second click, rather than restoring under the second answer", async () => {
+      const h = harness({ writeText: () => Promise.resolve() });
+      h.button?.click();
+      await settle();
+      h.button?.click();
+      await settle();
+      expect(h.timers.filter((t) => t.live)).toHaveLength(1);
+      expect(said(h.button)).toEqual(["Copied", "Copied"]);
+    });
   });
 });
 
@@ -1456,16 +1615,16 @@ describe("the page", () => {
   describe("the top bar's ⋯ menu", () => {
     const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
 
-    it("is the last control on the right, after the theme toggle, a menu like the item panel's", () => {
+    it("is the last control on the right, after the bell, a menu like the item panel's", () => {
       const trigger = /<button id="board-more"[^>]*>⋯<\/button>/.exec(header)?.[0] ?? "";
       for (const attr of ['type="button"', 'aria-label="Board actions"', 'title="Board actions"', 'aria-haspopup="menu"', 'aria-expanded="false"', 'data-key="board:trigger"']) {
         expect(trigger).toContain(attr);
       }
-      const toggle = header.indexOf('id="theme-toggle"');
-      expect(toggle).toBeGreaterThan(0);
-      expect(header.indexOf('id="board-more"')).toBeGreaterThan(toggle);
-      // Nothing after it but the menu it opens and the closing tags.
-      const rest = header.slice(header.indexOf('id="board-more"'));
+      const bell = header.indexOf('id="notify-toggle"');
+      expect(bell).toBeGreaterThan(0);
+      expect(header.indexOf('id="board-more"')).toBeGreaterThan(bell);
+      // Nothing between it and the menu it opens.
+      const rest = header.slice(header.indexOf('<button id="board-more"'), header.indexOf('<div id="board-menu"'));
       expect(rest.match(/<button /g)).toHaveLength(1);
       const menu = /<div id="board-menu"[^>]*>/.exec(header)?.[0] ?? "";
       expect(menu).toContain('data-key="board:menu"');
@@ -1474,11 +1633,73 @@ describe("the page", () => {
       expect(menu.split(/\s+/)).toContain("right-0");
     });
 
-    it("holds Integrations, then Run next tick now, each a menuitem", () => {
-      const menu = /<div id="board-menu"[^>]*>([\s\S]*?)<\/div>/.exec(header)?.[1] ?? "";
-      const items = [...menu.matchAll(/<(a|button) ([^>]*)>([^<]*)<\/\1>/g)].map((m) => [m[1], m[3], /role="menuitem"/.test(m[2] ?? ""), /href="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? null]);
-      expect(items).toEqual([["a", "Integrations", true, "#/integrations"], ["button", "Run next tick now", true, null]]);
-      expect(menu).toContain('id="board-tick"');
+    // #199: the theme toggle was the last loose icon in the top bar.
+    const menu = /<div id="board-menu"[^>]*>([\s\S]*?)\n<\/div>/.exec(header)?.[1] ?? "";
+    const inner = (id: string): string => new RegExp(`id="${id}"[^>]*>([\\s\\S]*?)</(a|button)>`).exec(menu)?.[1] ?? "";
+    const words = (id: string): string => inner(id).replace(/<[^>]+>/g, "").trim();
+
+    it("holds Integrations, Run next tick now, the theme toggle, a divider, then Source code", () => {
+      const entries = [...menu.matchAll(/<(a|button|hr)\b([^>]*)>/g)].map((m) => [m[1], /id="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? null, /role="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? null]);
+      expect(entries).toEqual([
+        ["a", "board-integrations", "menuitem"],
+        ["button", "board-tick", "menuitem"],
+        ["button", "theme-toggle", "menuitem"],
+        ["hr", null, "separator"],
+        ["a", "board-source", "menuitem"],
+      ]);
+      expect([words("board-integrations"), words("board-tick"), words("board-source")]).toEqual(["Integrations", "Run next tick now", "Source code"]);
+    });
+
+    it("keeps the theme toggle in the menu alone, never loose in the top bar", () => {
+      expect(header.match(/id="theme-toggle"/g)).toHaveLength(1);
+      expect(menu).toContain('id="theme-toggle"');
+    });
+
+    it("draws the theme toggle as a menu entry with its moon and sun and the words it says, no aria-label", () => {
+      const open = /<button id="theme-toggle"[^>]*>/.exec(menu)?.[0] ?? "";
+      const cls = /class="([^"]*)"/.exec(open)?.[1]?.split(" ") ?? [];
+      const menuItem = /<a id="board-integrations"[^>]*class="([^"]*)"/.exec(menu)?.[1]?.split(" ") ?? [];
+      expect(menuItem.length).toBeGreaterThan(0);
+      expect(cls).toEqual(expect.arrayContaining(menuItem));
+      expect(open).not.toContain("aria-label");
+      expect(inner("theme-toggle").match(/<svg /g)).toHaveLength(2);
+      expect(inner("theme-toggle")).toContain('<span id="theme-label">Switch to dark mode</span>');
+    });
+
+    it("says, and switches to, the other theme, closing the menu", () => {
+      const label = { textContent: "" };
+      const root = new FakeClasses();
+      const seen = { stored: "", closed: 0 };
+      const c: Record<string, unknown> = {
+        document: { documentElement: { classList: root } }, themeLabel: label, THEME_KEY: "landrace-theme",
+        localStorage: { setItem: (_k: string, v: string) => { seen.stored = v; } }, closeMenu: () => { seen.closed += 1; },
+      };
+      for (const f of ["isDark", "syncThemeLabel", "toggleTheme"]) runInNewContext(fnSource(f), c);
+      runInNewContext("syncThemeLabel()", c);
+      expect(label.textContent).toBe("Switch to dark mode");
+      runInNewContext("toggleTheme()", c);
+      expect([root.contains("dark"), seen.stored, label.textContent, seen.closed]).toEqual([true, "dark", "Switch to light mode", 1]);
+      runInNewContext("toggleTheme()", c);
+      expect([root.contains("dark"), seen.stored, label.textContent, seen.closed]).toEqual([false, "light", "Switch to dark mode", 2]);
+      expect(APP_JS).toContain('themeToggle.addEventListener("click", toggleTheme)');
+    });
+
+    it("rules the divider in the menu's own border colours", () => {
+      const hr = /<hr [^>]*>/.exec(menu)?.[0] ?? "";
+      const border = /<div id="board-menu"[^>]*class="([^"]*)"/.exec(header)?.[1]?.split(" ").filter((c) => /border-neutral/.test(c)) ?? [];
+      expect(border.length).toBe(2);
+      expect(hr.split(/[\s"]+/)).toEqual(expect.arrayContaining(border));
+    });
+
+    it("links Source code to this package's own repository in a new tab, titled without https://, closing the menu", () => {
+      const open = /<a id="board-source"[^>]*>/.exec(menu)?.[0] ?? "";
+      const attr = (k: string): string | undefined => new RegExp(`\\s${k}="([^"]*)"`).exec(open)?.[1];
+      const url = ownRepository();
+      expect(url).toMatch(/^https:\/\/[^/]+\/yiftahb\/landrace$/);
+      expect([attr("href"), attr("target"), attr("rel"), attr("title")]).toEqual([url, "_blank", "noopener noreferrer", url?.slice("https://".length)]);
+      // The open-in-new glyph, at its right edge.
+      expect(inner("board-source")).toMatch(/^<span>Source code<\/span>\n?<svg [^>]*class="[^"]*\bml-auto\b[^"]*"[^>]*aria-hidden="true"/);
+      expect(APP_JS).toContain('const sourceLink = document.getElementById("board-source");\nif (sourceLink) sourceLink.addEventListener("click", () => closeMenu());');
     });
 
     it("opens and closes under the one-open rule every row's and the panel's menu keep", () => {
@@ -1553,12 +1774,6 @@ describe("the page", () => {
       .toBeLessThan(PAGE_HTML.indexOf('<script src="/app.js" defer></script>'));
   });
 
-  it("has a theme toggle in the header", () => {
-    const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
-    expect(header).toContain('id="theme-toggle"');
-    expect(header).toMatch(/aria-label="Switch to (dark|light) mode"/);
-  });
-
   it("reads the stored theme, else the OS preference, and sets the class before paint — every localStorage access guarded", () => {
     expect(THEME_JS).toContain("localStorage.getItem(");
     expect(THEME_JS).toContain("prefers-color-scheme: dark");
@@ -1606,7 +1821,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the top bar's ⋯ menu and its two entries, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, the bell's and the Integrations tab's — no more, no less", () => {
+  it("wires exactly the top bar's ⋯ menu and its three entries, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, an artifact row's copy-link, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, the bell's and the Integrations tab's — no more, no less", () => {
     // Pins the count deliberately: the top bar's ⋯, its Integrations and its
     // Run next tick now, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
@@ -1629,8 +1844,9 @@ describe("the page", () => {
     // notification's (defined once, in notifyOf). And the message box's
     // Ctrl/⌘+Enter. And the Integrations tab's: one submit and one click, each
     // on its list, and its Back.
+    // And the ⋯ menu's Source code, and an artifact row's copy-link (defined once, in copyLinkFor) (#199).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(35);
+    expect(listeners).toHaveLength(37);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -1938,9 +2154,9 @@ describe("the Integrations tab", () => {
 describe("the item panel's markup", () => {
   const aside = /<aside id="panel"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
 
-  it("takes the full width below sm", () => {
+  it("takes the full width below lg", () => {
     expect(aside).toMatch(/ w-full /);
-    expect(aside).toMatch(/sm:w-\[28rem\]/);
+    expect(aside).toMatch(/lg:w-\[28rem\]/);
   });
 
   it("names its close and full-width buttons for a screen reader", () => {
@@ -1966,7 +2182,7 @@ describe("the item panel's markup", () => {
     const tokens = menu.split(/\s+/);
     expect(tokens).toContain("right-0");
     expect(tokens).not.toContain("left-0");
-    expect(tokens).not.toContain("sm:left-auto");
+    expect(tokens).not.toContain("lg:left-auto");
     expect(header).toMatch(/<button id="panel-pairing-item" type="button" role="menuitem"[^>]*>Pairing…<\/button>/);
     expect(header.indexOf('id="panel-more"')).toBeLessThan(header.indexOf('id="panel-wide"'));
   });
@@ -2090,7 +2306,7 @@ class FakeClasses {
   contains(cls: string): boolean { return this.set.has(cls); }
 }
 
-// From sm up the panel never comes or goes, so opening or closing an item
+// From lg up the panel never comes or goes, so opening or closing an item
 // never moves the board; with no item it says how to fill it.
 describe("the item panel with nothing selected", () => {
   const aside = /<aside id="panel"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
@@ -2116,18 +2332,18 @@ describe("the item panel with nothing selected", () => {
   });
 
   it("leaves the board room for it from the first paint, before the script runs", () => {
-    expect(/<body class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ")).toContain("sm:pr-[28rem]");
-    expect(aside.split(/[\s"]+/)).toContain("max-sm:hidden");
+    expect(/<body class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ")).toContain("lg:pr-[28rem]");
+    expect(aside.split(/[\s"]+/)).toContain("max-lg:hidden");
   });
 
   // The page script for real: the hash, ✕, Escape and Back all end in
   // showPanel, run here against elements that keep what it sets.
   const page = (hash: string, panelWide = false) => {
     const location = { hash, pathname: "/", search: "" };
-    const panelEl = { classList: new FakeClasses("sm:w-[28rem]", "max-sm:hidden") };
+    const panelEl = { classList: new FakeClasses("lg:w-[28rem]", "max-lg:hidden") };
     const panelItem = { hidden: true };
     const panelEmpty = { hidden: false };
-    const body = { classList: new FakeClasses("sm:pr-[28rem]") };
+    const body = { classList: new FakeClasses("lg:pr-[28rem]") };
     const c: Record<string, unknown> = {
       location, lastView: null, openMenuKey: null, panelId: null, panelHeld: null, panelWide, pairingOnOpen: null,
       panelEl, panelItem, panelEmpty, document: { body, activeElement: null },
@@ -2141,19 +2357,19 @@ describe("the item panel with nothing selected", () => {
     }
     const go = (code: string): void => { runInNewContext(code, c); };
     // What a person sees: the empty state or the item, whether a phone shows
-    // the panel at all, and whether the board keeps room for it from sm up.
+    // the panel at all, and whether the board keeps room for it from lg up.
     const seen = () => ({
       empty: !panelEmpty.hidden,
       item: !panelItem.hidden,
-      belowSm: !panelEl.classList.contains("max-sm:hidden"),
-      narrow: panelEl.classList.contains("sm:w-[28rem]"),
-      padded: body.classList.contains("sm:pr-[28rem]"),
+      belowLg: !panelEl.classList.contains("max-lg:hidden"),
+      narrow: panelEl.classList.contains("lg:w-[28rem]"),
+      padded: body.classList.contains("lg:pr-[28rem]"),
     });
     const select = (id: string): void => { location.hash = "#/w/main?item=" + id; go("onHashChange()"); };
     return { location, go, seen, select };
   };
-  const EMPTY = { empty: true, item: false, belowSm: false, narrow: true, padded: true };
-  const OPEN = { empty: false, item: true, belowSm: true, narrow: true, padded: true };
+  const EMPTY = { empty: true, item: false, belowLg: false, narrow: true, padded: true };
+  const OPEN = { empty: false, item: true, belowLg: true, narrow: true, padded: true };
 
   it("shows the empty state when the page opens with no item in the hash", () => {
     const p = page("#/w/main");
@@ -2178,14 +2394,14 @@ describe("the item panel with nothing selected", () => {
     expect(p.seen()).toEqual(EMPTY);
   });
 
-  it("stays hidden below sm with no item selected, where it would cover the whole board", () => {
+  it("stays hidden below lg with no item selected, where it would cover the whole board", () => {
     const p = page("#/");
     p.go("onHashChange()");
-    expect(p.seen().belowSm).toBe(false);
+    expect(p.seen().belowLg).toBe(false);
     p.select("12");
-    expect(p.seen().belowSm).toBe(true);
+    expect(p.seen().belowLg).toBe(true);
     p.go("closePanel()");
-    expect(p.seen().belowSm).toBe(false);
+    expect(p.seen().belowLg).toBe(false);
   });
 
   it("takes the whole page in Full width only while an item is open", () => {
@@ -2196,8 +2412,10 @@ describe("the item panel with nothing selected", () => {
     expect(p.seen()).toEqual(EMPTY);
   });
 
-  it("ships the rule that hides it below sm", () => {
-    expect(APP_CSS).toContain(".max-sm\\:hidden{");
+  it("ships the rule that hides it below lg", () => {
+    expect(APP_CSS).toContain(".max-lg\\:hidden{");
+    // lg is Tailwind's 64rem, 1024px: sm's 640px left the board 192–550px beside the panel.
+    expect(APP_CSS).toMatch(/@media not all and \(min-width:64rem\)\{\.max-lg\\:hidden/);
   });
 });
 
@@ -3014,7 +3232,7 @@ describe("the pairing's command, once handed out", () => {
   const SEEDED = "cd /w/29.pair && claude 'seed' --session-id u";
   const run = async (source: string, clipboard?: object) => {
     const ctx = { navigator: { clipboard }, pairing: { shown: true, command: SEEDED, note: "" }, renderPanel: () => {}, loadPairing: () => {} };
-    runInNewContext(`${fnSource(source)} ${source}()`, ctx);
+    runInNewContext(`${fnSource("copyText")}${fnSource(source)} ${source}()`, ctx);
     await new Promise((r) => setImmediate(r));
     return ctx.pairing;
   };
@@ -3606,9 +3824,9 @@ describe("routing and the sidebar", () => {
     expect(descendants(empty).some((e) => e.className.includes("rounded-full"))).toBe(false);
   });
 
-  it("lays the sidebar out as a column from sm up and a row of chips below it", () => {
+  it("lays the sidebar out as a column from lg up and a row of chips below it", () => {
     expect(PAGE_HTML).toMatch(/<nav id="sidebar"[^>]*>/);
-    expect(PAGE_HTML).toMatch(/id="nav" class="[^"]*\bflex-wrap\b[^"]*\bsm:flex-col\b/);
+    expect(PAGE_HTML).toMatch(/id="nav" class="[^"]*\bflex-wrap\b[^"]*\blg:flex-col\b/);
   });
 });
 
@@ -3811,9 +4029,9 @@ describe("a narrow screen", () => {
     expect(APP_CSS).toContain(".wrap-anywhere{");
   });
 
-  it("opens a row's menu from the left edge below sm, where its button sits, and from the right above", () => {
+  it("opens a row's menu from the left edge below lg, where its button sits, and from the right above", () => {
     const tokens = fnSource("buildRowMenu").match(/el\("div", "(absolute [^"]*)"/)?.[1]?.split(" ") ?? [];
-    expect(tokens).toEqual(expect.arrayContaining(["left-0", "sm:left-auto", "sm:right-0"]));
+    expect(tokens).toEqual(expect.arrayContaining(["left-0", "lg:left-auto", "lg:right-0"]));
     expect(tokens).not.toContain("right-0");
   });
 
@@ -4003,5 +4221,29 @@ describe("the board before the first tick lists", () => {
 
   it("is run by render on every view", () => {
     expect(fnSource("render")).toContain("syncLoading(view);");
+  });
+});
+
+// #199: from 640px up the panel's 28rem left the board 192–550px until about
+// 1000px, so the mobile layout runs to lg (1024px), and sm is gone entirely.
+describe("the board's one breakpoint", () => {
+  it("is lg: no sm: or max-sm: class is left in the page or its script", () => {
+    expect(PAGE_HTML).not.toMatch(/(^|[\s"'])(max-)?sm:/m);
+    expect(APP_JS).not.toMatch(/(^|[\s"'])(max-)?sm:/m);
+    expect(APP_JS).toContain('panelEl.classList.toggle("max-lg:hidden", !open)');
+    expect(APP_JS).toContain('panelEl.classList.toggle("lg:w-[28rem]", !wide)');
+    expect(APP_JS).toContain('document.body.classList.toggle("lg:pr-[28rem]", !wide)');
+  });
+});
+
+describe("the top bar's logo", () => {
+  const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+  const logo = /<a href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/.exec(header);
+
+  it("is one link to Needs You, with no item, holding the mark and the name and nothing else", () => {
+    expect(logo?.[1]).toBe("#/");
+    expect(logo?.[2]).toMatch(/^\n?<svg[^>]*viewBox="0 0 100 100"[\s\S]*<\/svg>\n<h1[^>]*>Landrace<\/h1>\n?$/);
+    expect(header.indexOf("<a href=\"#/\"")).toBeLessThan(header.indexOf('id="folder"'));
+    expect(logo?.[2]).not.toMatch(/id="(folder|meta)"/);
   });
 });
