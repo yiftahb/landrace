@@ -17,10 +17,14 @@ const MAX_PENDING = 10_000;
  * one — anything that would let a link sign someone in and send them away.
  */
 export function returnPath(asked: string | null | undefined): string {
-  if (asked === null || asked === undefined || !asked.startsWith("/") || asked.startsWith("//") || asked.startsWith("/\\")) return "/";
-  // Parsed against a stand-in origin: whatever survives must stay on it.
+  const offSite = (path: string): boolean => !path.startsWith("/") || path.startsWith("//") || path.startsWith("/\\");
+  if (asked === null || asked === undefined || offSite(asked)) return "/";
+  // Parsed against a stand-in origin: whatever survives must stay on it. And
+  // checked again once parsed, since folding dot segments can turn
+  // `/.//evil.example` into `//evil.example`, another site to a browser.
   const url = new URL(asked, "https://landrace.invalid");
-  return url.origin === "https://landrace.invalid" ? `${url.pathname}${url.search}${url.hash}` : "/";
+  const path = `${url.pathname}${url.search}${url.hash}`;
+  return url.origin === "https://landrace.invalid" && !offSite(path) ? path : "/";
 }
 
 /**

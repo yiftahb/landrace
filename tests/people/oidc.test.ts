@@ -89,6 +89,8 @@ describe("signing in with OpenID Connect", () => {
 
   it.each([
     ["//evil.example", "/"], ["/\\evil.example", "/"], ["https://evil.example/", "/"], ["", "/"], ["board", "/"], ["/#/items/1", "/#/items/1"],
+    // Dot segments a URL parser folds into `//host`: checked after parsing, not only before.
+    ["/.//evil.example", "/"], ["/a/..//evil.example/x?y", "/"], ["/./\\evil.example", "/"],
   ])("returns %j as %j: a same-origin path, never an open redirect", async (asked, landed) => {
     const { oidc, idp, callback } = setup();
     const { url, binding } = await oidc.begin(asked);
