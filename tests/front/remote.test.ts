@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { BoardView, FrontDoorOptions, LandraceEvent, Person, Tools } from "#namespace.js";
 import { createMcpEndpoint } from "#front/mcp.js";
-import { MCP_TOKENS_FILE } from "#front/mcp-auth.js";
+import { MCP_CLIENTS_FILE, MCP_TOKENS_FILE } from "#front/mcp-auth.js";
 import { frontDoorListener } from "#front/server.js";
 import { createTools } from "#mcp/tools.js";
 import { createOidc } from "#people/oidc.js";
@@ -32,7 +32,8 @@ const view = (id: string): BoardView => ({
   generatedAt: 1, rows: [], nextTickAt: null, folder: id, workspace: "/repo", workflows: [], needsYou: 0, listed: true,
 });
 
-async function door() {
+/** `files`, when given, are written into the MCP credential folder before the door is built. */
+async function door(files: Record<string, string> = {}) {
   const idp = fakeOidc();
   const sessions = createSessions({ secure: true });
   const events: LandraceEvent[] = [];
@@ -47,6 +48,10 @@ async function door() {
     },
   });
   const authRoot = join(await mkdtemp(join(tmpdir(), "lr-remote-")), "credentials", "mcp");
+  for (const [name, text] of Object.entries(files)) {
+    await mkdir(authRoot, { recursive: true });
+    await writeFile(join(authRoot, name), text);
+  }
   const opts: FrontDoorOptions = {
     host: "0.0.0.0", port: 4545, publicUrl: `${PUBLIC}/`, mcp,
     callerOf: (req) => sessions.personOf(req),
@@ -341,5 +346,49 @@ describe("an MCP client with a person's token", () => {
     const d = await door();
     const res = await d.fetch(`${PUBLIC}/mcp`, { method: "POST", headers: { authorization: "Bearer forged", "content-type": "application/json" }, body: "{}" });
     expect(res.status).toBe(401);
+  });
+});
+
+describe("a remote door whose MCP credential files cannot be read", () => {
+  /** Collects what rejects with no handler while `run` runs, and a few turns after. */
+  async function unhandledDuring(run: () => Promise<void>): Promise<unknown[]> {
+    const seen: unknown[] = [];
+    const listener = (reason: unknown): void => { seen.push(reason); };
+    process.on("unhandledRejection", listener);
+    try {
+      await run();
+      for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+    return seen;
+  }
+
+  it.each([
+    ["clients file not JSON", { [MCP_CLIENTS_FILE]: "{ not json" }, MCP_CLIENTS_FILE],
+    ["tokens file null", { [MCP_TOKENS_FILE]: "null" }, MCP_TOKENS_FILE],
+    ["tokens file an array", { [MCP_TOKENS_FILE]: "[]" }, MCP_TOKENS_FILE],
+  ])("%s: the door stays up, refuses the MCP routes with the reason, and serves the rest", async (_, files, bad) => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      let d: Door | undefined;
+      const unhandled = await unhandledDuring(async () => { d = await door(files); });
+      expect(unhandled).toEqual([]);
+      if (d === undefined) throw new Error("no door");
+      const reg = await d.fetch(`${PUBLIC}/register`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: [CLIENT_REDIRECT], token_endpoint_auth_method: "none" }),
+      });
+      expect(reg.status).toBe(503);
+      expect(await reg.text()).toContain(bad);
+      const mcp = await d.fetch(`${PUBLIC}/mcp`, { method: "POST", headers: { authorization: "Bearer x", "content-type": "application/json" }, body: "{}" });
+      expect(mcp.status).toBe(503);
+      expect(await mcp.text()).toContain(bad);
+      // The board's own routes are not the MCP ones: an anonymous / still goes to sign-in.
+      expect((await d.fetch(`${PUBLIC}/`)).status).toBe(302);
+      expect(errors.mock.calls.filter(([m]) => String(m).includes(bad))).toHaveLength(1);
+    } finally {
+      errors.mockRestore();
+    }
   });
 });

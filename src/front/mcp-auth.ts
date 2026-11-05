@@ -56,13 +56,21 @@ async function writeJson(root: string, name: string, value: unknown, nth: number
   await rename(temporary, file);
 }
 
-async function readJson<T>(root: string, name: string, empty: T): Promise<T> {
+/** One of this door's maps, empty when the file is not there yet; anything but a JSON object is refused, naming the file. */
+async function readMap<T>(root: string, name: string): Promise<Map<string, T>> {
+  const file = join(root, name);
+  let parsed: unknown;
   try {
-    return JSON.parse(await readFile(join(root, name), "utf8")) as T;
+    parsed = JSON.parse(await readFile(file, "utf8"));
   } catch (e) {
-    if ((e as { code?: unknown } | null)?.code === "ENOENT") return empty;
-    throw new Error(`${join(root, name)} cannot be read: ${messageOf(e)}`);
+    if ((e as { code?: unknown } | null)?.code === "ENOENT") return new Map();
+    throw new Error(`${file} cannot be read: ${messageOf(e)}`);
   }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    const held = parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed;
+    throw new Error(`${file} cannot be read: it holds ${held}, not a JSON object`);
+  }
+  return new Map(Object.entries(parsed as Record<string, T>));
 }
 
 /**
@@ -109,9 +117,22 @@ export function createMcpAuth(opts: {
   };
 
   const loaded = (async () => ({
-    clients: new Map(Object.entries(await readJson<Record<string, OAuthClientInformationFull>>(opts.root, MCP_CLIENTS_FILE, {}))),
-    refresh: new Map(Object.entries(await readJson<Record<string, StoredRefresh>>(opts.root, MCP_TOKENS_FILE, {}))),
+    clients: await readMap<OAuthClientInformationFull>(opts.root, MCP_CLIENTS_FILE),
+    refresh: await readMap<StoredRefresh>(opts.root, MCP_TOKENS_FILE),
   }))();
+  // Read as the door is built, and awaited only by the first MCP request: left
+  // unhandled, a corrupt file would end `landrace start` in a stack trace just
+  // after it binds. Said once here, and every MCP route answers with it.
+  let unreadable: string | null = null;
+  loaded.catch((e: unknown) => {
+    unreadable = messageOf(e);
+    console.error(`landrace: MCP sign-in is off: ${unreadable}`);
+  });
+  const ready = (_req: Request, res: Response, next: () => void): void => {
+    loaded.then(() => { next(); }, () => {
+      res.status(503).type("text/plain").send(`MCP sign-in is off: ${unreadable ?? "its files cannot be read"}`);
+    });
+  };
   const saveClients = async (): Promise<void> => {
     const { clients } = await loaded;
     await persist(MCP_CLIENTS_FILE, () => Object.fromEntries(clients));
@@ -260,7 +281,7 @@ export function createMcpAuth(opts: {
   };
 
   const router = express.Router();
-  router.post("/authorize/consent", express.urlencoded({ extended: false, limit: "8kb" }), (req, res) => {
+  router.post("/authorize/consent", ready, express.urlencoded({ extended: false, limit: "8kb" }), (req, res) => {
     consent(req, res).catch((e: unknown) => {
       console.error(`landrace: an approval failed: ${messageOf(e)}`);
       if (!res.headersSent) res.status(500).type("text/plain").send("the approval failed; the landrace log says why");
@@ -270,14 +291,18 @@ export function createMcpAuth(opts: {
   // with none — over a socket that is no TCP connection — shares one count
   // rather than logging an error on every request.
   const limits = { rateLimit: { validate: { ip: false } } };
+  // Every route that reads the files waits on them. The board's routes pass
+  // through this router too, and never do.
+  router.use(["/authorize", "/token", "/register", "/revoke"], ready);
   router.use(mcpAuthRouter({
     provider, issuerUrl: issuer, resourceServerUrl: resource, resourceName: "Landrace",
     authorizationOptions: limits, tokenOptions: limits, clientRegistrationOptions: limits, revocationOptions: limits,
   }));
 
+  const bearer = requireBearerAuth({ verifier: provider, resourceMetadataUrl });
   return {
     router,
-    bearer: requireBearerAuth({ verifier: provider, resourceMetadataUrl }),
+    bearer: (req, res, next) => { ready(req, res, () => { void bearer(req, res, next); }); },
     personOf: (req) => {
       const person = (req.auth?.extra as { person?: Person } | undefined)?.person;
       return person ?? null;
