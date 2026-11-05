@@ -1437,10 +1437,13 @@ describe("the page", () => {
     expect(APP_CSS.length).toBeGreaterThan(0);
   });
 
-  it("puts the countdown and the tick button in the header, top right", () => {
+  it("puts the countdown in the header, top right, and no tick button beside it", () => {
     const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
     expect(header).toContain('id="next"');
-    expect(header).toMatch(/id="tick" type="button" class="[^"]*">Run next tick now<\/button>/);
+    const schedule = /<div id="schedule"[\s\S]*?<\/div>/.exec(header)?.[0] ?? "";
+    expect(schedule).toContain('id="next"');
+    expect(schedule).not.toContain("<button");
+    expect(PAGE_HTML).not.toContain('id="tick"');
     // "top right": the header's content is wrapped in a max-width container
     // (same one <main> uses) laid out with `justify-between` — branding on
     // the left, schedule + theme toggle on the right — see the CSS assertion
@@ -1448,9 +1451,64 @@ describe("the page", () => {
     expect(header).toMatch(/<header[^>]*>\s*<div class="[^"]*max-w-6xl[^"]*justify-between/);
   });
 
-  it("attaches the tick button's listener in script, never as an inline handler", () => {
+  // #197: Integrations is a settings page, not a lane of items, and the tick
+  // button something used now and then; both live in one menu.
+  describe("the top bar's ⋯ menu", () => {
+    const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+
+    it("is the last control on the right, after the theme toggle, a menu like the item panel's", () => {
+      const trigger = /<button id="board-more"[^>]*>⋯<\/button>/.exec(header)?.[0] ?? "";
+      for (const attr of ['type="button"', 'aria-label="Board actions"', 'title="Board actions"', 'aria-haspopup="menu"', 'aria-expanded="false"', 'data-key="board:trigger"']) {
+        expect(trigger).toContain(attr);
+      }
+      const toggle = header.indexOf('id="theme-toggle"');
+      expect(toggle).toBeGreaterThan(0);
+      expect(header.indexOf('id="board-more"')).toBeGreaterThan(toggle);
+      // Nothing after it but the menu it opens and the closing tags.
+      const rest = header.slice(header.indexOf('id="board-more"'));
+      expect(rest.match(/<button /g)).toHaveLength(1);
+      const menu = /<div id="board-menu"[^>]*>/.exec(header)?.[0] ?? "";
+      expect(menu).toContain('data-key="board:menu"');
+      expect(menu).toContain('role="menu"');
+      expect(menu).toMatch(/\shidden[\s>]/);
+      expect(menu.split(/\s+/)).toContain("right-0");
+    });
+
+    it("holds Integrations, then Run next tick now, each a menuitem", () => {
+      const menu = /<div id="board-menu"[^>]*>([\s\S]*?)<\/div>/.exec(header)?.[1] ?? "";
+      const items = [...menu.matchAll(/<(a|button) ([^>]*)>([^<]*)<\/\1>/g)].map((m) => [m[1], m[3], /role="menuitem"/.test(m[2] ?? ""), /href="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? null]);
+      expect(items).toEqual([["a", "Integrations", true, "#/integrations"], ["button", "Run next tick now", true, null]]);
+      expect(menu).toContain('id="board-tick"');
+    });
+
+    it("opens and closes under the one-open rule every row's and the panel's menu keep", () => {
+      expect(APP_JS).toContain('getElementById("board-more").addEventListener("click", () => toggleMenu("board"))');
+      // Choosing Integrations leaves the menu, as a real navigation follows.
+      expect(APP_JS).toMatch(/getElementById\("board-integrations"\)\.addEventListener\("click", \(\) => closeMenu\(\)\)/);
+    });
+
+    it("closes on Escape and on a click outside, and stays open on a click inside it", () => {
+      const menuEl = { hidden: false, contains: (t: unknown) => t === "inside" };
+      const trigger = { contains: (t: unknown) => t === "trigger", setAttribute: () => {}, focus: () => {} };
+      const c: Record<string, unknown> = {
+        openMenuKey: "board", writeNotes: new Map(), panelId: null, closePanel: () => {},
+        byKey: (k: string) => (k === "board:menu" ? menuEl : k === "board:trigger" ? trigger : null),
+        clearIdleTimer: () => {}, resetIdleTimer: () => {}, getSelection: () => ({ isCollapsed: true }),
+      };
+      for (const f of ["menuKeyOf", "triggerKeyOf", "applyMenuState", "closeMenu", "emptySpace", "onDocumentClick", "onKeydown"]) runInNewContext(fnSource(f), c);
+      runInNewContext('onDocumentClick({ target: "inside" })', c);
+      expect(c["openMenuKey"]).toBe("board");
+      runInNewContext('onDocumentClick({ target: "elsewhere" })', c);
+      expect([c["openMenuKey"], menuEl.hidden]).toEqual([null, true]);
+      c["openMenuKey"] = "board"; menuEl.hidden = false;
+      runInNewContext('onKeydown({ key: "Escape" })', c);
+      expect([c["openMenuKey"], menuEl.hidden]).toEqual([null, true]);
+    });
+  });
+
+  it("attaches the tick entry's listener in script, never as an inline handler", () => {
     expect(PAGE_HTML).not.toMatch(/\son[a-z]+=/i);
-    expect(APP_JS).toContain('getElementById("tick")');
+    expect(APP_JS).toContain('getElementById("board-tick")');
     expect(APP_JS).toContain("addEventListener");
   });
 
@@ -1548,8 +1606,9 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the tick button, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, and the bell's — no more, no less", () => {
-    // Pins the count deliberately: the tick button, the refresh button and
+  it("wires exactly the top bar's ⋯ menu and its two entries, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, the bell's and the Integrations tab's — no more, no less", () => {
+    // Pins the count deliberately: the top bar's ⋯, its Integrations and its
+    // Run next tick now, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
     // button (each wired once, outside anything a render rebuilds), the
     // collapsible lanes' summary clicks (defined once, in a loop over the
@@ -1568,9 +1627,10 @@ describe("the page", () => {
     // pairingSectionOf). And the bell's: its own click, its note's ✕, the
     // browser's permission change (defined once, in followPermission), and a
     // notification's (defined once, in notifyOf). And the message box's
-    // Ctrl/⌘+Enter. And the Integrations tab's: one submit and one click, each on its list.
+    // Ctrl/⌘+Enter. And the Integrations tab's: one submit and one click, each
+    // on its list, and its Back.
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(32);
+    expect(listeners).toHaveLength(35);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -1757,17 +1817,83 @@ describe("the Integrations tab", () => {
   });
 
   it("shows the tab alone while nothing runs, whatever the hash, and the board otherwise unless the hash names the tab", () => {
-    const shown = (ready: boolean, hash: string): Record<string, boolean> => {
-      const els: Record<string, { hidden: boolean }> = { board: { hidden: false }, integrations: { hidden: true }, schedule: { hidden: false }, panel: { hidden: false } };
+    const ids = ["board", "integrations", "schedule", "panel", "sidebar", "board-tick", "integrations-back"];
+    const from = (ready: boolean, hash: string, start: boolean): Record<string, boolean> => {
+      const els: Record<string, { hidden: boolean }> = Object.fromEntries(ids.map((id) => [id, { hidden: start }]));
       let loaded = 0;
-      runInNewContext(`${constSource("INTEGRATIONS")}${["onIntegrationsRoute", "showView"].map(fnSource).join("")} showView()`, {
-        boardReady: ready, location: { hash }, loadMe: () => { loaded++; }, document: { getElementById: (id: string) => els[id] },
+      runInNewContext(`${constSource("INTEGRATIONS")}${["onIntegrationsRoute", "routeOf", "hashOf", "showView"].map(fnSource).join("")} showView()`, {
+        boardReady: ready, lastBoardHash: null, location: { hash }, loadMe: () => { loaded++; }, document: { getElementById: (id: string) => els[id] },
       });
-      return { board: !els["board"]?.hidden, tab: !els["integrations"]?.hidden, tick: !els["schedule"]?.hidden, panel: !els["panel"]?.hidden, asked: loaded > 0 };
+      return {
+        board: !els["board"]?.hidden, tab: !els["integrations"]?.hidden, schedule: !els["schedule"]?.hidden, panel: !els["panel"]?.hidden,
+                // Back is on screen only inside a shown tab.
+        sidebar: !els["sidebar"]?.hidden, tick: !els["board-tick"]?.hidden, back: !els["integrations-back"]?.hidden && !els["integrations"]?.hidden, asked: loaded > 0,
+      };
     };
-    expect(shown(false, "#/w/main?item=12")).toEqual({ board: false, tab: true, tick: false, panel: false, asked: true });
-    expect(shown(true, "#/")).toEqual({ board: true, tab: false, tick: true, panel: true, asked: false });
-    expect(shown(true, "#/integrations")).toEqual({ board: false, tab: true, tick: true, panel: true, asked: true });
+    // From every element shown and from every one hidden, so one left alone fails.
+    const shown = (ready: boolean, hash: string): Record<string, boolean> => {
+      const a = from(ready, hash, false);
+      expect(from(ready, hash, true)).toEqual(a);
+      return a;
+    };
+    // Nothing runs: Integrations alone, with no sidebar, no Back and no tick entry.
+    expect(shown(false, "#/w/main?item=12")).toEqual({ board: false, tab: true, schedule: false, panel: false, sidebar: false, tick: false, back: false, asked: true });
+    expect(shown(false, "#/integrations")).toEqual({ board: false, tab: true, schedule: false, panel: false, sidebar: false, tick: false, back: false, asked: true });
+    expect(shown(true, "#/")).toEqual({ board: true, tab: false, schedule: true, panel: true, sidebar: true, tick: true, back: false, asked: false });
+    // The tab on its own: the sidebar hidden, Back at its top.
+    expect(shown(true, "#/integrations")).toEqual({ board: false, tab: true, schedule: true, panel: true, sidebar: false, tick: true, back: true, asked: true });
+  });
+
+  it("puts a Back button at the top of the tab, before its title", () => {
+    const section = /<section id="integrations"[\s\S]*?<\/section>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(section).toMatch(/^<section[^>]*>\n<button id="integrations-back" type="button"[^>]*>(?:<span aria-hidden="true">←<\/span> )?Back<\/button>/);
+    expect(section.indexOf('id="integrations-back"')).toBeLessThan(section.indexOf('id="integrations-title"'));
+    expect(APP_JS).toContain('getElementById("integrations-back").addEventListener("click", goBack)');
+  });
+
+  // Back goes to the board page the person came from, never an item's panel,
+  // and to Needs You when the tab was the first page this load saw.
+  it("leads Back to the last board page, without its item, or to Needs You when there was none", () => {
+    const page = (first: string) => {
+      const location = { hash: first };
+      const c: Record<string, unknown> = {
+        boardReady: true, lastBoardHash: null, location, loadMe: () => {},
+        document: { getElementById: () => ({ hidden: false }) },
+      };
+      runInNewContext(`${constSource("INTEGRATIONS")}${["onIntegrationsRoute", "routeOf", "hashOf", "showView", "backHash", "goBack"].map(fnSource).join("")}`, c);
+      const visit = (hash: string): void => { location.hash = hash; runInNewContext("showView()", c); };
+      const back = (): string => { runInNewContext("goBack()", c); return location.hash; };
+      visit(first);
+      return { visit, back };
+    };
+    const a = page("#/w/main?item=12");
+    a.visit("#/integrations");
+    expect(a.back()).toBe("#/w/main");
+    const b = page("#/");
+    b.visit("#/w/other");
+    b.visit("#/integrations");
+    expect(b.back()).toBe("#/w/other");
+    // Opened directly, or reloaded there.
+    expect(page("#/integrations").back()).toBe("#/");
+    // A legacy #item= link is Needs You's.
+    const d = page("#item=7");
+    d.visit("#/integrations");
+    expect(d.back()).toBe("#/");
+  });
+
+  // Ready again with the address still on the tab: the board's next poll
+  // shows Back, and it leads to Needs You, there being no page before.
+  it("shows Back once the last connection is made, the address still on the tab", () => {
+    const els: Record<string, { hidden: boolean }> = {};
+    const get = (id: string): { hidden: boolean } => (els[id] ??= { hidden: false });
+    const c: Record<string, unknown> = { boardReady: false, lastBoardHash: null, location: { hash: "#/integrations" }, loadMe: () => {}, document: { getElementById: get } };
+    runInNewContext(`${constSource("INTEGRATIONS")}${["onIntegrationsRoute", "routeOf", "hashOf", "showView", "backHash", "goBack"].map(fnSource).join("")} showView()`, c);
+    expect(get("integrations-back").hidden).toBe(true);
+    c["boardReady"] = true;
+    runInNewContext("showView()", c);
+    expect(get("integrations-back").hidden).toBe(false);
+    runInNewContext("goBack()", c);
+    expect((c["location"] as { hash: string }).hash).toBe("#/");
   });
 
   // Submitted with Enter, focus stays in the input the form just emptied, and
@@ -3558,7 +3684,7 @@ describe("the render rules of the sidebar pages", () => {
     const setup = () => {
       const writes: FakeElement[][] = [];
       const ul = { replaceChildren: (...n: FakeElement[]) => { writes.push(n); } };
-      const c = load(["el", "hashOf", "navItem", "onIntegrationsRoute", "integrationsLink", "renderNav"], { navKey: null, INTEGRATIONS: "#/integrations", location: { hash: "#/" } });
+      const c = load(["el", "hashOf", "navItem", "renderNav"], { navKey: null, location: { hash: "#/" } });
       c.document = { createElement: fakeDocument.createElement, getElementById: () => ul };
       return { c, writes };
     };
@@ -3578,25 +3704,19 @@ describe("the render rules of the sidebar pages", () => {
       expect(writes).toHaveLength(4);
     });
 
-    it("puts Needs You first, then a divider only when there are workflows, and Integrations last", () => {
+    // #197: Integrations is reached from the top bar's ⋯ menu; the sidebar
+    // holds only the pages that hold items.
+    it("puts Needs You first, then a divider only when there are workflows, and no Integrations entry", () => {
       const { c, writes } = setup();
       c.V = view(0); c.P = null;
       run(c, "renderNav(V, P)");
-      expect(writes[0]?.map((n) => n.getAttribute("role") ?? n.tag)).toEqual(["li", "separator", "li", "li"]);
-      expect(writes[0]?.[3]?.textContent).toBe("Integrations");
+      expect(writes[0]?.map((n) => n.getAttribute("role") ?? n.tag)).toEqual(["li", "separator", "li"]);
+      expect(writes[0]?.map((n) => n.textContent)).toEqual(["Needs You", "", "a"]);
       const none = setup();
       none.c.V = view(0, []); none.c.P = null;
       run(none.c, "renderNav(V, P)");
-      expect(none.writes[0]?.map((n) => n.textContent)).toEqual(["Needs You", "Integrations"]);
-    });
-
-    it("marks Integrations, and not Needs You, as the page while the tab is open", () => {
-      const { c, writes } = setup();
-      (c.location as { hash: string }).hash = "#/integrations";
-      c.V = view(0, []); c.P = null;
-      run(c, "renderNav(V, P)");
-      const current = (li: FakeElement | undefined): string | null => li?.children[0]?.getAttribute("aria-current") ?? null;
-      expect(writes[0]?.map(current)).toEqual([null, "page"]);
+      expect(none.writes[0]?.map((n) => n.textContent)).toEqual(["Needs You"]);
+      expect(APP_JS).not.toContain("integrationsLink");
     });
   });
 
