@@ -2148,6 +2148,9 @@ export interface StoredRefresh {
  * `resource_metadata` to a request with no good token; `personOf` is whose
  * token a request that passed it carried.
  */
+/** The Express module's own export: its application factory, with its routers and body parsers on it. */
+export type ExpressModule = typeof import("express");
+
 export interface McpAuth {
   router: ExpressHandler;
   bearer: ExpressHandler;

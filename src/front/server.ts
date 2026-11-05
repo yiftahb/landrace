@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isIPv6 } from "node:net";
-import express from "express";
+import type { Response } from "express";
+import { express } from "#front/express.js";
 import type { FrontDoorOptions, McpEndpoint, Person, RemoteDoor, UiServer } from "#namespace.js";
 import { allowedHosts, frontDoorOrigins } from "#front/hosts.js";
 import { createMcpAuth } from "#front/mcp-auth.js";
@@ -91,10 +92,10 @@ function remoteApp(
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", "loopback");
-  const text = (res: express.Response, status: number, body: string): void => {
+  const text = (res: Response, status: number, body: string): void => {
     res.status(status).set({ "cache-control": "no-store", "x-content-type-options": "nosniff" }).type("text/plain").send(body);
   };
-  const failed = (res: express.Response, what: string) => (e: unknown): void => {
+  const failed = (res: Response, what: string) => (e: unknown): void => {
     console.error(`landrace: ${what} failed: ${messageOf(e)}`);
     if (!res.headersSent) text(res, 502, `${what} failed; the landrace log says why`);
   };
