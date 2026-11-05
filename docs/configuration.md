@@ -38,6 +38,7 @@ Every key, with its default:
 | `people.local.name` | none | Your name. Read and resolved, but stamped on nothing yet |
 | `people.oidc` | none | The OpenID Connect provider people sign in with. Set, the instance is remote — see [Remote mode](remote.md) |
 | `people.overrides` | none | By email, identity values pinned for a person a lookup cannot find — see [Remote mode](remote.md#identities) |
+| `people.allow` | none | Who a remote instance admits: each an email, or `@domain` for a whole domain. Required with `people.oidc` — see [Who can sign in](remote.md#who-can-sign-in) |
 | `notify.on` | none | The events to tell a person about. There is one: `needs-you` |
 | `notify.via` | none | Notifier ids, each registered by a hook with `defineNotifier`. The shipped one is `slack` |
 
@@ -170,7 +171,7 @@ Each value is written literally or as a `$VAR` or `${VAR}` reference, resolved a
 
 `landrace status` stamps its events the same way. `landrace mcp` stamps nothing.
 
-To run one instance for a team, set `people.oidc` to the provider everyone signs in with, and optionally `people.overrides`:
+To run one instance for a team, set `people.oidc` to the provider everyone signs in with, `people.allow` to who may sign in, and optionally `people.overrides`:
 
 ```yaml
 people:
@@ -178,6 +179,9 @@ people:
     issuer: https://id.example.org/realms/team
     clientId: landrace
     clientSecret: $LANDRACE_OIDC_SECRET
+  allow:
+    - ann@example.com
+    - "@example.com"
   overrides:
     bob@example.org:
       github: { login: bob-gh }
@@ -185,6 +189,7 @@ people:
 
 - **`issuer`** is the provider's issuer URL: `https`, or `http` on loopback only.
 - **`clientId`** and **`clientSecret`** are what the provider issued this instance. Each may be a `$VAR`, resolved as `people.local`'s are; one that does not resolve is reported as `people.oidc.clientId` or `people.oidc.clientSecret`. The secret is kept out of every log line.
+- **`allow`** lists who may sign in: an email such as `ann@example.com`, or `@` and a domain such as `@example.com` for every email at that domain, never its subdomains. Case is ignored. Any other entry, such as `*` or `example.com`, is refused when the file loads. With `people.oidc` set and `allow` missing or empty, nobody is admitted: `validate` reports `people.allow` and `start` refuses. How it is applied, and how it removes a person, is in [Who can sign in](remote.md#who-can-sign-in).
 - **`overrides`** maps an email to connection ids, each to the identity fields to store for that person.
 
 With `people.oidc` set, `people.local` is not used, and every event carries the signed-in person's id and email instead. Setup and behaviour are in [Remote mode](remote.md).

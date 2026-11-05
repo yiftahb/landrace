@@ -9,6 +9,11 @@ landrace validate path/to/ws   # another workspace
 
 It prints `<dir>: valid`, or one line per problem — `  <rule>: <message>` — and a count, and exits 1. With several workflows, a problem in one is prefixed with its id; a problem every workflow shares (the configuration, an executor, a notifier) is said once.
 
+On a [remote instance](remote.md), it first prints a `warning:` line for each thing the configuration says that it may not mean. Warnings never change the exit code:
+
+- **A `secrets` entry written as a string**, a literal or a `$VAR`. It is one value every person's runtime gets, so each of them acts as whoever it belongs to. A bot's token may be meant for everyone; a person's own is not.
+- **A [per-person key](configuration.md#per-person-keys) with `env` set.** A remote instance never reads that variable: each person's value comes from their own connection.
+
 In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's worktree — the declared secrets not resolving, an `agent.git` written as `$VAR` or `${VAR}` not resolving (reported under `vars`), a `people.local` reference not resolving, and `.mcp.json` missing are expected reports.
 
 ## The order it checks in
@@ -35,6 +40,7 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 | `connection.missing`, `connection.failed` | A [per-person key](configuration.md#per-person-keys) whose variable is unset or empty and whose connection is not stored or lacks the field (`missing`), or whose credentials file cannot be read (`failed`, with the reason). `status`, `landrace mcp` and `start --once` or `--headless` refuse in the same words; a `start` that serves a board runs nothing until it is connected — see [A connection not made](cli.md#landrace-start) |
 | `serve.unauthenticated` | Without `people.oidc`: a `serve.host` that is not loopback, `0.0.0.0` included: the board and its MCP endpoint would be open to the network with nothing asking who a caller is — see [The front door](configuration.md#the-front-door). `start` refuses it too |
 | `serve.public-url` | With `people.oidc`: no `serve.publicUrl`, or one that is not `https` and not on loopback — see [Remote mode](remote.md#set-it-up). `start` refuses it too |
+| `people.allow` | With `people.oidc`: no `people.allow`, or an empty one, which would admit nobody — see [Who can sign in](remote.md#who-can-sign-in). `start` refuses it too. An entry that is neither an email nor `@domain` fails the schema, under `config` |
 | `layout` | A workspace that is not one: the old single `workflow.yaml` at its root, no workflows, a workflow id that is not usable (lowercase letters, digits and `-`, starting with a letter or digit), a `workflows` folder or a workflow folder that is a symbolic link, a `workflows:` list in `landrace.yaml` that does not name exactly the folders |
 | `schema` | A `workflow.yaml` or step front matter that does not match its strict schema — an unknown key included; an `extends` that is empty; a step in an `extends` chain with one `## ` heading twice (a step that extends nothing and that nothing extends is read whole, repeats and all) |
 | `duplicate-id` | Two stages with one id |
@@ -119,6 +125,7 @@ The graph rules work from two derived views. An earlier version abstained wherev
 `landrace start` runs these checks before its first tick, through the same functions, and refuses an unsound workspace. The two still differ:
 
 - `validate` fails a `.env` that git does not ignore; `start` does not check it.
+- `validate` prints a remote instance's `warning:` lines; `start` prints none.
 - `validate` passes, and `start` refuses: a `log.redact` name that is not a declared secret of 8 characters or more, `agent.isolation: container`, and a `tick.interval` that is not a [duration](configuration.md#durations). `landrace mcp` refuses the first two too.
 - `validate` passes, and `start` refuses, a workflow whose hooks load no source (`no source hook is configured`). With no pre hook either, `path-coverage` abstains, so `validate` reports such a workflow valid.
 - `landrace status`, which writes nothing, does not refuse a `tracker-create` problem against the hooks; `start` does.
