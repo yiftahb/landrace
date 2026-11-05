@@ -236,14 +236,18 @@ export async function runValidate(
     const defined = connectionsOf(all);
     problems.push(...defined.problems);
     if (remote) {
+      // A key naming a connection, or a field, no hook defines is the
+      // instance's, and `start` refuses it whoever is stored: judged against
+      // nobody's credentials, it is said once even with an empty store, and a
+      // verdict does not flip as people sign in.
+      const nobody = localPerson(local.loaded);
+      problems.push(...resolvePerson(local.configured, defined, nobody, { person: nobody, connections: {} }, { remote: true })
+        .problems.filter((p) => p.rule === "connection.unknown"));
       const store = opts.credentials ?? createCredentialStore();
       for (const person of (await store.list()).filter((p) => p.id !== LOCAL_PERSON_ID)) {
         const judged = resolvePerson(local.configured, defined, person, await store.read(person.id), { remote: true });
-        // A connection the hooks do not define is the instance's, said once whoever it is judged for.
-        for (const p of judged.problems.filter((x) => x.rule.startsWith("connection."))) {
-          if (p.rule === "connection.unknown") {
-            if (!problems.some((q) => q.message === p.message)) problems.push(p);
-          } else people.push(`${person.email ?? person.id}: ${p.rule}: ${p.message}`);
+        for (const p of judged.problems.filter((x) => x.rule.startsWith("connection.") && x.rule !== "connection.unknown")) {
+          people.push(`${person.email ?? person.id}: ${p.rule}: ${p.message}`);
         }
       }
     } else {

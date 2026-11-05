@@ -2819,4 +2819,24 @@ describe("landrace validate with people.oidc", () => {
     expect(ok).toBe(true);
     expect(people).toEqual([expect.stringMatching(/^bob@example\.invalid: connection\.missing: secrets entry "forgeToken" has no value/)]);
   });
+
+  // `start` refuses a key naming a connection no hook defines whoever is
+  // stored; a verdict that waited for someone to sign in flipped as they did.
+  it("reports connection.unknown once from the config, with nobody stored or with people stored", async () => {
+    const { dir, credentials } = await unready("secret");
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, `${(await readFile(yaml, "utf8")).replace("connection: forge.token", "connection: nope.token")}` +
+      `serve: { host: 0.0.0.0, publicUrl: "https://landrace.example.org/" }\n` +
+      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n");
+    await writeFile(join(dir, "..", ".gitignore"), ".env\n");
+    const unknown = [{ rule: "connection.unknown", message: expect.stringMatching(/"forgeToken" names connection "nope", which no hook defines/) }];
+    const empty = await runValidate(dir, { credentials });
+    expect(empty.problems).toEqual(unknown);
+    expect(empty.ok).toBe(false);
+    await credentials.remember({ id: "sub-alice", email: "alice@example.invalid" });
+    await credentials.remember({ id: "sub-bob", email: "bob@example.invalid" });
+    const stored = await runValidate(dir, { credentials });
+    expect(stored.problems).toEqual(unknown);
+    expect(stored.ok).toBe(false);
+  });
 });
