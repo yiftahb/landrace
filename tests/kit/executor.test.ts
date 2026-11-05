@@ -346,6 +346,13 @@ describe("BaseExecutor", () => {
         expect(keeping.plans.map((p) => [p.tier, p.denyWrite])).toEqual([["write", GIT], ["read", []], ["screen", []]]);
       });
 
+      it.each([[undefined], [[]], [["~/.ssh"]]])("hands every path whatever agent.sandbox.deny is: %j", async (deny) => {
+        const keeping = new Keeping(markingBin());
+        const { run } = await keeping.create(ctxFor({ adapter: "tiny", ...(deny === undefined ? {} : { sandbox: { deny } }) }, steps));
+        await run("p", { round: 1, cwd: tempDir("tiny-cwd-"), signal, capabilities: ["repo:write"], denyWrite: GIT });
+        expect(keeping.plans.map((p) => p.denyWrite)).toEqual([GIT]);
+      });
+
       it.each([["/repo (old)/.git/config"], ["/repo/.git/\nconfig"], ["relative/.git/config"]])("refuses %j, which no rule can hold", async (path) => {
         const keeping = new Keeping(markingBin());
         await expect(keeping.build(settings).run("p", { round: 1, cwd: tempDir("tiny-cwd-"), signal, capabilities: ["repo:write"], denyWrite: [path] }))

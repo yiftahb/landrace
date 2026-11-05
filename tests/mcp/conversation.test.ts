@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -668,6 +668,33 @@ describe("a conversation turn is held to what its step declared", () => {
 
     expect(turn.reply).toBe("Done, I changed it.");
     expect(await worktreesOf(checkout)).toEqual([]);
+  });
+
+  /* A turn on a step that may write is denied the git paths its step is: in its worktree, or with none, where it runs and the workspace. */
+  it("hands a turn on a step that may write the git control paths, and one on a read step none", async () => {
+    const checkout = await gitRepo();
+    const common = realpathSync(join(checkout, ".git"));
+    const asked = async (capabilities: string[], where: Record<string, unknown>): Promise<{ cwd?: string; denyWrite?: readonly string[] }> => {
+      let seen: { cwd?: string; denyWrite?: readonly string[] } = {};
+      const watcher: Executor = {
+        id: "watcher",
+        run: async (_p, { cwd, denyWrite }) => {
+          seen = { ...(cwd === undefined ? {} : { cwd }), ...(denyWrite === undefined ? {} : { denyWrite }) };
+          return { text: "Understood.", sessionId: null };
+        },
+      };
+      await world(seeded(), watcher, {}, undefined, { ...spec({ capabilities }), ...where }).ask("1", "carry on");
+      return seen;
+    };
+
+    const worktree = await asked(["repo:read", "repo:write"], { sandbox: { root: checkout } });
+    expect(worktree.denyWrite).toEqual(expect.arrayContaining([
+      join(common, "config"), join(common, "hooks"), join(common, "info"), join(worktree.cwd as string, ".git"),
+    ]));
+    const none = await asked(["repo:read", "repo:write"], { workspace: checkout });
+    expect(none.cwd).toBeUndefined();
+    expect(none.denyWrite).toEqual(expect.arrayContaining([join(common, "config"), join(common, "hooks"), join(common, "info")]));
+    expect((await asked(["repo:read"], { sandbox: { root: checkout } })).denyWrite).toBeUndefined();
   });
 
   it("runs the turn in a worktree of its own, never in the checkout the loop runs from", async () => {

@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { DEFAULT_LOCKFILES, ensureWorktree, removeWorktree } from "#agent/worktree.js";
@@ -478,6 +478,62 @@ describe("converge and the sandbox", () => {
     expect(w.entries.filter((e) => e.kind === "refused")).toHaveLength(1);
     expect(w.entries.filter((e) => e.kind === "malformed")).toHaveLength(0);
     expect(await sandboxes(root)).toEqual([]);
+  });
+
+  describe("the git paths a write step's agent may not write", () => {
+    /** An executor that writes down what each run was handed, and the control paths of where it ran, read as it ran. */
+    const recorder = () => {
+      const runs: Array<{ cwd: string | undefined; denyWrite: readonly string[] | undefined; expected?: string[] }> = [];
+      const executor: Executor = {
+        id: "recorder",
+        run: async (_p, { cwd, denyWrite }) => {
+          runs.push({ cwd, denyWrite });
+          return { text: '```json\n{"kind":"spec"}\n```', sessionId: "sid-1" };
+        },
+      };
+      return { runs, executor };
+    };
+    const write = new Map<string, Step>([["spec", step(["repo:read", "repo:write"])]]);
+    const common = async (dir: string): Promise<string> =>
+      realpathSync(resolve(dir, (await exec("git", ["rev-parse", "--git-common-dir"], { cwd: dir })).stdout.trim()));
+
+    it("hands a write step in a worktree that repository's config, hooks, info and admin files, and the worktree's .git file", async () => {
+      const root = await repo();
+      const { runs, executor } = recorder();
+      await converge("1", deps(world(), { executor, steps: write, sandbox: { root } }));
+      const [run] = runs;
+      const cwd = run?.cwd as string;
+      const git = await common(root);
+      expect(run?.denyWrite).toEqual(expect.arrayContaining([
+        join(git, "config"), join(git, "config.worktree"), join(git, "hooks"), join(git, "info"), join(cwd, ".git"),
+      ]));
+      expect(run?.denyWrite?.filter((p) => p.startsWith(join(git, "worktrees")))).toHaveLength(3);
+    });
+
+    it("hands a read step none", async () => {
+      const root = await repo();
+      const { runs, executor } = recorder();
+      await converge("1", deps(world(), { executor, sandbox: { root } }));
+      expect(runs.map((r) => r.denyWrite)).toEqual([undefined]);
+    });
+
+    it("hands a write step with isolation off the control paths of where it runs and of the workspace", async () => {
+      const workspace = await repo();
+      // A linked worktree of its own, whose admin files are the step's to plant in too.
+      await ensureWorktree("9", workspace);
+      const { runs, executor } = recorder();
+      await converge("1", deps(world(), { executor, steps: write, workspace }));
+      const [run] = runs;
+      expect(run?.cwd).toBeUndefined();
+      const theirs = await common(workspace);
+      const here = await common(process.cwd());
+      expect(run?.denyWrite).toEqual(expect.arrayContaining([
+        ...["config", "hooks", "info"].map((f) => join(theirs, f)),
+        ...["config", "hooks", "info"].map((f) => join(here, f)),
+      ]));
+      expect(run?.denyWrite?.filter((p) => p.startsWith(join(theirs, "worktrees")))).toHaveLength(3);
+      await removeWorktree("9", workspace);
+    });
   });
 
   it("does not reach for a worktree at all when isolation is off", async () => {

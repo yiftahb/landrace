@@ -194,6 +194,38 @@ export const codex = new Codex();
     }]);
   });
 
+  /*
+   * A step that may write under an integration that has not shown it keeps a
+   * run from the git paths the engine lists: `validate` reports what `start`
+   * refuses, naming the step, and a read step under it passes.
+   */
+  it("reports a step that may write under an executor that cannot keep a run from writing a path", async () => {
+    const problems = async (capabilities: string): Promise<Problem[]> => {
+      const dir = join(await mkdtemp(join(tmpdir(), "lr-validate-")), ".landrace");
+      await mkdir(join(dir, "hooks"), { recursive: true });
+      await writeFile(join(dir, "hooks", "codex.ts"), `import { pathToFileURL } from "node:url";
+const { Codex } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), "integrations", "codex", "index.ts"))}).href);
+export const codex = new Codex();
+`);
+      await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: codex, sandbox: { deny: [] } }\n");
+      const main = workflowIn(dir);
+      await mkdir(join(main, "steps"), { recursive: true });
+      const minimal = join(process.cwd(), "tests", "fixtures", "minimal");
+      await writeFile(join(main, "workflow.yaml"), (await readFile(join(minimal, "workflow.yaml"), "utf8"))
+        .replace("name: minimal\n", "name: minimal\nhooks: [../../hooks/codex.ts]\n"));
+      await writeFile(join(main, "steps", "spec.md"), (await readFile(join(minimal, "steps", "spec.md"), "utf8"))
+        .replace("capabilities: [repo:read]", `capabilities: [${capabilities}]`));
+      return (await runValidate(dir)).problems.filter((p) => p.rule === "executor");
+    };
+
+    expect(await problems("repo:read, repo:write")).toEqual([{
+      rule: "executor",
+      message: 'executor "codex" could not start: steps/spec.md may write the repository, and the codex executor cannot keep a run ' +
+        "from writing a path: its agent could plant a git hook or config that landrace's git, or yours, then runs",
+    }]);
+    expect(await problems("repo:read")).toEqual([]);
+  });
+
   // Not only the kit's: a plain Executor hook with no handoff can never be
   // paired with, which `start` refuses too.
   it("reports a stage that waits for a pairing under a plain executor hook with no handoff, and passes one with", async () => {
