@@ -84,9 +84,11 @@ program
   // not to report the workflow as broken.
   .action(async (dir: string) => {
     await loadingHooks("validate", async () => {
-      const { ok, problems } = await runValidate(dir);
+      const { ok, problems, people } = await runValidate(dir);
+      // Each person's own, on a remote instance: printed, and never the exit code.
+      for (const line of people) console.log(`  ${line}`);
       if (ok) {
-        console.log(`${dir}: valid`);
+        console.log(`${dir}: valid${people.length ? `; ${people.length} problem(s) above are people's own, for them to mend in the Integrations tab` : ""}`);
         return;
       }
       for (const p of problems) console.error(`  ${p.rule}: ${p.message}`);

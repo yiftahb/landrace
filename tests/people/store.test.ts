@@ -37,6 +37,19 @@ describe("the credential store", () => {
     expect(await store.list()).toEqual([ME]);
   });
 
+  // #187: a person who signed in is in the store, connected or not, so the next start runs for them.
+  it("remembers a person who has connected nothing, and their new name, keeping what they connected", async () => {
+    const dir = await root();
+    const store = createCredentialStore(dir);
+    const alice: Person = { id: "sub-alice", email: "alice@example.invalid" };
+    await store.remember(alice);
+    expect(await store.list()).toEqual([alice]);
+    expect((await stat(join(dir, "sub-alice.json"))).mode & 0o777).toBe(0o600);
+    await store.put(alice.id, alice, "github", github);
+    await store.remember({ ...alice, name: "Alice" });
+    expect(await store.read(alice.id)).toEqual({ person: { ...alice, name: "Alice" }, connections: { github } });
+  });
+
   it("refuses to store one person under another's id", async () => {
     await expect(createCredentialStore(await root()).put("other", ME, "github", github)).rejects.toThrow(/"local".*"other"/);
   });

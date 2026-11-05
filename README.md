@@ -138,7 +138,7 @@ Both also stop for a person at a halt: a step whose output was broken, a push th
 
 ## The board
 
-`landrace start` serves the board on `127.0.0.1` only, at port 4545 unless [`serve.port`](docs/configuration.md#the-front-door) moves it. It shows:
+`landrace start` serves the board on `127.0.0.1` only — unless you [run it for a team](docs/remote.md) — at port 4545 unless [`serve.port`](docs/configuration.md#the-front-door) moves it. It shows:
 
 - **Needs You**, the home page: every item waiting for a person, across all workflows, most urgent first.
 - **A page per workflow**, with its items in lanes: Needs you, Agent running, Held elsewhere, Waiting, Not admitted and Done.
@@ -206,7 +206,7 @@ GitHub, GitLab, Jira and Notion each have a script that checks the integration a
 - **Untrusted text cannot forge control state.** Everything Landrace writes ends in a hidden marker, and only the last marker in a comment counts. Landrace escapes text it did not write, so neither an agent nor a commenter can fake a Landrace record.
 - **Prompts are screened.** Before any step that can act, a separate agent run with no tools checks the prompt for injected instructions.
 - **Fastlane never merges a protected path without a person.** It merges only the commit the review read, when no check on it has failed or is still running. A commit with no checks counts as passing, so require status checks on your default branch.
-- **What runs on your machine:** Landrace, as one process; the coding agent's CLI, in a git worktree per item under your temporary folder; and the board, on `127.0.0.1`. Landrace reaches the outside only through your hooks, through telemetry when you turn it on, and through npm's registry, which `start` asks whether a newer version is out ([turned off](docs/cli.md#checking-for-a-newer-version) with `LANDRACE_NO_UPDATE_CHECK=1`).
+- **What runs on your machine:** Landrace, as one process; the coding agent's CLI, in a git worktree per item under your temporary folder; and the board, on `127.0.0.1` unless [remote mode](docs/remote.md) serves it to your team behind sign-in. Landrace reaches the outside only through your hooks, through telemetry when you turn it on, and through npm's registry, which `start` asks whether a newer version is out ([turned off](docs/cli.md#checking-for-a-newer-version) with `LANDRACE_NO_UPDATE_CHECK=1`).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/needs-you-dark.png">

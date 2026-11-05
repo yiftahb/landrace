@@ -291,6 +291,49 @@ describe("people.local", () => {
   });
 });
 
+/** #187: a remote instance's sign-in, `people.oidc`, and the identities an admin pins, `people.overrides`. */
+describe("people.oidc", () => {
+  const TOKEN = "GITHUB_TOKEN=ghp_xxxxxxxxxxxx\n";
+  const OIDC = "people: { oidc: { issuer: https://id.example.invalid/realms/team, clientId: landrace, clientSecret: $LR_OIDC_SECRET } }\n";
+
+  it("resolves its client secret from .env, and needs no people.local", async () => {
+    const dir = await fixture(`${TOKEN}LR_OIDC_SECRET=s3cret-value-long\n`, OIDC);
+    const loaded = await loadConfig(dir);
+    expect(loaded.config.people?.oidc).toEqual({ issuer: "https://id.example.invalid/realms/team", clientId: "landrace", clientSecret: "s3cret-value-long" });
+    expect(loaded.config.people?.local).toBeUndefined();
+    expect(configProblems(dir, loaded)).toEqual([]);
+  });
+
+  it("refuses a client secret variable that is unset, as people.oidc.clientSecret", async () => {
+    const dir = await fixture(TOKEN, OIDC);
+    expect(configProblems(dir, await loadConfig(dir))).toEqual([{
+      rule: "people.oidc.clientSecret",
+      message: expect.stringMatching(/^people\.oidc\.clientSecret is \$LR_OIDC_SECRET, which does not resolve to a usable value; set it in .*\.env/),
+    }]);
+  });
+
+  it.each([
+    ["http off loopback", "http://id.example.invalid/realms/team", /people\.oidc\.issuer/],
+    ["not a URL", "id.example.invalid", /people\.oidc\.issuer/],
+  ])("refuses an issuer that is %s", async (_, issuer, error) => {
+    const dir = await fixture(TOKEN, `people: { oidc: { issuer: "${issuer}", clientId: landrace, clientSecret: x } }\n`);
+    await expect(loadConfig(dir)).rejects.toThrow(error);
+  });
+
+  it.each(["http://127.0.0.1:8080/realms/team", "http://localhost:8080/realms/team", "http://[::1]:8080/realms/team"])(
+    "takes an http issuer on loopback, %s, as a local test IdP is",
+    async (issuer) => {
+      const dir = await fixture(TOKEN, `people: { oidc: { issuer: "${issuer}", clientId: landrace, clientSecret: x } }\n`);
+      expect((await loadConfig(dir)).config.people?.oidc?.issuer).toBe(issuer);
+    },
+  );
+
+  it("takes overrides: an email's identity fields, by connection", async () => {
+    const dir = await fixture(TOKEN, "people: { overrides: { bob@example.invalid: { github: { login: bob-gh } } } }\n");
+    expect((await loadConfig(dir)).config.people?.overrides).toEqual({ "bob@example.invalid": { github: { login: "bob-gh" } } });
+  });
+});
+
 describe("the item branch", () => {
   it("is landrace/{item} when none is set, and takes the one set", async () => {
     expect((await loadConfig(await fixture(""))).config.branch).toBe("landrace/{item}");

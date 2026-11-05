@@ -78,6 +78,34 @@ describe("the people panel's identities", () => {
   });
 });
 
+// #187: remotely, each caller is judged by their own last gate, never the first person's.
+describe("the people panel, for many people", () => {
+  it("asks the gate of the caller it answers, for what it lists and what it checks a paste with", async () => {
+    const root = join(await mkdtemp(join(tmpdir(), "lr-panel-")), "credentials");
+    const ctxOf = (who: string) => ({ config, secrets: new Map([["who", who]]), signal: new AbortController().signal, log: () => {} }) as unknown as RuntimeContext;
+    const checkedWith: string[] = [];
+    const bobs = defineConnection({
+      id: "bobs", label: "Bob's", kind: "credential", fields: ["token"],
+      check: async (_v, ctx) => { checkedWith.push(ctx.secrets.get("who") ?? ""); return null; },
+    });
+    const asked: string[] = [];
+    const panel = createPeoplePanel({
+      store: createCredentialStore(root), mode: { remote: true }, log: createLogger({ sink: () => {} }), onChange: async () => {}, now: () => NOW,
+      gate: (personId) => {
+        asked.push(personId);
+        return personId === "bob"
+          ? { registry: { connections: new Map([["bobs", bobs]]) }, loaded, ctx: ctxOf("bob") }
+          : { registry: { connections: new Map([["forge", forge()]]) }, loaded, ctx: ctxOf("alice") };
+      },
+    });
+    expect((await panel.me({ id: "alice" })).connections.map((c) => c.id)).toEqual(["forge"]);
+    expect((await panel.me({ id: "bob" })).connections.map((c) => c.id)).toEqual(["bobs"]);
+    await panel.connect({ id: "bob" }, "bobs", { token: TOKEN });
+    expect(checkedWith).toEqual(["bob"]);
+    expect(asked).toEqual(["alice", "bob", "bob"]);
+  });
+});
+
 describe("the people panel", () => {
   it("lists every defined connection, a required one missing and the person not ready, with each pasted one's hint", async () => {
     const { panel } = await panelOf([forge(), login]);
@@ -96,7 +124,7 @@ describe("the people panel", () => {
     expect(status).toMatchObject({ id: "forge", state: "connected" });
     const file = JSON.parse(await readFile(join(root, "local.json"), "utf8")) as { connections: Record<string, ConnectionValue> };
     expect(file.connections["forge"]).toMatchObject({ fields: { token: TOKEN }, source: "paste", connectedAt: NOW.toISOString() });
-    expect(events.filter((e) => e.name === "person.connected")).toEqual([{ name: "person.connected", connection: "forge" }]);
+    expect(events.filter((e) => e.name === "person.connected")).toEqual([{ name: "person.connected", connection: "forge", person: "local", personEmail: "dev1@example.invalid" }]);
     expect(printed.join("\n")).not.toContain(TOKEN);
     expect(changes).toEqual(["local"]);
     expect((await panel.me(ME)).ready).toBe(true);
@@ -165,7 +193,7 @@ describe("the people panel", () => {
     await panel.connect(ME, "forge", { token: TOKEN });
     await panel.disconnect(ME, "forge");
     expect((await store.read("local")).connections).toEqual({});
-    expect(events.filter((e) => e.name === "person.disconnected")).toEqual([{ name: "person.disconnected", connection: "forge" }]);
+    expect(events.filter((e) => e.name === "person.disconnected")).toEqual([{ name: "person.disconnected", connection: "forge", person: "local", personEmail: "dev1@example.invalid" }]);
     expect(changes).toEqual(["local", "local"]);
     expect((await panel.me(ME)).ready).toBe(false);
     await expect(panel.disconnect(ME, "nope")).rejects.toBeInstanceOf(Refusal);

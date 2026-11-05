@@ -235,9 +235,8 @@ export function connectionStatus(
  * `loaded` is the configuration before the store: a per-person key in its
  * map is one its variable answered. Locally such a key needs no connection,
  * nor a hook defining one: every setup from before connections existed runs
- * as it did. Remotely — never yet, until `people.oidc` exists — the variable
- * belongs to the machine and not the person, so it is ignored, and said to
- * be. A connection is required when a key needs it, or when its `required`
+ * as it did. Remotely — `people.oidc` set — the variable belongs to the
+ * machine and not the person, so it is ignored, and said to be. A connection is required when a key needs it, or when its `required`
  * says so; each is judged once, whatever number of keys need it. One stored
  * is judged too, required or not: an agent's login that stopped working
  * must stop the runs, never let them fall back to the operator's own.

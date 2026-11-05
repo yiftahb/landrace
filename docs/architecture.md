@@ -77,7 +77,7 @@ The core is pure: it does no I/O, reads no clock and draws no random numbers. Ti
 
 ## The roster: one runner, many people
 
-`landrace start` runs a **runtime** for each person it runs for: their workflows, their connections, their logger and their runs in flight. The people are its **roster**. A local start's roster is exactly one person, `local`, named by `people.local` in `landrace.yaml`, so a local start runs as it always has. A roster of several people needs remote mode, which Landrace does not have yet.
+`landrace start` runs a **runtime** for each person it runs for: their workflows, their connections, their logger and their runs in flight. The people are its **roster**. A local start's roster is exactly one person, `local`, named by `people.local` in `landrace.yaml`, so a local start runs as it always has. A roster of several people is [remote mode](remote.md): everyone who has signed in, each judged by their own connections, and never the `local` file.
 
 ```mermaid
 flowchart LR

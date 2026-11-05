@@ -20,6 +20,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Request as ExpressRequest, RequestHandler as ExpressHandler } from "express";
 import type { z } from "zod";
 import type { runtimeConfigSchema } from "#config/schema.js";
 import type { stepFrontMatterSchema } from "#workflow/schema.js";
@@ -512,6 +513,9 @@ export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>;
 /** `serve:`, parsed: where the front door binds, and the URL a person reaches it by. */
 export type ServeConfig = RuntimeConfig["serve"];
 
+/** `people.oidc`: the provider a remote instance's people sign in through. Set, the instance is remote. */
+export type OidcConfig = NonNullable<NonNullable<RuntimeConfig["people"]>["oidc"]>;
+
 /**
  * The front door as a step must not reach it: the host names it answers to
  * (no port), for a sandbox's allowed hosts and an agent's fetch rules, and
@@ -555,9 +559,9 @@ export interface LoadedConfig {
    */
   missingGit: Array<{ key: string; variable: string }>;
   /**
-   * `people.local` keys written as a `$VAR` that is unset or empty, with the
-   * variable each names. One that resolved is already written back into
-   * `config.people.local`.
+   * `people.local` and `people.oidc` keys written as a `$VAR` that is unset
+   * or empty, each `local.<key>` or `oidc.<key>`, with the variable it names.
+   * One that resolved is already written back into `config.people`.
    */
   missingPerson: Array<{ key: string; variable: string }>;
 }
@@ -1803,7 +1807,8 @@ export type EventName =
   | "notify.sent" | "notify.failed"
   | "agent.limited" | "integration.limited"
   | "person.connected" | "person.disconnected"
-  | "connection.expiring" | "connection.failed" | "connection.refreshed";
+  | "connection.expiring" | "connection.failed" | "connection.refreshed"
+  | "signin.ok" | "signin.refused" | "request.refused";
 
 export interface LandraceEvent {
   name: EventName;
@@ -1983,6 +1988,8 @@ export interface CredentialStore {
   root: string;
   read(personId: string): Promise<PersonCredentials>;
   put(personId: string, person: Person, connId: string, value: ConnectionValue): Promise<void>;
+  /** Writes who the person is, keeping what they connected; makes their file when there is none. */
+  remember(person: Person): Promise<void>;
   remove(personId: string, connId: string): Promise<void>;
   /** Every person with a file, readable or not — one that is not, by its id alone. */
   list(): Promise<Person[]>;
@@ -2072,6 +2079,84 @@ export interface PeoplePanel {
   finish(caller: Person, id: string, callback: ConnectCallback): Promise<ConnectionStatus>;
 }
 
+/** A sign-in begun and not yet back from the provider. `binding` is the `landrace_login` cookie of the browser that began it. */
+export interface PendingSignIn {
+  binding: string;
+  verifier: string;
+  nonce: string;
+  returnTo: string;
+  expires: number;
+}
+
+/** What a callback came to: who signed in and where they asked to go, or why not, with the status it is answered. */
+export type OidcFinished =
+  | { person: Person; returnTo: string }
+  | { refused: string; status: 400 | 403 | 502 };
+
+/** A remote instance's sign-in at its `people.oidc` provider. */
+export interface Oidc {
+  /** The provider's URL to send the person to, and the binding their browser keeps until it sends them back. */
+  begin(returnTo: string | null): Promise<{ url: string; binding: string }>;
+  /** The provider sent them back to `callback`, from a browser carrying `binding`. */
+  finish(callback: URL, binding: string | undefined): Promise<OidcFinished>;
+}
+
+/**
+ * Who is signed in, by the `landrace_session` cookie. Held in memory: a
+ * restart signs everyone out, and they sign in again.
+ */
+export interface Sessions {
+  /** A session for `person`: the `Set-Cookie` header value that carries it. */
+  issue(person: Person): string;
+  /** The person the request's session belongs to, or null. */
+  personOf(req: IncomingMessage): Person | null;
+  /** The request's session id, or null: what a consent is bound to. */
+  idOf(req: IncomingMessage): string | null;
+  /** Ends the request's session: the `Set-Cookie` header value that clears it. */
+  end(req: IncomingMessage): string;
+}
+
+/** A consent page shown and not yet answered: the browser session it was shown to, and the authorization request it answers. */
+export interface PendingConsent {
+  session: string;
+  clientId: string;
+  params: { state?: string | undefined; scopes?: string[] | undefined; codeChallenge: string; redirectUri: string; resource?: string | undefined };
+  expires: number;
+}
+
+/** An MCP access token, held in memory: whose, for which client, until when (seconds). */
+export interface IssuedAccess {
+  clientId: string;
+  person: Person;
+  scopes: string[];
+  expiresAt: number;
+}
+
+/** What `mcp-tokens.json` keeps of a refresh token, under the hash of it: never the token. */
+export interface StoredRefresh {
+  clientId: string;
+  person: Person;
+  scopes: string[];
+  /** Milliseconds since the epoch. */
+  expires: number;
+}
+
+/**
+ * Landrace's own OAuth authorization server for MCP clients: `router`
+ * answers registration, `/authorize` and its consent, `/token`, `/revoke`
+ * and the metadata; `bearer` stands before `/mcp`, answering 401 with
+ * `resource_metadata` to a request with no good token; `personOf` is whose
+ * token a request that passed it carried.
+ */
+/** The Express module's own export: its application factory, with its routers and body parsers on it. */
+export type ExpressModule = typeof import("express");
+
+export interface McpAuth {
+  router: ExpressHandler;
+  bearer: ExpressHandler;
+  personOf(req: ExpressRequest): Person | null;
+}
+
 /** One person in the runner: their runtime's slot, their board, and how their connections were last judged. */
 export interface PersonRuntime {
   person: Person;
@@ -2092,6 +2177,14 @@ export interface Roster {
   get(personId: string): PersonRuntime | undefined;
   reload(personId: string): Promise<void>;
   sync(): Promise<void>;
+  /**
+   * Someone signed in, remotely: remembered in the store, given what
+   * `people.overrides` pins for their email, judged — each identity not
+   * stored looked up — and their runtime reloaded. An identity value another
+   * person already holds is marked failed on theirs, never taken. The local
+   * person is refused: their file is the operator's.
+   */
+  signIn(person: Person): Promise<void>;
   tick(): Promise<void>;
   /** The items the last judged tick found claimed by more than one person, each with who: what a write from the page or the MCP goes by. */
   ambiguous(): ReadonlyMap<string, string[]>;
@@ -2112,6 +2205,8 @@ export interface RosterOptions {
   /** A ready person's runtime, or null when there is none to run. */
   build: (person: Person, resolution: PersonResolution) => Promise<WorkspaceRuntime | null>;
   log: RedactingLogger;
+  /** `people.overrides`: by email, each identity an admin pins, written on sign-in. */
+  overrides?: Record<string, Record<string, Record<string, string>>>;
   /** The one person a local roster holds. Absent, `people.local`'s. */
   local?: Person;
   /** The slots every runtime shares, and the order people are listed and ticked in. Absent, a pool of `tick.concurrency`. */
@@ -3874,6 +3969,19 @@ export interface FrontDoorOptions {
   callerOf?: (req: IncomingMessage) => Person | null;
   /** The board of the caller `callerOf` named. Absent, `board`. */
   boardFor?: (caller: Person) => Omit<UiOptions, "allowedHosts" | "origins">;
+  /** Set, the door is remote: it signs people in and is its MCP clients' authorization server. `publicUrl` is then required. */
+  remote?: RemoteDoor;
+}
+
+/** What a remote door signs people in with, and where it keeps its MCP clients. */
+export interface RemoteDoor {
+  oidc: Oidc;
+  sessions: Sessions;
+  /** Someone signed in: remembered, judged and built. A `Refusal` turns them away. */
+  signIn(person: Person): Promise<void>;
+  /** The 0700 directory `mcp-clients.json` and `mcp-tokens.json` are kept in. */
+  authRoot: string;
+  log: Logger;
 }
 
 /**

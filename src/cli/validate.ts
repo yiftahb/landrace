@@ -5,9 +5,11 @@ import { promisify } from "node:util";
 import { screenerFor, stepExecutorFor } from "#cli/start.js";
 import { configProblems } from "#config/load.js";
 import { localPerson } from "#people/person.js";
+import { perPersonKeys } from "#people/keys.js";
+import { createCredentialStore } from "#people/store.js";
 import { connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
 import { frontDoorOrigins, serveProblems } from "#front/hosts.js";
-import { ITEM_BRANCH } from "#conventions.js";
+import { ITEM_BRANCH, LOCAL_PERSON_ID } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
@@ -133,8 +135,13 @@ async function executorProblems(dir: string, loaded: LoadedConfig, registry: Reg
   }
 }
 
-export async function runValidate(dir: string, opts: { credentials?: CredentialStore } = {}): Promise<{ ok: boolean; problems: Problem[] }> {
+export async function runValidate(
+  dir: string, opts: { credentials?: CredentialStore } = {},
+): Promise<{ ok: boolean; problems: Problem[]; people: string[] }> {
   const problems: Problem[] = [];
+  // Remotely, each stored person's own problems, `<email>: rule: message`:
+  // theirs to mend in the Integrations tab, never the instance's, so never `ok`'s.
+  const people: string[] = [];
 
   /*
    * The configuration first, because the workflow cannot be read without it:
@@ -157,7 +164,7 @@ export async function runValidate(dir: string, opts: { credentials?: CredentialS
   const loaded = local?.loaded ?? null;
   // `start` refuses a door it would serve to anyone; `mcp --pairing` and the
   // child server serve none, so the rule lives here and in `start`.
-  if (loaded) problems.push(...configProblems(dir, loaded), ...serveProblems(loaded.config.serve));
+  if (loaded) problems.push(...configProblems(dir, loaded), ...serveProblems(loaded.config.serve, loaded.config.people?.oidc));
 
   /*
    * A var that did not resolve stops here, and the early return is the point.
@@ -166,19 +173,24 @@ export async function runValidate(dir: string, opts: { credentials?: CredentialS
    * thing that is wrong, in a file where the entry is right there.
    */
   // A per-person key nothing answered stops here for the same reason, and
-  // in the words `start` refuses with.
-  if (local?.problems.length) problems.push(...local.problems);
-  if (loaded?.missingVars.length || local?.problems.length) return { ok: false, problems: [...problems, ...(await exposedEnv(dir))] };
+  // in the words `start` refuses with. Remotely the local person is nobody,
+  // and each key is a person's, judged for each one below: until then a var
+  // of theirs reads as "", as `start` reads it to load the hooks.
+  const remote = loaded?.config.people?.oidc !== undefined;
+  const personal = remote && loaded ? perPersonKeys(loaded.config).filter((k) => k.kind === "var" && !loaded.vars.has(k.name)).map((k) => k.name) : [];
+  const unanswered = remote ? [] : local?.problems ?? [];
+  problems.push(...unanswered);
+  if (loaded?.missingVars.length || unanswered.length) return { ok: false, problems: [...problems, ...(await exposedEnv(dir))], people };
 
   // A workspace whose layout cannot be read is itself the thing `validate`
   // exists to report — §11.1-§11.2 — so a load failure must become a Problem
   // here rather than propagate as an unhandled rejection past this function.
   let ws: WorkspaceRead;
   try {
-    ws = await readWorkspace(dir, loaded?.vars, loaded?.config.workflows);
+    ws = await readWorkspace(dir, loaded ? new Map([...loaded.vars, ...personal.map((n): [string, string] => [n, ""])]) : undefined, loaded?.config.workflows);
   } catch (e) {
     const rule = e instanceof WorkflowLoadError ? e.rule : "schema";
-    return { ok: false, problems: [...problems, { rule, message: messageOf(e) }, ...(await exposedEnv(dir))] };
+    return { ok: false, problems: [...problems, { rule, message: messageOf(e) }, ...(await exposedEnv(dir))], people };
   }
   // A workflow that would not load is reported in its folder's name, and the
   // others are still checked: one broken file does not hide the rest.
@@ -221,17 +233,35 @@ export async function runValidate(dir: string, opts: { credentials?: CredentialS
   // cannot see, and calling the key naming it unknown would be a guess.
   const all = registries.flatMap(({ id, registry }) => (registry ? [{ id, registry }] : []));
   if (local && ws.failures.length === 0 && all.length === registries.length) {
-    const people = connectionsOf(all);
-    const person = localPerson(local.loaded);
-    const creds = await localCredentials(local, person, people.connections, opts.credentials);
-    problems.push(...people.problems, ...resolvePerson(local.configured, people, person, creds, { remote: false }).problems);
+    const defined = connectionsOf(all);
+    problems.push(...defined.problems);
+    if (remote) {
+      // A key naming a connection, or a field, no hook defines is the
+      // instance's, and `start` refuses it whoever is stored: judged against
+      // nobody's credentials, it is said once even with an empty store, and a
+      // verdict does not flip as people sign in.
+      const nobody = localPerson(local.loaded);
+      problems.push(...resolvePerson(local.configured, defined, nobody, { person: nobody, connections: {} }, { remote: true })
+        .problems.filter((p) => p.rule === "connection.unknown"));
+      const store = opts.credentials ?? createCredentialStore();
+      for (const person of (await store.list()).filter((p) => p.id !== LOCAL_PERSON_ID)) {
+        const judged = resolvePerson(local.configured, defined, person, await store.read(person.id), { remote: true });
+        for (const p of judged.problems.filter((x) => x.rule.startsWith("connection.") && x.rule !== "connection.unknown")) {
+          people.push(`${person.email ?? person.id}: ${p.rule}: ${p.message}`);
+        }
+      }
+    } else {
+      const person = localPerson(local.loaded);
+      const creds = await localCredentials(local, person, defined.connections, opts.credentials);
+      problems.push(...resolvePerson(local.configured, defined, person, creds, { remote: false }).problems);
+    }
   }
   for (const { problem, ids } of shared.values()) {
     problems.push(named && ids.length < ws.ids.length ? { ...problem, message: `${ids.join(", ")}: ${problem.message}` } : problem);
   }
 
   problems.push(...(await exposedEnv(dir)));
-  return { ok: problems.length === 0, problems };
+  return { ok: problems.length === 0, problems, people };
 }
 
 /**

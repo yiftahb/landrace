@@ -110,7 +110,7 @@ describe("landrace validate, over a workspace", () => {
   });
 
   it("is valid when every workflow in it is", async () => {
-    expect(await runValidate(await workspace({ main: SOUND("Main"), fastlane: SOUND("Fastlane") }))).toEqual({ ok: true, problems: [] });
+    expect(await runValidate(await workspace({ main: SOUND("Main"), fastlane: SOUND("Fastlane") }))).toEqual({ ok: true, problems: [], people: [] });
   });
 
   it("does not prefix a problem with the id when there is only one workflow to be in", async () => {
@@ -149,6 +149,7 @@ describe("landrace validate, over a workspace", () => {
     // tests/fixtures/minimal is a workflow folder: workflow.yaml at its root.
     expect(await runValidate("tests/fixtures/minimal")).toEqual({
       ok: false,
+      people: [],
       problems: [{ rule: "layout", message: expect.stringMatching(/workflow\.yaml is the layout before workspaces; move it to .*workflows\/main\/workflow\.yaml/) }],
     });
 
@@ -319,6 +320,15 @@ describe("landrace validate, and the notify block", () => {
     const r = await runValidate(await dirFor('serve: { host: "127.0.0.1" }\n'));
     expect(r.problems.filter((p) => p.rule.startsWith("serve"))).toEqual([]);
     expect(r.problems.map((p) => p.rule)).toEqual(["executor"]);
+  });
+
+  // #187: with people.oidc set, everyone signs in, and the door may face the network.
+  const OIDC = "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: some-client-secret } }\n";
+  it("passes a wide serve.host once people.oidc is set, and reports serve.public-url when it has no URL", async () => {
+    const wide = await runValidate(await dirFor(`serve: { host: "0.0.0.0", publicUrl: "https://landrace.example.org/" }\n${OIDC}`));
+    expect(wide.problems.filter((p) => p.rule.startsWith("serve"))).toEqual([]);
+    const unnamed = await runValidate(await dirFor(`serve: { host: "0.0.0.0" }\n${OIDC}`));
+    expect(unnamed.problems.filter((p) => p.rule.startsWith("serve")).map((p) => p.rule)).toEqual(["serve.public-url"]);
   });
 });
 

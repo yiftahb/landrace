@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -23,6 +24,10 @@ import { sandboxRoot } from "#sandbox.js";
 import { tickWorkspace } from "#runner/tick.js";
 import { touchWake, wakePath } from "#wake.js";
 import { describeLoopback } from "#tests/support/loopback.js";
+import { memoryFetch } from "#tests/support/memory-http.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { workflowIn } from "#tests/support/workspace.js";
 
 /**
@@ -2060,7 +2065,12 @@ describe("runStart --once while the local person is not ready", () => {
  * what is proved is the wiring `runStart` hands the door, Host checks and all.
  */
 const DOOR_PORT = 4545;
-function inProcessDoor(): { serve: NonNullable<StartOptions["serve"]>; drive: (path: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{ status: number; body: string; headers: Record<string, string> }> } {
+function inProcessDoor(): {
+  serve: NonNullable<StartOptions["serve"]>;
+  drive: (path: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<{ status: number; body: string; headers: Record<string, string> }>;
+  /** What `runStart` handed its door, once it has. */
+  options: () => FrontDoorOptions;
+} {
   let door: FrontDoorOptions | null = null;
   const serve: NonNullable<StartOptions["serve"]> = async (opts) => {
     door = opts;
@@ -2080,7 +2090,11 @@ function inProcessDoor(): { serve: NonNullable<StartOptions["serve"]>; drive: (p
       };
       frontDoorListener(door, DOOR_PORT)(req as unknown as IncomingMessage, res as unknown as ServerResponse);
     });
-  return { serve, drive };
+  const options = (): FrontDoorOptions => {
+    if (door === null) throw new Error("runStart has not served its door yet");
+    return door;
+  };
+  return { serve, drive, options };
 }
 
 describe("runStart while the local person is not ready", () => {
@@ -2635,4 +2649,194 @@ export const spy = brand("preflight", {
       expect(printed.some((l) => l.includes("connection.failed"))).toBe(true);
     });
   }, 30_000);
+});
+
+/*
+ * #187: `people.oidc` makes the start remote. What is observed is what the
+ * door it serves answers before anyone signs in, and who its roster holds:
+ * everyone who signed in before, never the operator's own `local` file.
+ */
+describe("runStart with people.oidc", () => {
+  const REMOTE = "serve: { host: 0.0.0.0, publicUrl: \"https://landrace.example.org/\" }\n" +
+    "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n";
+
+  it("serves a door that asks who is calling, and holds who signed in before but the local file", async () => {
+    const { dir } = await fixture({ configExtra: REMOTE, items: [] });
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    await credentials.remember({ id: "local" });
+    await credentials.remember({ id: "sub-alice", email: "alice@example.invalid" });
+    const { serve, drive } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    try {
+      await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
+      expect(said.join("\n")).toContain("people sign in at http://127.0.0.1:4545/; 1 have before");
+      const page = await drive("/");
+      expect([page.status, page.headers["location"]]).toEqual([302, "/login?return=%2F"]);
+      expect((await drive("/board.json")).status).toBe(401);
+      expect((await drive("/people/me")).status).toBe(401);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  /*
+   * Which runtime answers a caller is `runStart`'s own choice, by who the
+   * session or the bearer names: the fake source lists by the person's own
+   * pasted token, so alice's runtime holds #101 and bob's #202, and a door
+   * that answered everyone from one runtime shows one of them the other's.
+   */
+  it("answers each signed-in person's /board.json and bearer /mcp from their own runtime alone", async () => {
+    const PUBLIC = "https://landrace.example.org";
+    const ALICE_TOKEN = "ghp_alice_pasted_token_long_enough";
+    const BOB_TOKEN = "ghp_bob_pasted_token_long_enough_x";
+    const { dir } = await fixture({
+      hookExtra: FORGE_CONNECTION, configExtra: REMOTE,
+      items: [{ id: "101", labels: ["lr:auto"] }, { id: "202", labels: ["lr:auto"] }],
+    });
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("secrets: { githubToken: $LR_TEST_TOKEN }", PER_PERSON_SECRET));
+    const hook = join(dir, "hooks", "fake.ts");
+    const theirs = `((ctx: { secrets: ReadonlyMap<string, string> }) => ({ nodes: graph.nodes.filter((n) => n.id === (ctx.secrets.get("forgeToken") === ${JSON.stringify(ALICE_TOKEN)} ? "101" : "202")), relationships: [] }))`;
+    const source = (await readFile(hook, "utf8"))
+      .replace("list: async (): Promise<unknown> => {", "list: async (ctx: { secrets: ReadonlyMap<string, string> }): Promise<unknown> => {")
+      .replace("    return graph;\n", `    return ${theirs}(ctx);\n`)
+      .replace("read: async (): Promise<unknown> => graph,", `read: async (_id: string, ctx: { secrets: ReadonlyMap<string, string> }): Promise<unknown> => ${theirs}(ctx),`);
+    // Both of the source's reads now list by the token, or the test proves nothing.
+    expect(source.split('ctx.secrets.get("forgeToken")').length - 1).toBe(2);
+    expect(source).not.toContain("return graph;");
+    await writeFile(hook, source);
+
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    const alice = { id: "sub-alice", email: "alice@example.invalid" };
+    const bob = { id: "sub-bob", email: "bob@example.invalid" };
+    for (const [person, token] of [[alice, ALICE_TOKEN], [bob, BOB_TOKEN]] as const) {
+      await credentials.put(person.id, person, "forge", { fields: { token }, source: "paste", connectedAt: new Date().toISOString() });
+    }
+    const { serve, drive, options } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    try {
+      await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
+      const sessions = options().remote?.sessions;
+      if (!sessions) throw new Error("runStart handed a remote door no sessions");
+      const cookieOf = (person: typeof alice): string => sessions.issue(person).split(";")[0] ?? "";
+
+      // The board, by the browser's session.
+      const rowsOf = async (cookie: string): Promise<string[] | null> => {
+        const view = JSON.parse((await drive("/board.json", { headers: { cookie } })).body) as { listed?: boolean; rows?: Array<{ id: string }> };
+        return view.listed === true ? (view.rows ?? []).map((r) => r.id) : null;
+      };
+      const [aliceCookie, bobCookie] = [cookieOf(alice), cookieOf(bob)];
+      await until(async () => (await rowsOf(aliceCookie)) !== null && (await rowsOf(bobCookie)) !== null, "both boards to list");
+      expect(await rowsOf(aliceCookie)).toEqual(["101"]);
+      expect(await rowsOf(bobCookie)).toEqual(["202"]);
+
+      // `/mcp`, by the bearer each one's own consent issued.
+      const fetch = memoryFetch(frontDoorListener(options(), DOOR_PORT));
+      const verifier = randomBytes(32).toString("base64url");
+      const challenge = createHash("sha256").update(verifier).digest("base64url");
+      const redirect = "http://127.0.0.1:33418/callback";
+      const bearerOf = async (cookie: string): Promise<string> => {
+        const registered = await fetch(`${PUBLIC}/register`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ redirect_uris: [redirect], client_name: "test", token_endpoint_auth_method: "none" }),
+        });
+        const clientId = ((await registered.json()) as { client_id: string }).client_id;
+        const page = await (await fetch(`${PUBLIC}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirect)}` +
+          `&code_challenge=${challenge}&code_challenge_method=S256&state=st-1`, { headers: { cookie } })).text();
+        const consent = /name="token" value="([^"]+)"/.exec(page)?.[1] ?? "";
+        const approved = await fetch(`${PUBLIC}/authorize/consent`, {
+          method: "POST", headers: { cookie, origin: PUBLIC, "content-type": "application/x-www-form-urlencoded" }, body: `token=${consent}&decision=approve`,
+        });
+        const code = new URL(approved.headers.get("location") ?? "").searchParams.get("code") ?? "";
+        const issued = await fetch(`${PUBLIC}/token`, {
+          method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ grant_type: "authorization_code", code, code_verifier: verifier, client_id: clientId, redirect_uri: redirect }).toString(),
+        });
+        expect(issued.status).toBe(200);
+        return ((await issued.json()) as { access_token: string }).access_token;
+      };
+      const itemsOf = async (bearer: string): Promise<string[]> => {
+        const client = new Client({ name: "test", version: "0" });
+        const withBearer: typeof globalThis.fetch = (input, init) =>
+          fetch(input, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), authorization: `Bearer ${bearer}` } });
+        await client.connect(new StreamableHTTPClientTransport(new URL(`${PUBLIC}/mcp`), { fetch: withBearer }) as unknown as Transport);
+        try {
+          const text = (await client.callTool({ name: "landrace_items", arguments: {} }) as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+          return ["101", "202"].filter((id) => text.includes(`"${id}"`));
+        } finally {
+          await client.close();
+        }
+      };
+      expect(await itemsOf(await bearerOf(aliceCookie))).toEqual(["101"]);
+      expect(await itemsOf(await bearerOf(bobCookie))).toEqual(["202"]);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  it("refuses --headless, which leaves nobody a door to sign in through", async () => {
+    const { dir } = await fixture({ configExtra: REMOTE, items: [] });
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    await expect(runStart(dir, { interactive: false, credentials, ui: false })).rejects.toThrow(/people\.oidc is set.*--headless/);
+  });
+
+  it("refuses people.oidc with no serve.publicUrl, in validate's words", async () => {
+    const { dir } = await fixture({
+      configExtra: "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n", items: [],
+    });
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    await expect(runStart(dir, { interactive: false, credentials, serve: inProcessDoor().serve })).rejects.toThrow(/serve\.public-url: people\.oidc is set and serve\.publicUrl is not/);
+  });
+});
+
+describe("landrace validate with people.oidc", () => {
+  it("says each stored person's own problem by their email, and is still ok when the instance is", async () => {
+    const { dir, credentials } = await unready("secret");
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, `${await readFile(yaml, "utf8")}serve: { host: 0.0.0.0, publicUrl: "https://landrace.example.org/" }\n` +
+      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n");
+    await credentials.put("sub-alice", { id: "sub-alice", email: "alice@example.invalid" }, "forge", {
+      fields: { token: PASTED }, source: "paste", connectedAt: new Date().toISOString(),
+    });
+    await credentials.remember({ id: "sub-bob", email: "bob@example.invalid" });
+    // The operator's own file: nobody's, remotely, so never judged.
+    await credentials.remember({ id: "local" });
+    await writeFile(join(dir, "..", ".gitignore"), ".env\n");
+    const { ok, problems, people } = await runValidate(dir, { credentials });
+    expect(problems).toEqual([]);
+    expect(ok).toBe(true);
+    expect(people).toEqual([expect.stringMatching(/^bob@example\.invalid: connection\.missing: secrets entry "forgeToken" has no value/)]);
+  });
+
+  // `start` refuses a key naming a connection no hook defines whoever is
+  // stored; a verdict that waited for someone to sign in flipped as they did.
+  it("reports connection.unknown once from the config, with nobody stored or with people stored", async () => {
+    const { dir, credentials } = await unready("secret");
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, `${(await readFile(yaml, "utf8")).replace("connection: forge.token", "connection: nope.token")}` +
+      `serve: { host: 0.0.0.0, publicUrl: "https://landrace.example.org/" }\n` +
+      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n");
+    await writeFile(join(dir, "..", ".gitignore"), ".env\n");
+    const unknown = [{ rule: "connection.unknown", message: expect.stringMatching(/"forgeToken" names connection "nope", which no hook defines/) }];
+    const empty = await runValidate(dir, { credentials });
+    expect(empty.problems).toEqual(unknown);
+    expect(empty.ok).toBe(false);
+    await credentials.remember({ id: "sub-alice", email: "alice@example.invalid" });
+    await credentials.remember({ id: "sub-bob", email: "bob@example.invalid" });
+    const stored = await runValidate(dir, { credentials });
+    expect(stored.problems).toEqual(unknown);
+    expect(stored.ok).toBe(false);
+  });
 });

@@ -105,6 +105,8 @@ export function createCredentialStore(root: string = join(homedir(), CREDENTIALS
       if (person.id !== personId) return Promise.reject(new Error(`person "${person.id}" cannot be stored as "${personId}"`));
       return change(personId, (c) => { c.person = person; c.connections[connId] = value; });
     },
+    // The person as they signed in, their connections untouched: a file with none is still someone the runner runs for.
+    remember: (person) => change(person.id, (c) => { c.person = person; }),
     remove: (personId, connId) => change(personId, (c) => { delete c.connections[connId]; }),
     list: async () => {
       const names = await readdir(root).catch((e: unknown) => {

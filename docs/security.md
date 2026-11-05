@@ -11,7 +11,7 @@ Landrace runs coding agents on your machine, over text that strangers can write,
 - **What an agent does.** An agent reads that text, so it may be steered. A step that may write runs shell commands.
 - **The repository's own files.** A workflow file, a step prompt or a hook is a file a pull request can edit, and a write step can commit one.
 - **Other websites in your browser.** Your browser can reach the board and its MCP endpoint on `127.0.0.1`.
-- **Anyone else on the network.** The board asks no one who they are, so it binds loopback only.
+- **Anyone else on the network.** Without [`people.oidc`](remote.md) the board asks no one who they are, so it binds loopback only. With it, everyone signs in and the door may listen wider; see [Remote mode](#remote-mode).
 
 **What Landrace trusts:** you, the operator, and your own configuration — `landrace.yaml`, `.env`, `.mcp.json`, your user-level agent settings. A reply on an item is read as a person's decision, but no reply can clear a security check.
 
@@ -144,12 +144,25 @@ A step's front matter carries routes, effects and capabilities, and a retro writ
 
 ## The front door
 
-The board and the operator server share one port: the board at `/`, the operator tools at `/mcp`. Nothing asks who a caller is, so the guards are where it listens and what it answers.
+The board and the operator server share one port: the board at `/`, the operator tools at `/mcp`. Without [`people.oidc`](remote.md) nothing asks who a caller is, so the guards are where it listens and what it answers. With it, see [Remote mode](#remote-mode) below; every guard here still holds.
 
-- **Loopback only.** It binds `serve.host`, which must be loopback; `validate` reports any other as `serve.unauthenticated`, and `start` refuses it. To reach it from elsewhere, put a proxy of your own that checks who you are in front of it, and name it in `serve.publicUrl`.
+- **Loopback only, unless people sign in.** It binds `serve.host`, which must be loopback without `people.oidc`; `validate` reports any other as `serve.unauthenticated`, and `start` refuses it. To reach it from elsewhere, put a proxy of your own that checks who you are in front of it, and name it in `serve.publicUrl`.
 - **Its own host names only, before routing.** Every request, `/mcp` included, is answered `421` unless its `Host` is `127.0.0.1` or `localhost` on its port, the host it bound, or `serve.publicUrl`'s host. That stops DNS rebinding: a page on another site pointing its own name at `127.0.0.1`.
 - **No other site's pages.** `/mcp` answers `403` to a request whose `Origin` names any other site, so a page you have open cannot call the operator tools through your browser.
 - **No step reaches it.** A step's agent is kept from the door three ways. An `agent.mcp` server whose URL is the door's — any of its origins, or any loopback address on its port — is refused, whatever it is named. An `agent.sandbox.hosts` entry that matches the door's host names, `127.0.0.1`, `localhost` and `serve.publicUrl`'s host, wildcards included, is refused, so a write step's commands cannot reach it. And the Claude executor denies every run `WebFetch` of each of those host names. The Codex executor adds no such deny of its own. The port these use is the one `start` serves on, `--ui-port` included.
+
+## Remote mode
+
+With [`people.oidc`](remote.md) set, the door may listen beyond loopback, because every request is someone's:
+
+- **Sign-in.** A person signs in with your provider using PKCE. The `state` is bound to a `landrace_login` cookie in the browser that began the sign-in, so a link carrying someone else's code cannot sign you in as them. An email the provider does not mark verified is refused. Where a person is sent afterwards is a path on this instance, never another site.
+- **Sessions.** The `landrace_session` cookie is `HttpOnly`, `SameSite=Lax`, and `Secure` when `serve.publicUrl` is `https`. It holds a random id only this process knows, so it cannot be forged. `validate` and `start` refuse a `serve.publicUrl` that is not `https` off loopback, which would send the cookie and every token in the clear.
+- **Each person's own.** A request with no session gets a redirect to sign in or `401`. A signed-in person reaches only their own board, items and MCP sessions, as on a local instance with several people.
+- **MCP tokens.** `/mcp` takes only a bearer token Landrace issued, and serves only the tools of the person it was issued to. Access tokens live in memory for an hour. Refresh tokens are stored hashed in a `0600` file under the credentials directory every step is denied reading, and each works once.
+- **Consent.** Anyone can register an MCP client, so a token is issued only after a signed-in person approves that client on Landrace's consent page. The page is sent with `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so another site cannot overlay it to take your click. Approve is refused with a foreign `Origin`, and without the page's one-time token, which is bound to your session and to that one authorization request and expires in ten minutes. A form on another site therefore cannot approve for you, whatever the browser does with `SameSite`.
+- **One identity, one person.** An identity value — a tracker account, say — that another person already holds is marked failed on the newcomer, whether a lookup or an admin's override gave it.
+
+Landrace checks who signed in, not what they may do: everyone who can sign in at your provider gets an instance of their own on this machine. Limit who can sign in at the provider.
 
 ## The board
 
