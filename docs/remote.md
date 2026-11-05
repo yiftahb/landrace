@@ -45,7 +45,7 @@ What Landrace checks:
 - The sign-in must finish in the browser that began it, within ten minutes, and only once. A short-lived `landrace_login` cookie carries the binding.
 - Where a person goes afterwards must be a path on this instance. Anything else, such as `//evil.example`, becomes `/`.
 
-A person is known by the provider's subject (`sub`). Their credentials file is named after it. Sessions live in memory for 12 hours: a restart signs everyone out, and they sign in again. `/logout` ends a session.
+A person is known by the provider's subject (`sub`). Their credentials file is named after it. Sessions live in memory for 12 hours: a restart signs everyone out, and they sign in again. `/logout` ends a session and shows a signed-out page. It does not sign the person out of the identity provider: on a shared computer, sign out there too. Signing in again takes a click on that page.
 
 Before signing in, a page request is redirected to `/login?return=<path>`, and any other request is answered `401`. Each is logged as `request.refused` with `person: "anonymous"`.
 

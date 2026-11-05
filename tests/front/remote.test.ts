@@ -214,6 +214,30 @@ describe("signing in at the door", () => {
   });
 });
 
+describe("signing out at the door", () => {
+  /*
+   * /logout once sent the browser on to /login, which sends it straight to
+   * the provider: with the provider's own session alive, that signed the
+   * person back in with a fresh cookie, and signing out never took effect.
+   */
+  it.each(["GET", "POST"])("on a %s, ends the session on a signed-out page, never sending the browser back to the provider", async (method) => {
+    const d = await door();
+    const cookie = await sessionOf(d, ALICE);
+    const res = await d.fetch(`${PUBLIC}/logout`, { method, headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
+    expect(res.headers.get("content-type")).toMatch(/^text\/html/);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(cookieIn(res, "landrace_session")).toBe("");
+    const html = await res.text();
+    expect(html).not.toContain(new URL(d.idp.issuer).host);
+    expect(html).not.toMatch(/http-equiv="refresh"|<script/i);
+    // Signing in again is a click on a link, never something the page does by itself.
+    expect(html).toMatch(/<a href="\/login">/);
+    expect((await d.fetch(`${PUBLIC}/board.json`, { headers: { cookie } })).status).toBe(401);
+  });
+});
+
 describe("consenting to an MCP client", () => {
   it("serves the consent page unframeable, the client's own name escaped", async () => {
     const d = await door();

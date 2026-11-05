@@ -59,6 +59,18 @@ export function frontDoorListener(opts: FrontDoorOptions, port: number): (req: I
  */
 const REMOTE_PATHS = /^\/(login|login\/callback|logout|authorize|authorize\/consent|token|register|revoke|mcp|\.well-known\/oauth-[a-z-]+(\/mcp)?)$/;
 
+/**
+ * What /logout answers. Signing in again is a link a person clicks, never a
+ * redirect or a refresh: the provider may still remember them, and would
+ * hand them a new session without asking.
+ */
+const SIGNED_OUT = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Signed out — Landrace</title></head>
+<body><h1>You are signed out of Landrace</h1>
+<p>Your identity provider may still have you signed in. On a shared computer, sign out there too.</p>
+<p><a href="/login">Sign in again</a></p></body></html>
+`;
+
 /** The cookie that binds a sign-in to the browser that began it, sent back only to the callback. */
 const LOGIN_COOKIE = "landrace_login";
 
@@ -131,8 +143,13 @@ function remoteApp(
   });
 
   // A GET too: signing someone out from another site is a nuisance, never a way in.
+  // It lands on a page of its own: sent on to /login, the provider's own live
+  // session signed the person straight back in, and signing out never took effect.
   app.all("/logout", (req, res) => {
-    res.set({ "set-cookie": door.sessions.end(req), "cache-control": "no-store" }).redirect(302, "/login");
+    res.status(200).set({
+      "set-cookie": door.sessions.end(req), "cache-control": "no-store", "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; frame-ancestors 'none'", "x-frame-options": "DENY",
+    }).type("html").send(SIGNED_OUT);
   });
 
   app.use(auth.router);
