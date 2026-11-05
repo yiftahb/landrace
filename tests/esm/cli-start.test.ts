@@ -383,8 +383,8 @@ describe("buildWorkspaceRuntime", () => {
     expect(JSON.stringify(page)).not.toContain(TOKEN);
   });
 
-  // The page's panel reads the workspace's one log, the one every workflow's steps write to.
-  it("hands the page the one activity log every workflow writes to", async () => {
+  // The page's panel reads the person's one log, the one every workflow's steps write to.
+  it("hands the page the person's one activity log every workflow writes to", async () => {
     const { dir } = await fixture();
     await withFast(dir);
     const rt = await buildWorkspaceRuntime(dir, {});

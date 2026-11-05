@@ -4247,3 +4247,31 @@ describe("the top bar's logo", () => {
     expect(logo?.[2]).not.toMatch(/id="(folder|meta)"/);
   });
 });
+
+/*
+ * #208: remotely, /people/me declines with 409 for a person Landrace has not
+ * judged yet. The tab says so in the server's words, and once an answer
+ * comes on a later poll, the sentence goes.
+ */
+describe("the Integrations tab before the person is judged", () => {
+  it("shows the server's refusal, then clears it once /people/me answers", async () => {
+    const els = new Map(["integrations-status", "integrations-note", "integrations-list"].map((id) => [id, new FakeElement("div")]));
+    const answers = [
+      { ok: false, status: 409, text: async () => "sub-carol's connections are not ready yet; try again in a moment" },
+      { ok: true, status: 200, json: async () => ({ ready: false, connections: [], hints: {}, fields: {} }) },
+    ];
+    const c: Record<string, unknown> = {
+      document: { ...fakeDocument, getElementById: (id: string) => els.get(id) },
+      fetch: async () => answers.shift(),
+      integrationsBusy: () => false, integrationRow: () => new FakeElement("li"),
+      el: (tag: string, cls: string, text: string) => Object.assign(new FakeElement(tag), { className: cls, text }),
+    };
+    runInNewContext(`let meKey = null; let meRefusal = null; ${fnSource("loadMe")}`, c);
+    const status = (): string => els.get("integrations-status")?.textContent ?? "";
+    await runInNewContext("loadMe()", c);
+    expect(status()).toBe("sub-carol's connections are not ready yet; try again in a moment");
+    await runInNewContext("loadMe()", c);
+    expect(status()).toBe("");
+    expect(els.get("integrations-note")?.textContent).toBe("Landrace runs nothing until each connection it needs is made.");
+  });
+});

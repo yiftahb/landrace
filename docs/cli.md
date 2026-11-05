@@ -10,7 +10,7 @@ landrace start    [-w, --workspace <dir>] [--once] [--debug] [--ui-port <port>] 
                   [--telemetry] [--otel KEY=VALUE]...
 landrace port     [-w, --workspace <dir>]
 landrace next     -w, --workspace <dir> [--workflow <id>] -s, --snapshot <file>
-landrace mcp      -w, --workspace <dir> --workflow <id> --child <parent> --stage <stage> --round <round>
+landrace mcp      -w, --workspace <dir> --workflow <id> --person <id> --child <parent> --stage <stage> --round <round>
 landrace version
 landrace update
 ```
@@ -239,7 +239,7 @@ The generated files are gitignored, so run it after cloning. Then ask your clien
 ## landrace mcp
 
 ```text
-landrace mcp -w, --workspace <dir> --workflow <id> --child <parent> --stage <stage> --round <round>
+landrace mcp -w, --workspace <dir> --workflow <id> --person <id> --child <parent> --stage <stage> --round <round>
 ```
 
 `landrace mcp` runs only the stdio servers Landrace starts for itself. Run bare, as an editor configured before the operator server moved to `/mcp` still runs it, it reads no configuration, prints this on stderr and exits 1:
@@ -248,11 +248,13 @@ landrace mcp -w, --workspace <dir> --workflow <id> --child <parent> --stage <sta
 landrace mcp: the operator's tools are no longer served over stdio. `landrace start` serves them over HTTP beside the board, at /mcp on serve.port (4545 by default). Point your editor's MCP client at it instead, over HTTP: http://127.0.0.1:4545/mcp
 ```
 
-**A pairing's server.** `start` hands a pairing's session `landrace mcp --workspace <dir> --workflow <id> --pairing`: the operator tools over stdio, scoped to that workflow. Like `start`, it runs each hook's preflight and lists every distinct tracker once before it answers, and refuses `OTEL_LOGS_EXPORTER=console`, which would write into its protocol. `--pairing` is hidden from `--help` and needs `--workflow`.
+**A pairing's server.** `start` hands a pairing's session `landrace mcp --workspace <dir> --workflow <id> --person=local --pairing`: the operator tools over stdio, scoped to that workflow. Like `start`, it runs each hook's preflight and lists every distinct tracker once before it answers, and refuses `OTEL_LOGS_EXPORTER=console`, which would write into its protocol. `--pairing` is hidden from `--help` and needs `--workflow`. It serves only the local person, and refuses any other `--person`.
 
 ### The child server
 
-The runner starts this itself, beside the agent of a step that declares `items:create`, as the pairing's command with `--child <parent> --stage <stage> --round <round>` added. It serves exactly one tool, `landrace_create_child`, bound on its command line to the parent item, the creating stage and round, and the workflow. `--child` needs `--stage`, `--round` and `--workflow`, and takes precedence over `--pairing`. See [Workflows](workflows.md#splitting-work-into-sub-items).
+The runner starts this itself, beside the agent of a step that declares `items:create`, as the pairing's command with `--child <parent> --stage <stage> --round <round>` added. It serves exactly one tool, `landrace_create_child`, bound on its command line to the parent item, the creating stage and round, and the workflow. `--child` needs `--stage`, `--round`, `--workflow` and `--person`, and takes precedence over `--pairing`. See [Workflows](workflows.md#splitting-work-into-sub-items).
+
+`--person` is whose step it serves, and so whose connections each sub-item is created with. A local instance passes `local`, and refuses any other id. A remote instance (`people.oidc` set) passes the signed-in person's id, and the server judges them as `start` does, from their own connections with `.env` ignored for each per-person key. It refuses an id the credentials store does not hold, the `local` person, and a person whose connections are not ready.
 
 ## landrace version
 
