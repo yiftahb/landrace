@@ -43,7 +43,11 @@ class FakeElement {
   setAttribute(k: string, v: string): void { this.attrs.set(k, String(v)); }
   getAttribute(k: string): string | null { return this.attrs.get(k) ?? null; }
   append(...nodes: FakeElement[]): void { this.children.push(...nodes); }
-  addEventListener(): void {}
+  replaceChildren(...nodes: FakeElement[]): void { this.children = [...nodes]; }
+  readonly handlers = new Map<string, Array<() => void>>();
+  addEventListener(type: string, fn: () => void): void { this.handlers.set(type, [...(this.handlers.get(type) ?? []), fn]); }
+  /** What a click on it runs, as the browser would. */
+  click(): void { for (const fn of this.handlers.get("click") ?? []) fn(); }
 }
 const fakeDocument = {
   createElement: (tag: string) => new FakeElement(tag),
@@ -1300,10 +1304,10 @@ describe("an artifact row", () => {
     system: { name: string; icon: { bg: string; glyph: string } | null } | null;
   }
   const NOW = Date.parse("2026-09-28T12:00:00Z");
-  const build = (row: Artifact, depth = 1): FakeElement => runInNewContext(`
-    ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}
-    ${["rowKey", "el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "kindMark", "ago", "external", "treeItem", "toggleFor", "toggleSlot", "artifactRowFor"].map(fnSource).join("")}
-    artifactRowFor(ROW, ${depth}, ROW.children.length > 0, NOW, "waiting")`, { ROW: row, NOW, document: fakeDocument }) as FakeElement;
+  const build = (row: Artifact, depth = 1, extra: Record<string, unknown> = {}): FakeElement => runInNewContext(`
+    ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${constSource("COPY_SHAPES")}${constSource("CHECK_SHAPES")}
+    ${["rowKey", "el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "kindMark", "ago", "external", "treeItem", "toggleFor", "toggleSlot", "copyText", "strokeIcon", "copyLinkFor", "artifactRowFor"].map(fnSource).join("")}
+    artifactRowFor(ROW, ${depth}, ROW.children.length > 0, NOW, "waiting")`, { ROW: row, NOW, document: fakeDocument, navigator: {}, ...extra }) as FakeElement;
   const spec: Artifact = {
     id: "spec-19", kind: "document", title: "Spec: Payments revamp", link: "https://acme.github.io/widgets/specs/19/",
     system: { name: "GitHub Pages", icon: { bg: "#24292f", glyph: "GH" } }, closed: null, children: [],
@@ -1422,9 +1426,98 @@ describe("an artifact row", () => {
   it("keeps the toggle in its own column ahead of the link, so the mark lines up with an item's number", () => {
     const leaf = build(spec, 2);
     expect(leaf.className.split(" ")).toContain("pl-16");
-    expect(leaf.children.map((c) => c.tag)).toEqual(["span", "a"]);
+    expect(leaf.children.map((c) => c.tag)).toEqual(["span", "a", "button"]);
     const parent = build({ ...pr, children: [spec] }, 2);
-    expect(parent.children.map((c) => [c.tag, c.getAttribute("data-key")])).toEqual([["button", "waiting/pr:118:toggle"], ["a", "waiting/pr:118:link"]]);
+    expect(parent.children.map((c) => [c.tag, c.getAttribute("data-key")])).toEqual([
+      ["button", "waiting/pr:118:toggle"], ["a", "waiting/pr:118:link"], ["button", "waiting/pr:118:copy-link"],
+    ]);
+  });
+
+  // #199: the row's one action opened the link, with no way to copy it.
+  describe("its copy-link button", () => {
+    const copyOf = (li: FakeElement): FakeElement | undefined => li.children.find((c) => c.getAttribute("data-key")?.endsWith(":copy-link"));
+    const shapes = (b: FakeElement | undefined): string[] => (b?.children[0]?.children ?? []).map((c) => c.tag);
+    const said = (b: FakeElement | undefined): [string | null, string | undefined] => [b?.getAttribute("aria-label") ?? null, b?.title];
+    // A clipboard that answers as the test says, and timers it runs by hand.
+    const harness = (clipboard: { writeText: (t: string) => Promise<void> } | undefined) => {
+      const timers: Array<{ fn: () => void; ms: number; live: boolean }> = [];
+      const li = build(spec, 1, {
+        navigator: clipboard ? { clipboard } : {},
+        setTimeout: (fn: () => void, ms: number) => { timers.push({ fn, ms, live: true }); return timers.length - 1; },
+        clearTimeout: (id: number) => { const t = timers[id]; if (t) t.live = false; },
+      });
+      const fire = (): void => { for (const t of timers.splice(0)) if (t.live) t.fn(); };
+      return { button: copyOf(li), timers, fire };
+    };
+    const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+    it("follows the row's link as its sibling, never inside it, an icon button keyed apart from the row menu's Copy prompt", () => {
+      const li = build(spec);
+      const a = link(li);
+      const button = copyOf(li);
+      expect(a).toBeDefined();
+      expect(li.children.indexOf(button as FakeElement)).toBe(li.children.indexOf(a as FakeElement) + 1);
+      expect(descendants(a as FakeElement)).not.toContain(button);
+      expect(a?.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "flex-1"]));
+      expect([button?.tag, button?.type]).toEqual(["button", "button"]);
+      // ICON_BUTTON, as the top bar's ⋯ is drawn: shrink-0, so the link grows instead.
+      expect(button?.className).toBe(/<button id="board-more"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1]);
+      expect(button?.className.split(" ")).toContain("shrink-0");
+      expect(said(button)).toEqual(["Copy link", "Copy link"]);
+      expect(button?.getAttribute("data-key")).toBe("waiting/spec-19:copy-link");
+      // Two overlapping squares, inline, in the page's stroke style.
+      expect(shapes(button)).toEqual(["rect", "path"]);
+      expect(button?.children[0]?.getAttribute("stroke")).toBe("currentColor");
+      expect(button?.children[0]?.getAttribute("aria-hidden")).toBe("true");
+    });
+
+    it("is not drawn on a row with no link", () => {
+      const li = build({ ...spec, link: "", system: null });
+      expect(copyOf(li)).toBeUndefined();
+      expect(descendants(li).filter((d) => d.tag === "button")).toEqual([]);
+    });
+
+    it("writes row.link to the clipboard, says Copied with a check for 2 seconds, then restores", async () => {
+      const written: string[] = [];
+      const h = harness({ writeText: (t) => { written.push(t); return Promise.resolve(); } });
+      h.button?.click();
+      await settle();
+      expect(written).toEqual([spec.link]);
+      expect(said(h.button)).toEqual(["Copied", "Copied"]);
+      expect(shapes(h.button)).toEqual(["polyline"]);
+      expect(h.timers.map((t) => t.ms)).toEqual([2000]);
+      h.fire();
+      expect(said(h.button)).toEqual(["Copy link", "Copy link"]);
+      expect(shapes(h.button)).toEqual(["rect", "path"]);
+    });
+
+    it("says Copy failed for 2 seconds, keeping its icon, when the write is refused", async () => {
+      const h = harness({ writeText: () => Promise.reject(new Error("denied")) });
+      h.button?.click();
+      await settle();
+      expect(said(h.button)).toEqual(["Copy failed", "Copy failed"]);
+      expect(shapes(h.button)).toEqual(["rect", "path"]);
+      expect(h.timers.map((t) => t.ms)).toEqual([2000]);
+      h.fire();
+      expect(said(h.button)).toEqual(["Copy link", "Copy link"]);
+    });
+
+    it("says Copy failed where the browser has no clipboard at all", async () => {
+      const h = harness(undefined);
+      h.button?.click();
+      await settle();
+      expect(said(h.button)).toEqual(["Copy failed", "Copy failed"]);
+    });
+
+    it("restarts its 2 seconds on a second click, rather than restoring under the second answer", async () => {
+      const h = harness({ writeText: () => Promise.resolve() });
+      h.button?.click();
+      await settle();
+      h.button?.click();
+      await settle();
+      expect(h.timers.filter((t) => t.live)).toHaveLength(1);
+      expect(said(h.button)).toEqual(["Copied", "Copied"]);
+    });
   });
 });
 
@@ -1677,7 +1770,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the top bar's ⋯ menu and its three entries, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, the bell's and the Integrations tab's — no more, no less", () => {
+  it("wires exactly the top bar's ⋯ menu and its three entries, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, an artifact row's copy-link, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, the bell's and the Integrations tab's — no more, no less", () => {
     // Pins the count deliberately: the top bar's ⋯, its Integrations and its
     // Run next tick now, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
@@ -1700,9 +1793,9 @@ describe("the page", () => {
     // notification's (defined once, in notifyOf). And the message box's
     // Ctrl/⌘+Enter. And the Integrations tab's: one submit and one click, each
     // on its list, and its Back.
-    // And the ⋯ menu's Source code (#199).
+    // And the ⋯ menu's Source code, and an artifact row's copy-link (defined once, in copyLinkFor) (#199).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(36);
+    expect(listeners).toHaveLength(37);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -3088,7 +3181,7 @@ describe("the pairing's command, once handed out", () => {
   const SEEDED = "cd /w/29.pair && claude 'seed' --session-id u";
   const run = async (source: string, clipboard?: object) => {
     const ctx = { navigator: { clipboard }, pairing: { shown: true, command: SEEDED, note: "" }, renderPanel: () => {}, loadPairing: () => {} };
-    runInNewContext(`${fnSource(source)} ${source}()`, ctx);
+    runInNewContext(`${fnSource("copyText")}${fnSource(source)} ${source}()`, ctx);
     await new Promise((r) => setImmediate(r));
     return ctx.pairing;
   };

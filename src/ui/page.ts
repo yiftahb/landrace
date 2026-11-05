@@ -763,8 +763,7 @@ function buildRowMenu(row) {
   copy.addEventListener("click", () => {
     if (copyRestoreTimer !== null) clearTimeout(copyRestoreTimer);
     const restore = () => { copyRestoreTimer = setTimeout(() => { copy.textContent = COPY_LABEL; copyRestoreTimer = null; }, 2000); };
-    const clipboard = navigator.clipboard;
-    (clipboard ? clipboard.writeText(row.chat.prompt) : Promise.reject(new Error("no clipboard"))).then(
+    copyText(row.chat.prompt).then(
       () => { copy.textContent = "Copied"; restore(); },
       () => { copy.textContent = "Copy failed"; restore(); },
     );
@@ -1258,7 +1257,58 @@ function artifactRowFor(row, depth, open, now, lane) {
     line.append(arrow);
   }
   li.append(toggleSlot(row, open, lane), line);
+  if (row.link) li.append(copyLinkFor(row, lane));
   return li;
+}
+
+// The clipboard write every copy control makes. A browser with no clipboard
+// — a page served over plain http, say — refuses, as a refused write does.
+function copyText(text) {
+  const clipboard = navigator.clipboard;
+  return clipboard ? clipboard.writeText(text) : Promise.reject(new Error("no clipboard"));
+}
+
+// The header's icons' stroke style, at the size they are drawn.
+function strokeIcon(shapes) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  for (const [k, v] of [["viewBox", "0 0 24 24"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "2"],
+    ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["class", "h-4 w-4"], ["aria-hidden", "true"]]) svg.setAttribute(k, v);
+  for (const [tag, attrs] of shapes) {
+    const shape = document.createElementNS(SVG_NS, tag);
+    for (const k in attrs) shape.setAttribute(k, attrs[k]);
+    svg.append(shape);
+  }
+  return svg;
+}
+
+// Two overlapping squares, the front one rounded, and the check it turns into once copied.
+const COPY_SHAPES = [["rect", { x: "9", y: "9", width: "13", height: "13", rx: "2" }], ["path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" }]];
+const CHECK_SHAPES = [["polyline", { points: "20 6 9 17 4 12" }]];
+
+// Beside the row's link, never inside it, so copying never opens the tab. Its
+// key is the row's own, so a poll's redraw keeps focus on it, and never the
+// row menu's Copy prompt's.
+function copyLinkFor(row, lane) {
+  const button = el("button", "${ICON_BUTTON}");
+  button.type = "button";
+  button.setAttribute("data-key", rowKey(lane, row.id) + ":copy-link");
+  let timer = null;
+  const show = (label, shapes) => {
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.replaceChildren(strokeIcon(shapes));
+  };
+  show("Copy link", COPY_SHAPES);
+  button.addEventListener("click", () => {
+    if (timer !== null) clearTimeout(timer);
+    const answered = (label, shapes) => {
+      if (timer !== null) clearTimeout(timer);
+      show(label, shapes);
+      timer = setTimeout(() => { show("Copy link", COPY_SHAPES); timer = null; }, 2000);
+    };
+    copyText(row.link).then(() => answered("Copied", CHECK_SHAPES), () => answered("Copy failed", COPY_SHAPES));
+  });
+  return button;
 }
 
 // Depth-first, drawing a row's children only while it is open. \`seen\` is the
@@ -2485,8 +2535,7 @@ function openPairing(id) {
 // Copied, it is dropped: once run, the seeded line refuses its own session
 // id, and only Get command again answers with the line that resumes it.
 function copyCommand() {
-  const clipboard = navigator.clipboard;
-  (clipboard ? clipboard.writeText(pairing.command) : Promise.reject(new Error("no clipboard"))).then(
+  copyText(pairing.command).then(
     () => { pairing.command = null; pairing.note = "Copied: run it in your terminal. Get command again to rejoin later."; renderPanel(); },
     () => { pairing.note = "Could not copy: select the command above and copy it."; renderPanel(); },
   );
