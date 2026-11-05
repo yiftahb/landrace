@@ -59,13 +59,17 @@ export function personValues(
 /**
  * `landrace.yaml` as the one local person runs it: `loadConfig`, then their
  * store for each per-person key their variable left unanswered. A
- * configuration with no per-person key never opens the store.
+ * configuration with no per-person key never opens the store. `personId`
+ * reads another person's store the same way: the runner's roster has one
+ * configuration per person.
  */
-export async function loadLocalConfig(dir: string, store: CredentialStore = createCredentialStore()): Promise<LocalConfig> {
+export async function loadLocalConfig(
+  dir: string, store: CredentialStore = createCredentialStore(), personId: string = LOCAL_PERSON_ID,
+): Promise<LocalConfig> {
   const configured = await loadConfig(dir);
   if (perPersonKeys(configured.config).length === 0) return { dir, configured, loaded: configured, credentials: null, problems: [] };
-  const credentials = await store.read(LOCAL_PERSON_ID);
-  return { dir, configured, ...personValues(dir, configured, credentials), credentials };
+  const credentials = await store.read(personId);
+  return { dir, configured, ...personValues(dir, configured, credentials, personId), credentials };
 }
 
 /** One refusal of every problem, each line `rule: message`, as `validate` prints them. */

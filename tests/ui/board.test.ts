@@ -961,6 +961,31 @@ describe("boardView: rows", () => {
 });
 
 describe("createBoard", () => {
+  /*
+   * #185: a board is one person's, and has an item only once a listing of
+   * theirs shows it; an item more than one person claims is a row naming
+   * them, open or closed, with no write offered.
+   */
+  it("has an item its last listing shows and no other, and any item before the first", () => {
+    const b = createBoard({ workflows: ONLY, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+    expect(b.has?.("2")).toBe(true);
+    b.list(listingOf(graph([item("1")])));
+    expect([b.has?.("1"), b.has?.("2")]).toEqual([true, false]);
+  });
+
+  it("draws an item claimed by more than one person as a row naming them, open or closed", async () => {
+    const b = createBoard({ workflows: ONLY, held: async () => null, folder: "f", workspace: "/w", nest: [] });
+    const listed = listingOf(graph([item("7"), item("8", { closed: "done" })]));
+    b.list({ ...listed, claims: { ...listed.claims, owner: new Map(), ambiguous: new Map([["7", ["alice", "bob"]], ["8", ["alice", "bob"]]]) } });
+    const rows = flatten((await b.view()).rows).filter((r) => !r.context);
+    const said = "claimed by more than one person: alice and bob";
+    const drawn = rows.filter((r) => r.id === "7" || r.id === "8");
+    expect(new Set(drawn.map((r) => r.id))).toEqual(new Set(["7", "8"]));
+    // Each copy of a row the board draws, on whichever page.
+    for (const r of drawn) expect([r.badge, r.note, r.retry, r.goto]).toEqual(["needs-you", said, null, []]);
+    expect(b.ownerOf("7")).toEqual({ refused: `#7 is ${said}; act on it after one person alone has it` });
+  });
+
   it("reports that nothing has been listed until the first list", async () => {
     const b = createBoard({ workflows: ONLY, held: async () => null, folder: "f", workspace: "/w", nest: [] });
     expect((await b.view()).listed).toBe(false);

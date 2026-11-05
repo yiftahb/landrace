@@ -51,6 +51,8 @@ const scrubberFor = (deps: ConvergeDeps): ((text: string) => string) => scrubber
  */
 export async function converge(item: string, deps: ConvergeDeps): Promise<ConvergeResult> {
   const root = deps.sandbox?.root;
+  // The person's own folder of worktrees, remotely; locally there is none.
+  const scope = deps.sandbox?.scope;
   let entered = false;
 
   // Created at the first invoke — a converge that never runs a step never pays
@@ -84,7 +86,7 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
         const keep = on?.write === true;
         if (keep) kept = true;
         else entered = true;
-        const path = await ensureWorktree(item, root, on, keep ? keptSlot(item) : item, { signal: deps.ctx.signal });
+        const path = await ensureWorktree(item, root, on, keep ? keptSlot(item) : item, { signal: deps.ctx.signal, scope });
         const setup = deps.sandbox?.worktree;
         if (write && setup) await prepareWorktree({ item, path, root, setup, log: deps.log, signal: deps.ctx.signal });
         return path;
@@ -105,11 +107,11 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
 
   try {
     const result = await converging(item, deps, enter, take);
-    if (result.settled === "terminal" && root !== undefined) await removeWorktree(item, root, keptSlot(item));
+    if (result.settled === "terminal" && root !== undefined) await removeWorktree(item, root, keptSlot(item), scope);
     return result;
   } finally {
-    if (entered && root !== undefined) await removeWorktree(item, root);
-    if (kept && root !== undefined) await releaseWorktree(item, root);
+    if (entered && root !== undefined) await removeWorktree(item, root, item, scope);
+    if (kept && root !== undefined) await releaseWorktree(item, root, scope);
     if (slotted) deps.slot?.give();
   }
 }

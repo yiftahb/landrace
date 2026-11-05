@@ -22,7 +22,7 @@ function door(over: Partial<FrontDoorOptions> = {}) {
   let wakes = 0;
   const mcp = createMcpEndpoint({
     workflows: workflows.map((w) => w.id),
-    toolsFor: (scope): Tools => {
+    toolsFor: (_caller, scope): Tools => {
       scopes.push(scope);
       return createTools(workflows, tracker.ctx, { wake: () => { wakes++; }, ...(scope === undefined ? {} : { scope }) });
     },

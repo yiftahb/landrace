@@ -96,6 +96,12 @@ function foreignWrite(req: IncomingMessage, action: string, origins: readonly st
 /** The item panel's routes: one item, named in the path, and what is asked of it. */
 const PANEL_PATH = /^\/items\/([^/]+)\/(activity|conversation|reply|ask|resolve|pairing|pair|finish|release)$/;
 
+/** Every route about one item: the panel's, a Retry, Clear, Go to and Start work. */
+const ITEM_PATH = /^\/items\/([^/]+)\//;
+
+/** The panel's Pairing section: its read and its three writes. */
+const PAIRING_PATH = /^\/items\/[^/]+\/(pairing|pair|finish|release)$/;
+
 /** Far past what a record carries (conventions' own cap is 32 KiB): the post's own check words the limit. */
 const MAX_BODY_BYTES = 256 * 1024;
 
@@ -412,6 +418,28 @@ export function boardListener(opts: UiOptions): (req: IncomingMessage, res: Serv
     const unready = opts.ready !== undefined && !opts.ready();
     if (unready && (path === "/tick" || path === "/refresh" || path.startsWith("/items/"))) {
       send(res, 409, "text/plain; charset=utf-8", UNREADY);
+      return;
+    }
+
+    // An item not on this caller's board is not there, whoever's it is: one
+    // person never reaches another's item, nor learns that it exists. An id
+    // that does not decode is the routes' own 400.
+    const named = ITEM_PATH.exec(path);
+    if (named && opts.has) {
+      let item: string | null = null;
+      try {
+        item = decodeURIComponent(named[1] ?? "");
+      } catch {
+        item = null;
+      }
+      if (item !== null && !opts.has(item)) {
+        send(res, 404, "text/plain; charset=utf-8", "not found");
+        return;
+      }
+    }
+    // A remote instance offers no pairing: its people have no terminal here to join one from.
+    if (opts.pairing === false && PAIRING_PATH.test(path)) {
+      send(res, 404, "text/plain; charset=utf-8", "not found");
       return;
     }
 

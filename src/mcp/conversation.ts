@@ -208,6 +208,9 @@ export function createConversation(deps: ConversationDeps): Conversation {
           // that cannot be held to it must not start.
           const { workflow, declared, step } = stepBehind(item, stage);
           const root = deps.sandbox?.root;
+          // A remote person's folder, as converge cuts theirs in: in the shared
+          // root a turn met another person's same-numbered item.
+          const scope = deps.sandbox?.scope;
           // Where the step worked, which is where its session continues: the
           // stage's branch when it names one — converge's own rule, so a turn
           // on a build commits where the build did rather than onto a
@@ -272,7 +275,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
               const on = branch.branch === null
                 ? undefined
                 : { branch: branch.branch, write: mayWriteRepo(step.capabilities) };
-              sandbox = { path: await ensureWorktree(item, root, on, item, { signal: turnSignal }) };
+              sandbox = { path: await ensureWorktree(item, root, on, item, { signal: turnSignal, scope }) };
             }
 
             // Read before the agent runs, and a failure refuses the turn
@@ -373,7 +376,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
 
             return { reply, resolved };
           } finally {
-            if (sandbox !== undefined && root !== undefined) await removeWorktree(item, root);
+            if (sandbox !== undefined && root !== undefined) await removeWorktree(item, root, item, scope);
           }
         },
         { holder: `mcp:ask:${process.pid}`, waitMs: WAIT_FOR_LOOP_MS, deadlineMs: TURN_DEADLINE_MS, ...deps.lock },

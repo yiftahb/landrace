@@ -61,8 +61,8 @@ round the branch already holds the earlier work: build on it, do not start
 over. Done when you know every file you will touch. That means every place
 the code draws each thing the spec names: a rule about a kind of thing — a
 lane's header, a control — holds for each one however it is built, not only
-the form an example or an aside in the spec describes, and its test tries each
-form. A change to what follows a state holds for every action that can reach
+the form an example or an aside in the spec describes — a claim is an owner, a
+conflict and a clash alike — and its test tries each form. A change to what follows a state holds for every action that can reach
 it — each control, tool and record that leads in, not only those the spec
 lists. It also means every place that still states what the change replaces, in
 code, a comment, `README.md`, `docs/` or the architecture map in
@@ -77,16 +77,20 @@ a scroll into view that assumed nothing covers the window's top, every
 existing caller and test of a function you give a side effect — a spawned
 process, a network call — reaching it through the outermost entry point, each
 of which must be able to inject a stub. A value you hand what runs work — a
-person's credential, a setting — reaches it on every path that builds it — a
-step, a screener, a tool's turn — and each path judges the value and catches its
+person's credential, a setting, a sandbox's scope — reaches it on every path that builds it — a
+step, a screener, a tool's turn, each caller of the function that takes it, found by searching for its calls — and each path judges the value and catches its
 failure as the first does, blamed on the part that path built; a value that
 something renews — a refresher, a retry — is judged by each gate only after
 the renewal has had its chance, a gate at start before the first pass included. And when what was built once becomes
 built again — a reload, a rebuild — it means each value that build makes, not
 only those the spec names: a record of what is in flight or already sent is
 shared across builds, what is read from configuration is judged from the
-latest build, never kept by a part built once from the first, and each check
-the old path ran still runs on the new one before it is reached.
+latest build, never kept by a part built once from the first, what a build
+registered on something shared — a listener, a queue — is let go when another
+replaces it, and each check the old path ran still runs on the new one before
+it is reached. A value one pass keeps for the next — the set it last judged —
+is set or cleared on every branch of the pass, the shortcut for one or for none
+included.
 
 **Step 2 — Bring the branch up to date with the default branch.** Merge
 origin's default branch: `git merge "$(git rev-parse --abbrev-ref origin/HEAD)"`.

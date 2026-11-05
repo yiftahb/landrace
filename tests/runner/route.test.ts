@@ -1,6 +1,7 @@
 import { claimItems } from "#core/index.js";
 import type { Graph, ListedWorkflow, Node, Source, Workflow, WorkspaceListing } from "#namespace.js";
 import { displayOf, editRoute, readRoute, writeOwnerOf, writeRoute } from "#runner/route.js";
+import { excludeAmbiguous } from "#runner/tick.js";
 
 const flow = (label: string): Workflow => ({
   version: 1, name: label, description: "test",
@@ -138,5 +139,20 @@ describe("displayOf: what the page is shown of each listing", () => {
 
   it("shows nothing new while a source that failed has never listed at all", () => {
     expect(displayOf(WORKFLOWS)(listing([graph(item("1", ["lr:auto"])), graph()], new Map([[1, "tracker down"]])))).toBeNull();
+  });
+});
+
+describe("an item the last tick found claimed by more than one person", () => {
+  const refused = { refused: "#7 is claimed by more than one person: alice and bob; act on it after one person alone has it" };
+
+  it("is written to through no workflow, a goto's included, and the refusal names the people", () => {
+    const open = excludeAmbiguous(listing([graph(item("7", ["lr:auto"])), graph()]), new Map([["7", ["alice", "bob"]]]));
+    expect(writeOwnerOf(open, "7")).toEqual(refused);
+    expect(writeRoute(open, "7", { closed: true })).toEqual(refused);
+  });
+
+  it("leaves every item this person's listing does not hold ambiguous as it was", () => {
+    const other = excludeAmbiguous(listing([graph(item("8", ["lr:auto"])), graph()]), new Map([["7", ["alice", "bob"]]]));
+    expect(writeOwnerOf(other, "8")).toEqual({ workflow: "main" });
   });
 });

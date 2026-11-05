@@ -20,8 +20,9 @@ const exec = promisify(execFile);
 export const keptSlot = (item: string): string => `${item}.write`;
 
 /** The items that have a kept write worktree under this repository's sandbox, by its slot's folder. */
-export async function keptItems(repoRoot: string): Promise<string[]> {
-  const names = await readdir(await rootFor(repoRoot));
+export async function keptItems(repoRoot: string, scope?: string): Promise<string[]> {
+  const root = await rootFor(repoRoot);
+  const names = await readdir(scope === undefined ? root : join(root, scopeDir(scope)));
   return names.filter((n) => n.endsWith(".write")).map((n) => n.slice(0, -".write".length));
 }
 
@@ -79,14 +80,29 @@ async function rootFor(repoRoot: string): Promise<string> {
  * compares both ends after fs.realpath, so a path that exists but leads
  * somewhere else is refused rather than followed.
  */
-export async function pathFor(item: string, repoRoot: string): Promise<string> {
+export async function pathFor(item: string, repoRoot: string, scope?: string): Promise<string> {
   const root = await rootFor(repoRoot);
-  const where = await containedPath(root, item);
+  const relative = scope === undefined ? item : join(scopeDir(scope), item);
+  const where = await containedPath(root, relative);
   if (where.ok) return where.path;
   // Not there yet, which is the ordinary case — and the shape check and the
   // containment check both ran before the lookup that said so.
-  if (where.kind === "missing") return join(root, item);
+  if (where.kind === "missing") return join(root, relative);
   throw new Error(`refusing to touch a sandbox for #${item} under ${root}: that path ${where.reason}`);
+}
+
+/**
+ * A person's folder under the sandbox root: their id as `Sandbox.scope`
+ * holds it, encoded, which no separator survives. Refused when it would name
+ * the root itself, or its parent — `.` and `..` encode as themselves — or
+ * an item's own folder: a kept slot ends `.write`, and a sweep reading the
+ * root would take the folder for one.
+ */
+function scopeDir(scope: string): string {
+  if (scope === "" || scope === "." || scope === ".." || scope.includes("/") || scope.includes("\\") || scope.endsWith(".write")) {
+    throw new Error(`refusing "${scope}" as a person's sandbox folder: it is not an encoded person id`);
+  }
+  return scope;
 }
 
 /** git's own message, not a stack trace: an operator can act on "not a git repository". */
@@ -292,10 +308,11 @@ export async function ensureWorktree(
    * removing `<item>` as they run — never touch.
    */
   slot: string = item,
-  { signal, timeoutMs = FETCH_TIMEOUT_MS }: Partial<RemoteGuard> = {},
+  /** `scope`: the person's folder its slots are in (`Sandbox.scope`); absent, the root's own. */
+  { signal, timeoutMs = FETCH_TIMEOUT_MS, scope }: Partial<RemoteGuard> & { scope?: string | undefined } = {},
 ): Promise<string> {
   const guard = { signal, timeoutMs };
-  const path = await pathFor(slot, repoRoot);
+  const path = await pathFor(slot, repoRoot, scope);
   const what = `could not create a worktree for #${item}`;
   // Pruned first, so a registration whose directory is already gone reads as
   // gone rather than as a worktree to reuse or a branch someone still holds.
@@ -307,7 +324,7 @@ export async function ensureWorktree(
   // item's own kept worktree holds no one's work but a step's commits, so it
   // is never a reason to leave the branch behind; it is reset onto the branch
   // when it is next reused.
-  const kept = await pathFor(keptSlot(item), repoRoot);
+  const kept = await pathFor(keptSlot(item), repoRoot, scope);
   const holder = on === undefined ? undefined : all.find((w) => w.branch === on.branch && w.path !== path && w.path !== kept);
   const local = on === undefined ? null : await commitOf(`refs/heads/${on.branch}`, repoRoot, what);
   const tip = on === undefined || local === null || holder ? local : await caughtUp(on.branch, local, repoRoot, what);
@@ -336,7 +353,7 @@ export async function ensureWorktree(
     // pairing, a conversation's turn — needs the branch, and the kept one is
     // rebuilt when a write step next wants it.
     if (path !== kept && all.some((w) => w.path === kept && w.branch === attach)) {
-      await removeWorktree(item, repoRoot, keptSlot(item));
+      await removeWorktree(item, repoRoot, keptSlot(item), scope);
     }
   }
 
@@ -387,10 +404,10 @@ export async function ensureWorktree(
  * Quiet on failure, as `removeWorktree` is: it runs as a converge unwinds, and
  * a branch left held is refused by name when a person switches to it.
  */
-export async function releaseWorktree(item: string, repoRoot: string): Promise<void> {
+export async function releaseWorktree(item: string, repoRoot: string, scope?: string): Promise<void> {
   // Only a registered worktree: git run in a directory that is not one would
   // act on whichever repository encloses it.
-  const path = await worktreeOf(keptSlot(item), repoRoot).catch(() => null);
+  const path = await worktreeOf(keptSlot(item), repoRoot, scope).catch(() => null);
   if (path === null) return;
   await exec("git", ["checkout", "-q", "--detach"], { cwd: path }).catch(() => undefined);
 }
@@ -400,11 +417,11 @@ export async function releaseWorktree(item: string, repoRoot: string): Promise<v
  * reached because something already went wrong. A removal that threw there
  * would replace the real failure with its own.
  */
-export async function removeWorktree(item: string, repoRoot: string, slot: string = item): Promise<void> {
+export async function removeWorktree(item: string, repoRoot: string, slot: string = item, scope?: string): Promise<void> {
   // A path this refuses is one that is not ours, and there is nothing of ours
   // at it to remove: doing nothing is the whole answer, and reporting it here
   // would be reporting it from the unwind of something else.
-  const path = await pathFor(slot, repoRoot).catch(() => null);
+  const path = await pathFor(slot, repoRoot, scope).catch(() => null);
   if (path === null) return;
   await exec("git", ["worktree", "remove", "--force", path], { cwd: repoRoot }).catch(() => undefined);
   // The registration and the directory can outlive each other — a remove that
@@ -423,8 +440,8 @@ export async function removeWorktree(item: string, repoRoot: string, slot: strin
  * a pairing's detached checkout falls behind the moment main moves — a
  * rebuild would delete what the person had not committed.
  */
-export async function worktreeOf(slot: string, repoRoot: string): Promise<string | null> {
-  const path = await pathFor(slot, repoRoot);
+export async function worktreeOf(slot: string, repoRoot: string, scope?: string): Promise<string | null> {
+  const path = await pathFor(slot, repoRoot, scope);
   const what = `could not read the worktree for ${slot}`;
   await git(["worktree", "prune"], repoRoot, what);
   return registered(await git(["worktree", "list", "--porcelain"], repoRoot, what)).some((w) => w.path === path)

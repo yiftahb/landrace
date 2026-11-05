@@ -11,11 +11,12 @@ import {
 } from "#people/resolve.js";
 import { createCredentialStore, credentialValues } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
-import { createRuntimeSlot } from "#runner/slot.js";
+import { createRoster } from "#people/roster.js";
+import { createSlotPool } from "#runner/pool.js";
 import { send as sendPage } from "#ui/server.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
-import { durationMs, RECORD_EFFECT } from "#conventions.js";
+import { durationMs, LOCAL_PERSON_ID, RECORD_EFFECT } from "#conventions.js";
 import { stepTimeoutMs } from "#runner/budget.js";
 import type {
   ActivityLog,
@@ -62,6 +63,7 @@ import type {
   ServerCommand,
   Source,
   StartOptions,
+  TickRow,
   ItemPanel,
   ItemReads,
   McpEndpoint,
@@ -89,7 +91,7 @@ import { buildSnapshot, snapshotProvides } from "#runner/snapshot.js";
 import { sandboxRoot } from "#sandbox.js";
 import { itemTag, oneLine } from "#runner/status.js";
 import { displayOf, noSharedPre, sharedPre, writeOwnerOf } from "#runner/route.js";
-import { listingFailures, listWorkspace, sourcesOf, tickWorkspace } from "#runner/tick.js";
+import { excludeAmbiguous, listingFailures, listWorkspace, sourcesOf } from "#runner/tick.js";
 import { sendTo } from "#runner/goto.js";
 import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js";
 import { conversationOf, createBoard } from "#ui/board.js";
@@ -142,6 +144,9 @@ export async function startUi(
     mcp?: McpEndpoint | undefined;
     people?: UiOptions["people"];
     ready?: (() => boolean) | undefined;
+    /** Whose each request is, and that person's board: every route but the board's own fallback goes by them. */
+    callerOf?: FrontDoorOptions["callerOf"];
+    boardFor?: FrontDoorOptions["boardFor"];
     serve?: ((opts: FrontDoorOptions) => Promise<UiServer>) | undefined;
   },
 ): Promise<UiServer | null> {
@@ -153,6 +158,8 @@ export async function startUi(
       port: opts.port,
       ...(opts.publicUrl === undefined ? {} : { publicUrl: opts.publicUrl }),
       ...(opts.mcp === undefined ? {} : { mcp: opts.mcp }),
+      ...(opts.callerOf === undefined ? {} : { callerOf: opts.callerOf }),
+      ...(opts.boardFor === undefined ? {} : { boardFor: opts.boardFor }),
       board: {
         view: () => opts.board.view(),
         ...(opts.tick === undefined ? {} : { tick: opts.tick }),
@@ -178,21 +185,28 @@ export async function startUi(
  * `landrace start` runs them, each session scoped or not as it initialized.
  * The same sandbox and activity log the steps use, and a person's write wakes
  * the schedule directly — this is the loop's own process, so no wake file.
+ *
+ * One person's runtime: whoever calls is served this runtime's tools, so
+ * the caller's own is the one handed in. `ambiguous` is the items the last
+ * tick found more than one person claiming, which no tool acts on.
  */
 export function mcpEndpointFor(
   rt: Pick<WorkspaceRuntime, "workflows" | "ctx" | "activity" | "toolWorkflows">, schedule: Pick<Schedule, "wake">,
+  opts: { ambiguous?: () => ReadonlyMap<string, string[]>; pairing?: boolean } = {},
 ): McpEndpoint {
   const workflows = rt.toolWorkflows ?? [];
   const sandbox = rt.workflows.find((w) => w.deps.sandbox)?.deps.sandbox;
   return createMcpEndpoint({
     workflows: workflows.map((w) => w.id),
-    toolsFor: (scope) => createTools(workflows, rt.ctx, {
+    ...(opts.pairing === undefined ? {} : { pairing: opts.pairing }),
+    toolsFor: (_caller, scope) => createTools(workflows, rt.ctx, {
       ...(sandbox ? { sandbox } : {}),
       ...(rt.activity ? { activity: rt.activity } : {}),
       wake: () => {
         schedule.wake();
       },
       ...(scope === undefined ? {} : { scope }),
+      ...(opts.ambiguous ? { ambiguous: opts.ambiguous } : {}),
     }),
   });
 }
@@ -388,15 +402,19 @@ export function sourceReaders(
  * the board is best-effort, and its failure is reported via console.error —
  * never through the logger, because this sink IS the logger's output, and
  * logging from it would recurse.
+ *
+ * With `of`, an event goes to the board of the person it names, and one
+ * naming nobody — the process's own, before any runtime — to no board.
  */
 export function boardSink(
   print: (e: LandraceEvent) => void,
-  board: { current?: Board },
+  board: { current?: Board; of?: (personId: string) => Board | undefined },
 ): (e: LandraceEvent) => void {
   return (e) => {
     print(e);
     try {
-      board.current?.observe(e);
+      const to = board.of ? (typeof e.person === "string" ? board.of(e.person) : undefined) : board.current;
+      to?.observe(e);
     } catch (boardError) {
       console.error(`landrace: triage page failed to record an event: ${messageOf(boardError)}`);
     }
@@ -847,10 +865,19 @@ function refuseUnsoundBeforeHooks(dir: string, ws: Workspace, config: RuntimeCon
  * The rules a filled-in workflow is judged by wait for the build, since a
  * blank var would be judged as nothing.
  */
-export async function localGate(
-  dir: string, store: CredentialStore, opts: { log?: RedactingLogger; signal?: AbortSignal } = {},
+export function localGate(dir: string, store: CredentialStore, opts: { log?: RedactingLogger; signal?: AbortSignal } = {}): Promise<LocalGate> {
+  return personGate(dir, store, opts);
+}
+
+/**
+ * `localGate` for any one person of the runner's: their store read for each
+ * per-person key, their identities looked up by their email, and judged as
+ * `remote` says. Absent `person`, the local one, from `people.local`.
+ */
+export async function personGate(
+  dir: string, store: CredentialStore, opts: { person?: Person; remote?: boolean; log?: RedactingLogger; signal?: AbortSignal } = {},
 ): Promise<LocalGate> {
-  const local = await loadLocalConfig(dir, store);
+  const local = await loadLocalConfig(dir, store, opts.person?.id);
   const { loaded } = local;
   assertConfigUsable(dir, loaded);
   const unserved = serveProblems(loaded.config.serve);
@@ -870,7 +897,7 @@ export async function localGate(
     registries.push({ id: w.id, registry: await loadHooks({ dir: w.dir, modules: w.workflow.hooks ?? [], workspace: ws.dir }) });
   }
   const people = connectionsOf(registries);
-  const person = localPerson(loaded);
+  const person = opts.person ?? localPerson(loaded);
   // Who the person is on each system a hook can look them up on, by their
   // email, with the instance's own secrets: a lookup stored is a value like
   // any other in the file, kept out of every log line once it is read. A
@@ -882,7 +909,7 @@ export async function localGate(
   });
   const { credentials, lookups } = looked;
   opts.log?.redact(credentialValues(credentials));
-  const resolution = resolvePerson(local.configured, people, person, credentials, { remote: false }, new Date(), lookups);
+  const resolution = resolvePerson(local.configured, people, person, credentials, { remote: opts.remote === true }, new Date(), lookups);
   const unmendable = [...people.problems, ...resolution.problems.filter((p) => p.rule === "connection.unknown")];
   if (unmendable.length) throw new Error(unmendable.map((p) => `${p.rule}: ${p.message}`).join("\n"));
   return { local, person, connections: people.connections, credentials, resolution, lookups };
@@ -908,7 +935,21 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // With the local person's stored connections answering each per-person key
   // their variable left unset: the vars must be whole before the workflow
   // is read, and the connections the hooks define are not known until then.
-  const local = await loadLocalConfig(dir, opts.credentials);
+  //
+  // A person handed in reads their own store; judged by the caller, their
+  // resolution's values win, as a remote instance's must over `.env`'s.
+  const read = await loadLocalConfig(dir, opts.credentials, opts.person?.id);
+  const { resolution } = opts;
+  const local = resolution === undefined ? read : {
+    ...read,
+    loaded: {
+      ...read.loaded,
+      vars: new Map([...read.loaded.vars, ...resolution.vars]),
+      secretValues: new Map([...read.loaded.secretValues, ...resolution.secretValues]),
+    },
+    // The caller judged them ready: every per-person key is answered.
+    problems: [],
+  };
   const { loaded } = local;
   // Unresolved secrets, unresolved vars, a var holding a secret's value, and
   // a per-person key nothing answers — worded once, in config/load.ts and
@@ -932,21 +973,23 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // Telemetry is built first so it sees the first event. Not for `landrace
   // status`, which must make no call beyond the ones reading requires.
   //
-  // A logger handed in is the process's — `start`'s, whose runtime a connect
-  // rebuilds — and comes with its own telemetry and its own person stamp; it
-  // is told this configuration's secrets, checked as strictly.
+  // A logger handed in is the process's — `start`'s, whose runtimes a
+  // connect rebuilds — and comes with its own telemetry; it is told this
+  // configuration's secrets, checked as strictly. Its events name no one: the
+  // process's own, starting up, are nobody's.
   const otel = opts.readOnly || opts.log ? null : telemetrySettings(loaded.telemetry, opts.otel);
   const telemetry = otel ? await createOtelSink(otel) : undefined;
   const redactValues = redactionValues(loaded);
   opts.log?.redact(redactValues);
-  // Every event the runtime logs is the one local person's: its own log, every
+  // Every event the runtime logs is its one person's: its own log, every
   // hook's through ctx.log, and each workflow's deps and notify below.
-  const log: RedactingLogger = opts.log ?? createLogger({
+  const person = opts.person ?? localPerson(loaded);
+  const log: RedactingLogger = (opts.log ?? createLogger({
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
     redactValues,
     ...(opts.sink === undefined ? {} : { sink: opts.sink }),
     ...(telemetry ? { exporter: telemetry.sink } : {}),
-  }).with(personFields(localPerson(loaded)));
+  })).with(personFields(person));
   // What the person's store holds — a token beside a login — is kept out of
   // every line from here on, as a secret's value is.
   log.redact(credentialValues(local.credentials));
@@ -1004,11 +1047,12 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // so nothing runs while theirs is missing, expired or unreadable; `validate`
   // reports the same words.
   const people = connectionsOf(hooked.map((h) => ({ id: h.loaded.id, registry: h.registry })));
-  const person = localPerson(loaded);
   const creds = await localCredentials(local, person, people.connections, opts.credentials);
   // Read only now when no key was per-person but a hook defines a connection anyway.
   if (creds !== local.credentials) log.redact(credentialValues(creds));
-  assertPersonReady(resolvePerson(local.configured, people, person, creds, { remote: false }), people.problems);
+  // As the caller judged them, when it did — remotely, by rules this local
+  // judging does not apply — and otherwise as the one local person.
+  assertPersonReady(resolution ?? resolvePerson(local.configured, people, person, creds, { remote: false }), people.problems);
   const logins: PersonLogins = { credentials: creds, connections: people.connections };
   const store = opts.credentials ?? createCredentialStore();
 
@@ -1028,9 +1072,12 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // The process's own when handed in, so one Ctrl-C stops every runtime it rebuilt.
   const stop = opts.stop ?? new AbortController();
   const ctx: RuntimeContext = {
-    config: loaded.config,
+    // A copy of its own per person: a hook keeps its clients in a WeakMap
+    // keyed by this object, and one person's must never be another's.
+    config: { ...loaded.config },
     secrets: loaded.secretValues,
     signal: stop.signal,
+    person,
     // A hook names its own events, so its log is wider than the engine's own
     // vocabulary — otherwise adding an event to a hook would mean editing the
     // engine's EventName union.
@@ -1042,7 +1089,9 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // Resolved here, before the first poll, for the same reason everything else
   // in this function is: a loop started outside a repository would otherwise
   // assemble, run, and fail at its first paid step.
-  const sandbox = await sandboxFor(loaded.config, dir);
+  // Anyone but the local person cuts their worktrees in a folder of their own.
+  const unscoped = await sandboxFor(loaded.config, dir);
+  const sandbox = unscoped === null || person.id === LOCAL_PERSON_ID ? unscoped : { ...unscoped, scope: encodeURIComponent(person.id) };
   // What each step's agent is doing, for the page's item panel: one log for
   // the workspace, keyed by item as the locks are. Not for `landrace status`,
   // which runs no step and must write nothing.
@@ -1126,6 +1175,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     intervalMs: parseInterval(loaded.config.tick.interval),
     concurrency: loaded.config.tick.concurrency,
     agents: 0,
+    ...(opts.slots ? { slots: opts.slots } : {}),
     checking: false,
     asking: [],
     turnedAway: [],
@@ -1344,41 +1394,29 @@ export function panelByClaim(opts: {
 }
 
 /**
- * One pass over every item, with a line per item for the person watching.
- *
- * A source that could not list fails the pass once the rest have been
- * worked: `--once` reports it by its exit code, and the loop says it on
- * stderr and carries on.
+ * A pass's line per item, for the person watching. Printed beside the log,
+ * not through it: an outcome quotes a hook's or an agent's failure, which
+ * can carry what the log itself would redact.
  */
-async function pass(rt: WorkspaceRuntime, seen?: (listing: WorkspaceListing) => void): Promise<void> {
-  let failures: string[] = [];
-  const rows = await tickWorkspace({
-    runtime: rt,
-    onList: (listing) => {
-      failures = listingFailures(listing);
-      seen?.(listing);
-    },
-  });
-  // Printed beside the log, not through it: an outcome quotes a hook's or an
-  // agent's failure, which can carry what the log itself would redact.
+function printRows(rt: WorkspaceRuntime, rows: readonly TickRow[]): void {
   const several = rt.workflows.length > 1;
   for (const row of rows) console.log(`#${itemTag(row.item, row.workflow, several)} ${rt.log.scrub(row.outcome)}`);
-  if (failures.length) throw new Error(rt.log.scrub(failures.join("; ")));
 }
 
 /**
- * A schedule's `run`: one pass, tracked in `inFlight` so `loop` can wait for
- * it out on shutdown, whether the schedule fired it on time or a wake did. A
- * poll that failed is not a loop that should stop — the tracker being
- * unreachable for one tick is the ordinary case, and exiting
+ * A schedule's `run`: one pass of the roster's — a source that could not
+ * list fails it once the rest have been worked — tracked in `inFlight` so
+ * `loop` can wait for it on shutdown, whether the schedule fired it on time
+ * or a wake did. A poll that failed is not a loop that should stop — the
+ * tracker being unreachable for one tick is the ordinary case, and exiting
  * would need a person to notice and start the daemon again.
  */
 function trackedRun(
-  rt: WorkspaceRuntime, seen: (listing: WorkspaceListing) => void, inFlight: Set<Promise<void>>,
+  pass: () => Promise<void>, stop: AbortController, inFlight: Set<Promise<void>>,
 ): () => Promise<void> {
   return () => {
-    if (rt.stop.signal.aborted) return Promise.resolve();
-    const running = pass(rt, seen).catch((e: unknown) => {
+    if (stop.signal.aborted) return Promise.resolve();
+    const running = pass().catch((e: unknown) => {
       console.error(`landrace: tick failed: ${oneLine(messageOf(e))}`);
     });
     inFlight.add(running);
@@ -1419,12 +1457,25 @@ export async function loop(rt: Pick<WorkspaceRuntime, "stop">, schedule: Schedul
  * again on every reload, so nothing here outlives the runtime it reads.
  */
 export async function servedRuntime(
-  rt: WorkspaceRuntime, opts: { schedule: Schedule; folder: string; workspace: string; serves: boolean },
+  rt: WorkspaceRuntime,
+  opts: {
+    schedule: Schedule; folder: string; workspace: string; serves: boolean;
+    /**
+     * The items the roster's last tick found more than one person claiming.
+     * A Refresh or a Start work lists this person's alone, and judging
+     * again would mean listing everyone's on every click: they go by the
+     * last tick's. Absent, none.
+     */
+    ambiguous?: () => ReadonlyMap<string, string[]>;
+    /** Whether the MCP endpoint offers pairing. Absent, it does. */
+    pairing?: boolean;
+  },
 ): Promise<ServedRuntime> {
   // The last listing a tick or a Refresh made. The page is shown what
   // `display` makes of it, and finds an item's workflow there; a write also
   // needs this one to have judged the item itself.
   const last: { fresh?: WorkspaceListing } = {};
+  const shared = (listing: WorkspaceListing): WorkspaceListing => (opts.ambiguous ? excludeAmbiguous(listing, opts.ambiguous()) : listing);
   const display = displayOf(rt.workflows);
   const board = createBoard({
     // Each item placed by the stages of the workflow that owns it, and
@@ -1458,7 +1509,7 @@ export async function servedRuntime(
     // Re-list every source and reload the board from it: no converge, no
     // step, no agent — the page's Refresh button.
     refresh: async () => {
-      const listing = await listWorkspace(rt);
+      const listing = shared(await listWorkspace(rt));
       seen(listing);
       const failures = listingFailures(listing);
       if (failures.length) throw new Error(rt.log.scrub(failures.join("; ")));
@@ -1479,7 +1530,7 @@ export async function servedRuntime(
     admit: (item, workflow) => admitItem({
       workflows: rt.workflows.map((w) => ({ id: w.id, workflow: w.deps.workflow, operator: w.operator ?? null })),
       listing: async () => {
-        const listing = await listWorkspace(rt);
+        const listing = shared(await listWorkspace(rt));
         seen(listing);
         return listing;
       },
@@ -1491,7 +1542,11 @@ export async function servedRuntime(
     }),
     // The operator's tools beside the board, over every workflow as this
     // loop runs them; a write wakes the loop itself, with no wake file.
-    mcp: opts.serves && rt.toolWorkflows ? mcpEndpointFor(rt, opts.schedule) : undefined,
+    mcp: opts.serves && rt.toolWorkflows
+      ? mcpEndpointFor(rt, opts.schedule, {
+        ...(opts.ambiguous ? { ambiguous: opts.ambiguous } : {}), ...(opts.pairing === undefined ? {} : { pairing: opts.pairing }),
+      })
+      : undefined,
   };
 }
 
@@ -1548,29 +1603,39 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const { config } = first.local.loaded;
 
   // One logger, one telemetry sink and one stop for the process, whatever
-  // runtime is current: events and telemetry outlive a reload, and Ctrl-C
-  // stops every runtime this process built. The sink reaches whichever board
-  // is current through a boxed reference, set on every swap.
-  const boardRef: { current?: Board } = {};
+  // runtimes are current: events and telemetry outlive a reload, and Ctrl-C
+  // stops every runtime this process built. Its own events — starting up —
+  // name nobody; each person's runtime stamps its own, and the sink sends
+  // each to the board of the person it names.
+  const boards: { of: (personId: string) => Board | undefined } = { of: () => undefined };
   const print = (e: LandraceEvent): void => console.log(JSON.stringify(e));
   const settings = telemetrySettings(first.local.loaded.telemetry, opts.otel);
   const telemetry = settings ? await createOtelSink(settings) : undefined;
   const log: RedactingLogger = createLogger({
     ...(opts.debug === undefined ? {} : { debug: opts.debug }),
-    sink: boardSink(print, boardRef),
+    sink: boardSink(print, boards),
     ...(telemetry ? { exporter: telemetry.sink } : {}),
-  }).with(personFields(first.person));
+  });
+  // What the local person's connections log — a renewal, a connect — is theirs.
+  const personLog = log.with(personFields(first.person));
   // Before anything logs. Each build tells it again, and checks them strictly.
   const { secretValues } = first.local.loaded;
   log.redact([...config.log.redact.flatMap((name) => secretValues.get(name) ?? []), ...credentialValues(first.credentials)]);
   const stop = new AbortController();
-  // Shared too: a run an old runtime started is still stopped by closing its
-  // item or taking its admit label, which only the current runtime's ticks
-  // can see, so they must judge every run this process has in flight.
-  const runs = new Map<string, RunningItem>();
-  // And which items a person has been told of, or a connect would tell them
-  // again of every item already waiting on them.
-  const told = new Map<string, SeenAt>();
+  // Per person, and shared by every runtime of theirs: a run an old runtime
+  // started is still stopped by closing its item or taking its admit label,
+  // which only the current runtime's ticks can see, so they must judge every
+  // run of that person's in flight. And which items a person has been told
+  // of, or a connect would tell them again of every item already waiting.
+  const runsOf = new Map<string, Map<string, RunningItem>>();
+  const toldOf = new Map<string, Map<string, SeenAt>>();
+  const own = <T>(maps: Map<string, Map<string, T>>, personId: string): Map<string, T> => {
+    const found = maps.get(personId) ?? new Map<string, T>();
+    maps.set(personId, found);
+    return found;
+  };
+  // The agent slots every person's runtime takes, `tick.concurrency` of them.
+  const pool = createSlotPool(config.tick.concurrency);
   // What a notification links to, once the page below is up; null without one.
   const pageRef: { url: string | null } = { url: null };
 
@@ -1586,10 +1651,10 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     {
       const ctx = first.local.loaded;
       await connectionRefresher({
-        store, log, gate: () => first,
-        ctx: () => ({ config: ctx.config, secrets: ctx.secretValues, signal: stop.signal, log: (event, data) => log(event as EventName, data) }),
+        store, log: personLog, gate: () => first,
+        ctx: () => ({ config: ctx.config, secrets: ctx.secretValues, signal: stop.signal, log: (event, data) => personLog(event as EventName, data) }),
         live: () => null,
-        reload: async () => { first = await localGate(dir, store, { log, signal: stop.signal }); },
+        reload: async () => { first = await localGate(dir, store, { log: personLog, signal: stop.signal }); },
         ...(opts.oauth?.fetch ? { fetch: opts.oauth.fetch } : {}),
       })();
     }
@@ -1604,66 +1669,96 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     // `landrace.yaml`, and a tab still judged by the start's would call a
     // person ready the runtime is not, and refuse the paste that would fix it.
     let latest = first;
-    // The build reads `schedule`, made below: no reload runs before it is.
-    const slot = createRuntimeSlot<ServedRuntime>(async () => {
-      // Judged afresh: the connection just made or removed is in the store now.
-      const gate = await localGate(dir, store, { log, signal: stop.signal });
-      latest = gate;
-      if (!gate.resolution.ready) return null;
-      const rt = await buildWorkspaceRuntime(dir, {
-        log, stop, running: runs, seen: told, credentials: store,
-        // An agent that refused the person's own login: it is marked failed,
-        // and this reload finds them not ready, so nothing more runs on it.
-        onConnectionFailed: () => slot.reload(),
-        ...(opts.debug === undefined ? {} : { debug: opts.debug }),
-        board: () => pageRef.url,
-        ...(opts.uiPort === undefined ? {} : { port: opts.uiPort }),
-      });
-      // Before anything else the hooks might do — including `--once`'s one
-      // tick — a permission problem has to stop the process here, not after
-      // the first paid agent has already run and a publish 403s with nothing
-      // durable recorded to show for it. Run from here rather than from the
-      // runtime's build so `landrace status`, which builds one the same way,
-      // never makes this write while only trying to read.
-      await runPreflights(rt.preflights, { ...rt.ctx, ...declaredOf(rt.workflows.map((w) => w.deps)) });
-      return servedRuntime(rt, { schedule, folder, workspace, serves });
-    }, {
-      onSwap: async (previous, next) => {
-        if (next) boardRef.current = next.board;
-        else delete boardRef.current;
-        // Its sessions end with it; an editor reconnects to the new one.
-        await previous?.mcp?.close();
+    const local = first.person;
+    // Each person's last judging, for their refresher and their expiry warnings.
+    const gates = new Map<string, LocalGate>([[local.id, first]]);
+    // What `start` serves of each runtime the roster builds: its board, the
+    // listing its ticks feed, its writes and its MCP endpoint.
+    const served = new WeakMap<WorkspaceRuntime, ServedRuntime>();
+    const servedOf = (personId: string): ServedRuntime | null => {
+      const rt = roster.get(personId)?.slot.current() ?? null;
+      return rt === null ? null : served.get(rt) ?? null;
+    };
+    // Remote mode — many people, signed in — does not exist yet: every start is local.
+    const mode = { remote: false };
+    // The people this runner runs for: locally exactly the local person, as
+    // `start` always has. The build reads `schedule`, made below: no reload
+    // runs before it is.
+    const roster = createRoster({
+      dir, loaded: first.local.configured, registry: { connections: first.connections }, store, mode, log, local, pool,
+      // Judged afresh: the connection just made or removed is in the store
+      // now, and a reload re-reads the hooks lists and `landrace.yaml`.
+      judge: async (person) => {
+        const gate = await personGate(dir, store, { person, log: log.with(personFields(person)), signal: stop.signal });
+        gates.set(person.id, gate);
+        if (person.id === local.id) latest = gate;
+        return gate;
+      },
+      build: async (person, resolution) => {
+        const rt = await buildWorkspaceRuntime(dir, {
+          log, stop, running: own(runsOf, person.id), seen: own(toldOf, person.id), credentials: store, person, slots: pool,
+          // Judged by the local rules the build applies itself; anyone else as the roster judged them.
+          ...(person.id === local.id ? {} : { resolution }),
+          // An agent that refused the person's own login: it is marked failed,
+          // and this reload finds them not ready, so nothing more runs on it.
+          onConnectionFailed: () => roster.reload(person.id),
+          ...(opts.debug === undefined ? {} : { debug: opts.debug }),
+          board: () => pageRef.url,
+          ...(opts.uiPort === undefined ? {} : { port: opts.uiPort }),
+        });
+        // Before anything else the hooks might do — including `--once`'s one
+        // tick — a permission problem has to stop the process here, not after
+        // the first paid agent has already run and a publish 403s with nothing
+        // durable recorded to show for it. Run from here rather than from the
+        // runtime's build so `landrace status`, which builds one the same way,
+        // never makes this write while only trying to read.
+        await runPreflights(rt.preflights, { ...rt.ctx, ...declaredOf(rt.workflows.map((w) => w.deps)) });
+        // Pairing is off remotely: a person there has no terminal on this machine to pair in.
+        served.set(rt, await servedRuntime(rt, { schedule, folder, workspace, serves, ambiguous: () => roster.ambiguous(), pairing: !mode.remote }));
+        return rt;
+      },
+      boardOf: (rt) => served.get(rt)?.board,
+      seen: (_person, rt, listing) => served.get(rt)?.seen(listing),
+      rows: (_person, rt, rows) => printRows(rt, rows),
+      // Its sessions end with it; an editor reconnects to the new one.
+      onSwap: async (_person, previous) => {
+        if (previous) await served.get(previous)?.mcp?.close();
       },
     });
-    // Reads the slot on every run, so a swapped-out runtime starts no new
-    // pass. Its runs already in flight finish under their own item locks
-    // rather than being aborted, since a connect must not kill a paid step;
-    // until one slot pool is shared across runtimes, they may briefly run
-    // beside the new runtime's, each runtime bounded only by its own
-    // `tick.concurrency`.
-    const warnExpiring = expiryWarner(log);
+    boards.of = (personId) => roster.get(personId)?.board;
+    // Ticks every ready person's current runtime, so a swapped-out runtime
+    // starts no new pass. Its runs already in flight finish under their own
+    // item locks rather than being aborted, since a connect must not kill a
+    // paid step, and they hold their slots in the one pool every runtime
+    // shares, so `tick.concurrency` bounds them with the new runtime's.
+    const warners = new Map<string, (statuses: readonly ConnectionStatus[]) => void>();
     const schedule = createSchedule({
       intervalMs: parseInterval(config.tick.interval),
       run: () => {
         // Not one the refresher renews: an OAuth token can last two hours,
         // and a daily warning for it would say nothing a person can act on.
-        warnExpiring(latest.resolution.statuses.filter((s) => latest.credentials.connections[s.id]?.refresh === undefined));
-        const served = slot.current();
-        return served ? trackedRun(served.rt, served.seen, inFlight)() : Promise.resolve();
+        for (const { person } of roster.people()) {
+          const gate = gates.get(person.id);
+          if (!gate) continue;
+          const warn = warners.get(person.id) ?? expiryWarner(log.with(personFields(person)));
+          warners.set(person.id, warn);
+          warn(gate.resolution.statuses.filter((s) => gate.credentials.connections[s.id]?.refresh === undefined));
+        }
+        return trackedRun(() => roster.tick(), stop, inFlight)();
       },
     });
-    await slot.reload();
-    const current = (): ServedRuntime | null => slot.current();
+    await roster.reload(local.id);
+    const current = (): ServedRuntime | null => servedOf(local.id);
 
     // The Integrations tab. A paste is checked against the configuration and
     // secrets of the same judging, so a reload that re-read them checks by them;
     // an OAuth app is read out of those same secrets.
     const gateCtx = (): RuntimeContext => ({
       config: latest.local.loaded.config, secrets: latest.local.loaded.secretValues, signal: stop.signal,
-      log: (event, data) => log(event as EventName, data),
+      log: (event, data) => personLog(event as EventName, data),
     });
     const people = createPeoplePanel({
-      store, mode: { remote: false }, log,
+      store, mode, log: personLog,
       gate: () => ({
         registry: { connections: latest.connections },
         loaded: latest.local.configured,
@@ -1671,7 +1766,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
         ctx: gateCtx(),
       }),
       onChange: async () => {
-        await slot.reload();
+        await roster.reload(local.id);
         schedule.wake();
       },
       // Where a provider sends the person back: `serve.publicUrl`, else the
@@ -1679,44 +1774,79 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       door: () => pageRef.url,
       ...(opts.oauth?.fetch ? { fetch: opts.oauth.fetch } : {}),
     });
-    const refresh = connectionRefresher({
-      store, log, gate: () => latest, ctx: gateCtx,
-      live: () => slot.current()?.rt.secretValues ?? null,
-      reload: async () => {
-        await slot.reload();
-        schedule.wake();
-      },
-      ...(opts.oauth?.fetch ? { fetch: opts.oauth.fetch } : {}),
-    });
+    // Each person's own renewals, over their own last judging; locally, the one person's.
+    const refreshers = new Map<string, () => Promise<void>>();
+    const refresherOf = (person: Person): (() => Promise<void>) => {
+      const known = refreshers.get(person.id);
+      if (known) return known;
+      const theirs = person.id === local.id ? personLog : log.with(personFields(person));
+      const made = connectionRefresher({
+        store, log: theirs, gate: () => gates.get(person.id) ?? latest,
+        ctx: person.id === local.id ? gateCtx : () => {
+          const gate = gates.get(person.id) ?? latest;
+          return { config: gate.local.loaded.config, secrets: gate.local.loaded.secretValues, signal: stop.signal, log: (event, data) => theirs(event as EventName, data), person };
+        },
+        live: () => roster.get(person.id)?.slot.current()?.secretValues ?? null,
+        reload: async () => {
+          await roster.reload(person.id);
+          schedule.wake();
+        },
+        ...(opts.oauth?.fetch ? { fetch: opts.oauth.fetch } : {}),
+      });
+      refreshers.set(person.id, made);
+      return made;
+    };
+    const refresh = async (): Promise<void> => {
+      await Promise.all(roster.people().map(({ person }) => refresherOf(person)()));
+    };
+
+    // Each request's caller, and their board: locally always the local person.
+    const callerOf = (): Person => latest.person;
+    const boardFor = (caller: Person): Omit<UiOptions, "allowedHosts" | "origins"> => {
+      const theirs = (): ServedRuntime | null => servedOf(caller.id);
+      return {
+        view: () => theirs()?.board.view() ?? Promise.reject(new Error(NOT_RUNNING)),
+        tick: schedule.wake,
+        ready: () => theirs() !== null,
+        // Remotely, only an item on this caller's board is one their item
+        // routes reach. Locally there is no one else's to reach, and an id no
+        // listing showed is still read through the one source, as it always was.
+        ...(mode.remote ? { has: (item: string) => roster.get(caller.id)?.board.has?.(item) ?? false, pairing: false } : {}),
+        people: { panel: people, caller: () => caller },
+        goto: {
+          send: (item, target, o) => {
+            const now = theirs();
+            if (!now) return Promise.resolve({ refused: NOT_RUNNING });
+            return now.goto
+              ? now.goto.send(item, target, o)
+              : Promise.resolve({ refused: `#${item} cannot be sent back: no workflow here loads a hook that writes a record` });
+          },
+        },
+        refresh: () => theirs()?.refresh() ?? Promise.reject(new Refusal(NOT_RUNNING)),
+        panel: currentPanel(theirs),
+        admit: (item, workflow) => theirs()?.admit(item, workflow) ?? Promise.reject(new Refusal(NOT_RUNNING)),
+      };
+    };
 
     const { serve } = config;
     const ui = await startUi({
       ui: opts.ui ?? true, once: opts.once ?? false, port: doorPort(config, opts.uiPort), host: serve.host, publicUrl: serve.publicUrl,
       ...(opts.serve ? { serve: opts.serve } : {}),
+      // Never reached while `callerOf` names someone, which locally it always does.
       board: { view: () => current()?.board.view() ?? Promise.reject(new Error(NOT_RUNNING)) },
-      tick: schedule.wake,
-      ready: () => current() !== null,
-      people: { panel: people, caller: () => latest.person },
+      callerOf, boardFor,
+      // Each caller's own runtime's endpoint, its sessions theirs alone.
       mcp: serves ? {
-        handle: (req, res) => {
-          const mcp = current()?.mcp;
-          if (mcp) return mcp.handle(req, res);
+        handle: (req, res, caller) => {
+          const mcp = servedOf((caller ?? local).id)?.mcp;
+          if (mcp) return mcp.handle(req, res, caller);
           sendPage(res, 503, "text/plain; charset=utf-8", `${NOT_RUNNING}, then reconnect`);
         },
-        close: async () => { await current()?.mcp?.close(); },
-      } : undefined,
-      goto: {
-        send: (item, target, o) => {
-          const served = current();
-          if (!served) return Promise.resolve({ refused: NOT_RUNNING });
-          return served.goto
-            ? served.goto.send(item, target, o)
-            : Promise.resolve({ refused: `#${item} cannot be sent back: no workflow here loads a hook that writes a record` });
+        close: async (personId) => {
+          const whose = personId === undefined ? roster.people().map((p) => p.person.id) : [personId];
+          await Promise.all(whose.map((id) => servedOf(id)?.mcp?.close()));
         },
-      },
-      refresh: () => current()?.refresh() ?? Promise.reject(new Refusal(NOT_RUNNING)),
-      panel: currentPanel(current),
-      admit: (item, workflow) => current()?.admit(item, workflow) ?? Promise.reject(new Refusal(NOT_RUNNING)),
+      } : undefined,
     });
     try {
       if (ui) {
@@ -1764,10 +1894,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     try {
       // A single tick reports its own failure by throwing: one shot, one answer,
       // and the exit code is what a script that ran it will read.
-      const served = current();
       if (opts.once) {
-        if (!served) throw new Error(NOT_RUNNING);
-        await pass(served.rt, served.seen);
+        if (!current()) throw new Error(NOT_RUNNING);
+        await roster.tick();
       } else {
         await loop({ stop }, schedule, inFlight);
       }

@@ -22,7 +22,7 @@ import { finishPair, pairingView, releasePair, startPair } from "#runner/pair.js
 import { admitRoute, editRoute, noSharedPre, readRoute, sharedPre, unownedWhy, writeRoute } from "#runner/route.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import { laneOf, statusRows, workspaceStatusRows } from "#runner/status.js";
-import { claimsOf, listingFailures, listWorkspace, sourcesOf } from "#runner/tick.js";
+import { claimsOf, excludeAmbiguous, listingFailures, listWorkspace, sourcesOf } from "#runner/tick.js";
 
 /**
  * Position is a label, so an engine label from the editor is not a label at
@@ -203,8 +203,15 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
     return listing;
   };
 
+  /**
+   * An item the last tick found claimed by more than one person is no one
+   * workflow's here either: judging it again would need everyone's listing,
+   * and a tool call is not where that is paid for.
+   */
+  const byOnePerson = (listing: WorkspaceListing): WorkspaceListing => (opts.ambiguous ? excludeAmbiguous(listing, opts.ambiguous()) : listing);
+
   /** Every source listed once and every open item claimed, as a tick does. */
-  const listed = async (): Promise<WorkspaceListing> => whole(await listWorkspace({ workflows: listedAs, ctx, log: ctx.log }));
+  const listed = async (): Promise<WorkspaceListing> => byOnePerson(whole(await listWorkspace({ workflows: listedAs, ctx, log: ctx.log })));
 
   /**
    * What an action on one item is judged from; what could not list is left
@@ -217,7 +224,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
    */
   const about = async (item: string): Promise<WorkspaceListing> => {
     const [only, ...more] = distinct;
-    if (only === undefined || more.length > 0) return listWorkspace({ workflows: listedAs, ctx, log: ctx.log });
+    if (only === undefined || more.length > 0) return byOnePerson(await listWorkspace({ workflows: listedAs, ctx, log: ctx.log }));
     let read: Graph;
     try {
       read = await only.read(item, ctx);
@@ -226,7 +233,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
     }
     const graphs: Graph[] = [{ nodes: read.nodes.filter((n) => n.id === item && isItemNode(n)), relationships: [] }];
     const sourceOf = new Map(listedAs.map((w) => [w.id, 0]));
-    return { graphs, sourceOf, claims: claimsOf(listedAs, sourceOf, graphs), failed: new Map() };
+    return byOnePerson({ graphs, sourceOf, claims: claimsOf(listedAs, sourceOf, graphs), failed: new Map() });
   };
 
   /**

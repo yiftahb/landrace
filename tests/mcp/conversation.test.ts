@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import { ensureWorktree, pathFor } from "#agent/worktree.js";
 import { OUTPUT_KIND, renderMarker } from "#conventions.js";
 import type { ConversationDeps, Executor, LockOptions, Source, Step } from "#namespace.js";
 import { createConversation } from "#mcp/conversation.js";
@@ -682,6 +683,27 @@ describe("a conversation turn is held to what its step declared", () => {
     expect(ranIn).toBeDefined();
     expect(ranIn).not.toBe(checkout);
     expect(await worktreesOf(checkout)).toEqual([]);
+  });
+
+  /*
+   * #185: a remote person's turn cuts its worktree in their own folder, as
+   * converge does. In the shared root it met another person's #1, and its
+   * removal took that one away.
+   */
+  it("runs a person's turn in their own folder, and leaves another person's #1 where it is", async () => {
+    const checkout = await gitRepo();
+    const bobs = await ensureWorktree("1", checkout, undefined, "1", { scope: "bob" });
+    let ranIn: string | undefined;
+    const watcher: Executor = {
+      id: "watcher",
+      run: async (_p, { cwd }) => { ranIn = cwd; return { text: "Understood.", sessionId: null }; },
+    };
+
+    await world(seeded(), watcher, {}, undefined, { sandbox: { root: checkout, scope: "alice" } }).ask("1", "carry on");
+
+    expect(ranIn).toBe(await pathFor("1", checkout, "alice"));
+    expect(existsSync(bobs)).toBe(true);
+    expect(await worktreesOf(checkout)).toEqual([`worktree ${bobs}`]);
   });
 
   /*
