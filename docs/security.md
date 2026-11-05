@@ -162,7 +162,7 @@ With [`people.oidc`](remote.md) set, the door may listen beyond loopback, becaus
 - **Consent.** Anyone can register an MCP client, so a token is issued only after a signed-in person approves that client on Landrace's consent page. The page is sent with `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so another site cannot overlay it to take your click. Approve is refused with a foreign `Origin`, and without the page's one-time token, which is bound to your session and to that one authorization request and expires in ten minutes. A form on another site therefore cannot approve for you, whatever the browser does with `SameSite`.
 - **One identity, one person.** An identity value — a tracker account, say — that another person already holds is marked failed on the newcomer, whether a lookup or an admin's override gave it.
 
-Landrace checks who signed in, not what they may do: everyone who can sign in at your provider gets an instance of their own on this machine. Limit who can sign in at the provider.
+Landrace checks who signed in, not what they may do: everyone who can sign in at your provider gets an instance of their own on this machine. Limit who can sign in at the provider: see [Who can sign in](remote.md#who-can-sign-in).
 
 ## The board
 
