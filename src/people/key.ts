@@ -137,8 +137,17 @@ async function withLock<T>(root: string, alive: (pid: number) => boolean, waitMs
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       }
-      const held = await Promise.all([stat(lock), readFile(lock, "utf8")]).catch(() => null);
-      if (held === null) continue;
+      const held = await Promise.all([stat(lock), readFile(lock, "utf8")]).catch((e: unknown) => ({ failed: e as NodeJS.ErrnoException }));
+      if ("failed" in held) {
+        const code = held.failed.code;
+        // Gone since the link failed: its holder let go, so try again at once.
+        if (code === "ENOENT") continue;
+        // A folder, or a file another user left: nothing here says who holds
+        // it, so wait as on a live one rather than spin, then say which.
+        if (Date.now() >= deadline) throw new Error(`cannot read ${lock} (${code ?? String(held.failed)}) to learn which start holds it; remove it once no landrace start is running`);
+        await sleep(25);
+        continue;
+      }
       const pid = Number(held[1].trim());
       if (Number.isInteger(pid) && pid > 0 && !alive(pid)) {
         const again = await stat(lock).catch(() => null);

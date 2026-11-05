@@ -123,6 +123,27 @@ describe("credentialKey: the macOS Keychain", () => {
     expect(f.made()).toBe(0);
   });
 
+  it("refuses, naming the lock, once it has waited on a lock it cannot read, a folder", async () => {
+    const f = fakeStore();
+    const dir = await root();
+    await mkdir(join(dir, ".key.lock"), { recursive: true });
+    const started = Date.now();
+    await expect(credentialKey({ create: true, root: dir, platform: "darwin", env: {}, run: f.run, alive: () => false, lockWaitMs: 50 }))
+      .rejects.toThrow(/cannot read .*\.key\.lock/);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
+    expect(f.made()).toBe(0);
+  });
+
+  it("refuses, naming the lock, once it has waited on a lock file it may not read", async () => {
+    const f = fakeStore();
+    const dir = await root();
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, ".key.lock"), "4242\n", { mode: 0o000 });
+    await expect(credentialKey({ create: true, root: dir, platform: "darwin", env: {}, run: f.run, alive: () => false, lockWaitMs: 50 }))
+      .rejects.toThrow(/cannot read .*\.key\.lock/);
+    expect(f.made()).toBe(0);
+  });
+
   it("asked without create, answers no key for an absent one, naming the source it asked, and makes none", async () => {
     const f = fakeStore();
     expect(await credentialKey({ create: false, platform: "darwin", env: {}, run: f.run })).toEqual({ key: null, locator: { source: "keychain" } });
