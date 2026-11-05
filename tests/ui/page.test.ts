@@ -96,13 +96,13 @@ describe("the top bar and the sidebar while the page scrolls", () => {
 
   // Unstuck, the container's py-6 holds the sidebar 1.5rem below the top bar;
   // stuck at the bar's height alone, "Needs You" touched the bar's border.
-  it("sticks the sidebar 1.5rem below the top bar from sm up, scrolling on its own when taller than the space left", () => {
+  it("sticks the sidebar 1.5rem below the top bar from lg up, scrolling on its own when taller than the space left", () => {
     expect(PAGE_HTML).toMatch(/<div id="content" class="[^"]*\bpy-6\b[^"]*"[^>]*>\n<nav id="sidebar"/);
     expect(sidebar).toEqual(expect.arrayContaining([
-      "sm:sticky", "sm:self-start", "sm:top-[calc(var(--header-h)+1.5rem)]",
-      "sm:max-h-[calc(100vh-var(--header-h)-3rem)]", "sm:overflow-y-auto",
+      "lg:sticky", "lg:self-start", "lg:top-[calc(var(--header-h)+1.5rem)]",
+      "lg:max-h-[calc(100vh-var(--header-h)-3rem)]", "lg:overflow-y-auto",
     ]));
-    expect(sidebar).not.toContain("sm:top-[var(--header-h)]");
+    expect(sidebar).not.toContain("lg:top-[var(--header-h)]");
     expect(APP_CSS).toContain("top:calc(var(--header-h) + 1.5rem)");
     expect(APP_CSS).toContain("max-height:calc(100vh - var(--header-h) - 3rem)");
   });
@@ -114,7 +114,7 @@ describe("the top bar and the sidebar while the page scrolls", () => {
     expect(APP_CSS).toContain(".scroll-pt-\\[var\\(--header-h\\)\\]{");
   });
 
-  it("leaves the sidebar unstuck below sm", () => {
+  it("leaves the sidebar unstuck below lg", () => {
     expect(sidebar.filter((c) => !c.includes(":") && /sticky|top-|max-h-|overflow/.test(c))).toEqual([]);
   });
 
@@ -1938,9 +1938,9 @@ describe("the Integrations tab", () => {
 describe("the item panel's markup", () => {
   const aside = /<aside id="panel"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
 
-  it("takes the full width below sm", () => {
+  it("takes the full width below lg", () => {
     expect(aside).toMatch(/ w-full /);
-    expect(aside).toMatch(/sm:w-\[28rem\]/);
+    expect(aside).toMatch(/lg:w-\[28rem\]/);
   });
 
   it("names its close and full-width buttons for a screen reader", () => {
@@ -1966,7 +1966,7 @@ describe("the item panel's markup", () => {
     const tokens = menu.split(/\s+/);
     expect(tokens).toContain("right-0");
     expect(tokens).not.toContain("left-0");
-    expect(tokens).not.toContain("sm:left-auto");
+    expect(tokens).not.toContain("lg:left-auto");
     expect(header).toMatch(/<button id="panel-pairing-item" type="button" role="menuitem"[^>]*>Pairing…<\/button>/);
     expect(header.indexOf('id="panel-more"')).toBeLessThan(header.indexOf('id="panel-wide"'));
   });
@@ -2116,18 +2116,18 @@ describe("the item panel with nothing selected", () => {
   });
 
   it("leaves the board room for it from the first paint, before the script runs", () => {
-    expect(/<body class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ")).toContain("sm:pr-[28rem]");
-    expect(aside.split(/[\s"]+/)).toContain("max-sm:hidden");
+    expect(/<body class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ")).toContain("lg:pr-[28rem]");
+    expect(aside.split(/[\s"]+/)).toContain("max-lg:hidden");
   });
 
   // The page script for real: the hash, ✕, Escape and Back all end in
   // showPanel, run here against elements that keep what it sets.
   const page = (hash: string, panelWide = false) => {
     const location = { hash, pathname: "/", search: "" };
-    const panelEl = { classList: new FakeClasses("sm:w-[28rem]", "max-sm:hidden") };
+    const panelEl = { classList: new FakeClasses("lg:w-[28rem]", "max-lg:hidden") };
     const panelItem = { hidden: true };
     const panelEmpty = { hidden: false };
-    const body = { classList: new FakeClasses("sm:pr-[28rem]") };
+    const body = { classList: new FakeClasses("lg:pr-[28rem]") };
     const c: Record<string, unknown> = {
       location, lastView: null, openMenuKey: null, panelId: null, panelHeld: null, panelWide, pairingOnOpen: null,
       panelEl, panelItem, panelEmpty, document: { body, activeElement: null },
@@ -2141,19 +2141,19 @@ describe("the item panel with nothing selected", () => {
     }
     const go = (code: string): void => { runInNewContext(code, c); };
     // What a person sees: the empty state or the item, whether a phone shows
-    // the panel at all, and whether the board keeps room for it from sm up.
+    // the panel at all, and whether the board keeps room for it from lg up.
     const seen = () => ({
       empty: !panelEmpty.hidden,
       item: !panelItem.hidden,
-      belowSm: !panelEl.classList.contains("max-sm:hidden"),
-      narrow: panelEl.classList.contains("sm:w-[28rem]"),
-      padded: body.classList.contains("sm:pr-[28rem]"),
+      belowLg: !panelEl.classList.contains("max-lg:hidden"),
+      narrow: panelEl.classList.contains("lg:w-[28rem]"),
+      padded: body.classList.contains("lg:pr-[28rem]"),
     });
     const select = (id: string): void => { location.hash = "#/w/main?item=" + id; go("onHashChange()"); };
     return { location, go, seen, select };
   };
-  const EMPTY = { empty: true, item: false, belowSm: false, narrow: true, padded: true };
-  const OPEN = { empty: false, item: true, belowSm: true, narrow: true, padded: true };
+  const EMPTY = { empty: true, item: false, belowLg: false, narrow: true, padded: true };
+  const OPEN = { empty: false, item: true, belowLg: true, narrow: true, padded: true };
 
   it("shows the empty state when the page opens with no item in the hash", () => {
     const p = page("#/w/main");
@@ -2178,14 +2178,14 @@ describe("the item panel with nothing selected", () => {
     expect(p.seen()).toEqual(EMPTY);
   });
 
-  it("stays hidden below sm with no item selected, where it would cover the whole board", () => {
+  it("stays hidden below lg with no item selected, where it would cover the whole board", () => {
     const p = page("#/");
     p.go("onHashChange()");
-    expect(p.seen().belowSm).toBe(false);
+    expect(p.seen().belowLg).toBe(false);
     p.select("12");
-    expect(p.seen().belowSm).toBe(true);
+    expect(p.seen().belowLg).toBe(true);
     p.go("closePanel()");
-    expect(p.seen().belowSm).toBe(false);
+    expect(p.seen().belowLg).toBe(false);
   });
 
   it("takes the whole page in Full width only while an item is open", () => {
@@ -2196,8 +2196,10 @@ describe("the item panel with nothing selected", () => {
     expect(p.seen()).toEqual(EMPTY);
   });
 
-  it("ships the rule that hides it below sm", () => {
-    expect(APP_CSS).toContain(".max-sm\\:hidden{");
+  it("ships the rule that hides it below lg", () => {
+    expect(APP_CSS).toContain(".max-lg\\:hidden{");
+    // lg is Tailwind's 64rem, 1024px: sm's 640px left the board 192–550px beside the panel.
+    expect(APP_CSS).toMatch(/@media not all and \(min-width:64rem\)\{\.max-lg\\:hidden/);
   });
 });
 
@@ -3606,9 +3608,9 @@ describe("routing and the sidebar", () => {
     expect(descendants(empty).some((e) => e.className.includes("rounded-full"))).toBe(false);
   });
 
-  it("lays the sidebar out as a column from sm up and a row of chips below it", () => {
+  it("lays the sidebar out as a column from lg up and a row of chips below it", () => {
     expect(PAGE_HTML).toMatch(/<nav id="sidebar"[^>]*>/);
-    expect(PAGE_HTML).toMatch(/id="nav" class="[^"]*\bflex-wrap\b[^"]*\bsm:flex-col\b/);
+    expect(PAGE_HTML).toMatch(/id="nav" class="[^"]*\bflex-wrap\b[^"]*\blg:flex-col\b/);
   });
 });
 
@@ -3811,9 +3813,9 @@ describe("a narrow screen", () => {
     expect(APP_CSS).toContain(".wrap-anywhere{");
   });
 
-  it("opens a row's menu from the left edge below sm, where its button sits, and from the right above", () => {
+  it("opens a row's menu from the left edge below lg, where its button sits, and from the right above", () => {
     const tokens = fnSource("buildRowMenu").match(/el\("div", "(absolute [^"]*)"/)?.[1]?.split(" ") ?? [];
-    expect(tokens).toEqual(expect.arrayContaining(["left-0", "sm:left-auto", "sm:right-0"]));
+    expect(tokens).toEqual(expect.arrayContaining(["left-0", "lg:left-auto", "lg:right-0"]));
     expect(tokens).not.toContain("right-0");
   });
 
@@ -4003,5 +4005,17 @@ describe("the board before the first tick lists", () => {
 
   it("is run by render on every view", () => {
     expect(fnSource("render")).toContain("syncLoading(view);");
+  });
+});
+
+// #199: from 640px up the panel's 28rem left the board 192–550px until about
+// 1000px, so the mobile layout runs to lg (1024px), and sm is gone entirely.
+describe("the board's one breakpoint", () => {
+  it("is lg: no sm: or max-sm: class is left in the page or its script", () => {
+    expect(PAGE_HTML).not.toMatch(/(^|[\s"'])(max-)?sm:/m);
+    expect(APP_JS).not.toMatch(/(^|[\s"'])(max-)?sm:/m);
+    expect(APP_JS).toContain('panelEl.classList.toggle("max-lg:hidden", !open)');
+    expect(APP_JS).toContain('panelEl.classList.toggle("lg:w-[28rem]", !wide)');
+    expect(APP_JS).toContain('document.body.classList.toggle("lg:pr-[28rem]", !wide)');
   });
 });

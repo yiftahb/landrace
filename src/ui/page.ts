@@ -48,15 +48,15 @@ const MENU_ITEM =
 
 /**
  * The item panel: fixed to the right, the board pushed left beside it from
- * `sm` up and covered by it below. From `sm` up it is always there, so
+ * `lg` (1024px) up and covered by it below. From `lg` up it is always there, so
  * opening an item never moves the board: with none selected it shows
- * #panel-empty in place of #panel-item. Below `sm` it covers the board, so it
+ * #panel-empty in place of #panel-item. Below `lg` it covers the board, so it
  * shows only while an item is open. A static skeleton the script fills with
  * textContent — the composer lives here, outside anything a poll redraws, so
  * what someone is typing survives every poll.
  */
 const PANEL = `
-<aside id="panel" aria-label="Item" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl max-sm:hidden dark:border-neutral-800 dark:bg-neutral-900 sm:w-[28rem]" inert>
+<aside id="panel" aria-label="Item" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl max-lg:hidden dark:border-neutral-800 dark:bg-neutral-900 lg:w-[28rem]" inert>
 <p id="panel-empty" class="flex flex-1 items-center justify-center px-4 text-center text-sm text-neutral-500 dark:text-neutral-400">Select an item to see its details</p>
 <div id="panel-item" hidden class="flex min-h-0 flex-1 flex-col">
 <div class="flex items-start gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
@@ -109,14 +109,14 @@ export const PAGE_HTML = `<!doctype html>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
-<body class="min-h-screen bg-neutral-50 font-sans text-sm text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100 sm:pr-[28rem]">
+<body class="min-h-screen bg-neutral-50 font-sans text-sm text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100 lg:pr-[28rem]">
 <header class="sticky top-0 z-10 border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900" inert>
-<div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+<div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 lg:px-6">
 <div class="flex min-w-0 flex-wrap items-center gap-2">
 ${MARK}
 <h1 class="text-sm font-semibold">Landrace</h1>
 <span id="folder" class="min-w-0 truncate rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400"></span>
-<span id="meta" class="hidden text-xs text-neutral-400 dark:text-neutral-500 sm:inline"></span>
+<span id="meta" class="hidden text-xs text-neutral-400 dark:text-neutral-500 lg:inline"></span>
 </div>
 <div class="flex flex-wrap items-center gap-2">
 <div id="schedule" class="flex flex-wrap items-center gap-2">
@@ -138,12 +138,12 @@ ${MARK}
 </div>
 </div>
 </header>
-<div id="content" class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 sm:flex-row sm:px-6" inert>
-<nav id="sidebar" aria-label="Pages" class="sm:sticky sm:top-[calc(var(--header-h)+1.5rem)] sm:max-h-[calc(100vh-var(--header-h)-3rem)] sm:w-48 sm:shrink-0 sm:self-start sm:overflow-y-auto"><ul id="nav" class="flex flex-wrap gap-2 sm:flex-col sm:gap-1"></ul></nav>
+<div id="content" class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 lg:flex-row lg:px-6" inert>
+<nav id="sidebar" aria-label="Pages" class="lg:sticky lg:top-[calc(var(--header-h)+1.5rem)] lg:max-h-[calc(100vh-var(--header-h)-3rem)] lg:w-48 lg:shrink-0 lg:self-start lg:overflow-y-auto"><ul id="nav" class="flex flex-wrap gap-2 lg:flex-col lg:gap-1"></ul></nav>
 <main class="min-w-0 flex-1">
 <div id="board">
 <div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
-<input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
+<input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 lg:w-72">
 <div class="flex items-center gap-2">
 <button id="toggle-all" type="button" aria-keyshortcuts="c" title="Collapse all (c)" class="${BUTTON}">Collapse all</button>
 <button id="refresh" type="button" aria-label="Refresh" title="Re-read the tracker" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
@@ -696,7 +696,7 @@ function admitsOf(row, menuKey) {
 // z-10, so scrolled up it passes beneath the tick controls and stays open for
 // the items below the fold.
 function buildRowMenu(row) {
-  const menu = el("div", "absolute left-0 z-[5] mt-1 w-44 sm:left-auto sm:right-0 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
+  const menu = el("div", "absolute left-0 z-[5] mt-1 w-44 lg:left-auto lg:right-0 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   const writes = writesOf(row);
@@ -774,7 +774,7 @@ function actionFor(row) {
   button.setAttribute("data-key", triggerKeyOf(row.id));
   button.setAttribute("aria-label", "Actions");
 
-  const wrap = el("div", "relative shrink-0 self-start sm:self-auto");
+  const wrap = el("div", "relative shrink-0 self-start lg:self-auto");
   const menu = buildRowMenu(row);
   menu.setAttribute("data-key", menuKeyOf(row.id));
   button.addEventListener("click", () => toggleMenu(row.id));
@@ -1115,7 +1115,7 @@ function toggleSlot(row, open, lane) {
 }
 
 function itemRowFor(row, depth, now, open, lane) {
-  // Stacked below the sm breakpoint, side-by-side above it — a breakpoint, not a
+  // Stacked below the lg breakpoint, side-by-side above it — a breakpoint, not a
   // content-based flex-wrap. flex-wrap's own line-breaking runs on each
   // item's *hypothetical* (content) size: flex-1's 0% basis told the browser
   // this row needed no room at all and it never wrapped the action button
@@ -1123,11 +1123,11 @@ function itemRowFor(row, depth, now, open, lane) {
   // then sized the title/stage row itself off the unwrapped content width,
   // pushing the stage chip past the edge instead. Neither reliably fits
   // arbitrary item titles at 400px, so the breakpoint sidesteps both.
-  const li = treeItem(row, depth, "flex flex-col gap-1 py-3 pr-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-x-3 sm:gap-y-1", open);
+  const li = treeItem(row, depth, "flex flex-col gap-1 py-3 pr-4 lg:flex-row lg:flex-wrap lg:items-start lg:justify-between lg:gap-x-3 lg:gap-y-1", open);
   // The toggle, when there is one, is a column of its own beside the body:
   // inside the title line it pushed the number right but not the note or a
   // wrapped chip, which then started under the toggle instead of the number.
-  const main = el("div", "flex min-w-0 w-full items-baseline gap-2 sm:w-auto sm:flex-1");
+  const main = el("div", "flex min-w-0 w-full items-baseline gap-2 lg:w-auto lg:flex-1");
   main.append(toggleSlot(row, open, lane));
   const body = el("div", "min-w-0 flex-1");
 
@@ -1429,7 +1429,7 @@ function renderNav(view, page) {
     li.append(navItem(e, e.id === page));
     return li;
   });
-  const rule = el("li", "my-1 hidden border-t border-neutral-200 dark:border-neutral-800 sm:block");
+  const rule = el("li", "my-1 hidden border-t border-neutral-200 dark:border-neutral-800 lg:block");
   rule.setAttribute("role", "separator");
   // A divider with nothing under it would only be a stray line.
   document.getElementById("nav").replaceChildren(...(items.length > 1 ? [items[0], rule, ...items.slice(1)] : items));
@@ -2549,14 +2549,14 @@ function showPanel(id) {
   panelMode = null;
   markSelected();
   const open = id !== null;
-  // From sm up the panel stays, its empty state in place of an item; below
-  // sm it covers the board, so it goes. Full width is an open item's alone.
+  // From lg up the panel stays, its empty state in place of an item; below
+  // lg it covers the board, so it goes. Full width is an open item's alone.
   panelItem.hidden = !open;
   panelEmpty.hidden = open;
-  panelEl.classList.toggle("max-sm:hidden", !open);
+  panelEl.classList.toggle("max-lg:hidden", !open);
   const wide = open && panelWide;
-  panelEl.classList.toggle("sm:w-[28rem]", !wide);
-  document.body.classList.toggle("sm:pr-[28rem]", !wide);
+  panelEl.classList.toggle("lg:w-[28rem]", !wide);
+  document.body.classList.toggle("lg:pr-[28rem]", !wide);
   if (!open) { stopPanelPoll(); return; }
   renderPanel();
 }
