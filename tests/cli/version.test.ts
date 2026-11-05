@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
-  isNewer, latestVersion, ownVersion, runUpdate, runVersion, updateCheckOff, updateCommand, updateNotice,
+  isNewer, latestVersion, ownRepository, ownVersion, repositoryUrl, runUpdate, runVersion, updateCheckOff, updateCommand, updateNotice,
 } from "#cli/version.js";
 
 const exec = promisify(execFile);
@@ -154,6 +154,30 @@ describe("ownVersion", () => {
   it("is this package's version", async () => {
     const pkg = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8")) as { version: string };
     expect(ownVersion()).toBe(pkg.version);
+  });
+});
+
+// The board's Source code link: package.json keeps the URL's one home, so
+// src/ never writes it.
+describe("ownRepository", () => {
+  it("is package.json's repository url, with no git+ and no .git", async () => {
+    const pkg = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8")) as { repository: { url: string } };
+    expect(pkg.repository.url).toMatch(/^git\+https:\/\/.*\.git$/);
+    expect(ownRepository()).toBe(pkg.repository.url.slice("git+".length, -".git".length));
+    expect(ownRepository()).toMatch(/^https:\/\/[^/]+\/yiftahb\/landrace$/);
+  });
+
+  it.each([
+    [{ type: "git", url: "git+https://example.com/a/b.git" }, "https://example.com/a/b"],
+    ["https://example.com/a/b", "https://example.com/a/b"],
+    [{ url: "https://example.com/a/b.git" }, "https://example.com/a/b"],
+    // Only a web address is a link a browser can open.
+    [{ url: "git@example.com:a/b.git" }, null],
+    [{ url: "javascript:alert(1)" }, null],
+    [{}, null],
+    [undefined, null],
+  ])("reads %j as %j", (raw, url) => {
+    expect(repositoryUrl(raw)).toBe(url);
   });
 });
 

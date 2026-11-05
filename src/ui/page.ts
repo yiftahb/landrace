@@ -3,6 +3,8 @@
  * copy step. Script and style are served as their own routes so the CSP can
  * forbid anything inline.
  */
+import { ownRepository } from "#cli/version.js";
+
 export { APP_CSS } from "#ui/styles.generated.js";
 
 /**
@@ -63,7 +65,7 @@ const PANEL = `
 <h2 id="panel-title" class="min-w-0 flex-1 break-words text-sm font-semibold"></h2>
 <div class="relative shrink-0">
 <button id="panel-more" type="button" aria-label="Item actions" aria-haspopup="menu" aria-expanded="false" title="Item actions" data-key="panel:trigger" class="${ICON_BUTTON}">⋯</button>
-<div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+<div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-48 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
 <div id="panel-admit" role="none"></div>
 <button id="panel-pairing-item" type="button" role="menuitem" class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800">Pairing…</button>
 </div>
@@ -98,6 +100,18 @@ const MARK = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" clas
 /** The tab's icon. A tab has no page colour to inherit, so it says both. */
 export const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><style>path { fill: #111111 } @media (prefers-color-scheme: dark) { path { fill: #f5f5f5 } }</style><path d="${MARK_PATH}"/></svg>`;
 
+/**
+ * The ⋯ menu's last entry, under a divider: this package's own repository,
+ * from package.json, so the URL has one home and src/ never names its host.
+ * A copy with no repository it can open as a page has no entry, and no
+ * divider left over above nothing.
+ */
+const SOURCE_URL = ownRepository();
+const SOURCE_LINK = SOURCE_URL === null ? "" : `<hr role="separator" class="my-1 border-neutral-200 dark:border-neutral-700">
+<a id="board-source" href="${SOURCE_URL.replace(/&/g, "&amp;")}" title="${SOURCE_URL.slice("https://".length).replace(/&/g, "&amp;")}" role="menuitem" target="_blank" rel="noopener noreferrer" class="${MENU_ITEM}"><span>Source code</span>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ml-auto h-4 w-4 shrink-0" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>
+`;
+
 export const PAGE_HTML = `<!doctype html>
 <html lang="en" class="scroll-pt-[var(--header-h)]" aria-busy="true">
 <head>
@@ -126,16 +140,17 @@ ${MARK}
 </div>
 <button id="notify-toggle" type="button" aria-pressed="false" aria-label="Notify me when an item needs you" title="Notify me when an item needs you" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-50 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">🔔</button>
 <div class="flex max-w-sm items-start gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 has-[p:empty]:hidden dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"><p id="notify-note" role="status" aria-live="polite"></p><button id="notify-note-close" type="button" aria-label="Dismiss" title="Dismiss" class="shrink-0 rounded px-1 hover:bg-amber-100 dark:hover:bg-amber-900">✕</button></div>
-<button id="theme-toggle" type="button" aria-label="Switch to dark mode" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-</button>
 <div class="relative shrink-0">
 <button id="board-more" type="button" aria-label="Board actions" aria-haspopup="menu" aria-expanded="false" title="Board actions" data-key="board:trigger" class="${ICON_BUTTON}">⋯</button>
-<div id="board-menu" data-key="board:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+<div id="board-menu" data-key="board:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-48 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
 <a id="board-integrations" href="#/integrations" role="menuitem" class="${MENU_ITEM}">Integrations</a>
 <button id="board-tick" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">Run next tick now</button>
-</div>
+<button id="theme-toggle" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+<span id="theme-label">Switch to dark mode</span>
+</button>
+${SOURCE_LINK}</div>
 </div>
 </div>
 </div>
@@ -1800,8 +1815,12 @@ tickButton.addEventListener("click", () => {
 // The top bar's ⋯ is a menu like the panel's, under the same one-open rule,
 // and like it lives in the skeleton, so no poll redraws it. Integrations is a
 // link: choosing it leaves the menu, and the hash change shows the tab.
+// Source code opens a new tab, so the menu goes as well; a copy with no
+// repository has no such entry.
 document.getElementById("board-more").addEventListener("click", () => toggleMenu("board"));
 document.getElementById("board-integrations").addEventListener("click", () => closeMenu());
+const sourceLink = document.getElementById("board-source");
+if (sourceLink) sourceLink.addEventListener("click", () => closeMenu());
 document.getElementById("integrations-back").addEventListener("click", goBack);
 
 // Re-read the tracker, with no step and no agent — the icon-only twin of the
@@ -2792,7 +2811,10 @@ followPermission();
 
 pollOnce().then(() => schedulePoll(POLL_MS));
 
+// An entry in the top bar's ⋯ menu, so its words are on screen, not in an
+// aria-label: a menu lists what each entry does.
 const themeToggle = document.getElementById("theme-toggle");
+const themeLabel = document.getElementById("theme-label");
 
 function isDark() {
   return document.documentElement.classList.contains("dark");
@@ -2802,15 +2824,19 @@ function isDark() {
 // first, with no defer, for exactly that reason) — this only ever syncs the
 // label to whatever that decided, never the other way round.
 function syncThemeLabel() {
-  themeToggle.setAttribute("aria-label", isDark() ? "Switch to light mode" : "Switch to dark mode");
+  themeLabel.textContent = isDark() ? "Switch to light mode" : "Switch to dark mode";
 }
 
-themeToggle.addEventListener("click", () => {
+// The choice is made, so the menu goes, as it does for Integrations.
+function toggleTheme() {
   const dark = !isDark();
   document.documentElement.classList.toggle("dark", dark);
   try { localStorage.setItem(THEME_KEY, dark ? "dark" : "light"); } catch (e) {}
   syncThemeLabel();
-});
+  closeMenu();
+}
+
+themeToggle.addEventListener("click", toggleTheme);
 
 syncThemeLabel();
 

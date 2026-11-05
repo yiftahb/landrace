@@ -1,5 +1,6 @@
 import { runInNewContext, Script } from "node:vm";
 import type { BoardRow } from "#namespace.js";
+import { ownRepository } from "#cli/version.js";
 import { APP_CSS, APP_JS, FAVICON_SVG, PAGE_HTML, THEME_JS } from "#ui/page.js";
 
 /**
@@ -1470,16 +1471,16 @@ describe("the page", () => {
   describe("the top bar's ⋯ menu", () => {
     const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
 
-    it("is the last control on the right, after the theme toggle, a menu like the item panel's", () => {
+    it("is the last control on the right, after the bell, a menu like the item panel's", () => {
       const trigger = /<button id="board-more"[^>]*>⋯<\/button>/.exec(header)?.[0] ?? "";
       for (const attr of ['type="button"', 'aria-label="Board actions"', 'title="Board actions"', 'aria-haspopup="menu"', 'aria-expanded="false"', 'data-key="board:trigger"']) {
         expect(trigger).toContain(attr);
       }
-      const toggle = header.indexOf('id="theme-toggle"');
-      expect(toggle).toBeGreaterThan(0);
-      expect(header.indexOf('id="board-more"')).toBeGreaterThan(toggle);
-      // Nothing after it but the menu it opens and the closing tags.
-      const rest = header.slice(header.indexOf('id="board-more"'));
+      const bell = header.indexOf('id="notify-toggle"');
+      expect(bell).toBeGreaterThan(0);
+      expect(header.indexOf('id="board-more"')).toBeGreaterThan(bell);
+      // Nothing between it and the menu it opens.
+      const rest = header.slice(header.indexOf('<button id="board-more"'), header.indexOf('<div id="board-menu"'));
       expect(rest.match(/<button /g)).toHaveLength(1);
       const menu = /<div id="board-menu"[^>]*>/.exec(header)?.[0] ?? "";
       expect(menu).toContain('data-key="board:menu"');
@@ -1488,11 +1489,73 @@ describe("the page", () => {
       expect(menu.split(/\s+/)).toContain("right-0");
     });
 
-    it("holds Integrations, then Run next tick now, each a menuitem", () => {
-      const menu = /<div id="board-menu"[^>]*>([\s\S]*?)<\/div>/.exec(header)?.[1] ?? "";
-      const items = [...menu.matchAll(/<(a|button) ([^>]*)>([^<]*)<\/\1>/g)].map((m) => [m[1], m[3], /role="menuitem"/.test(m[2] ?? ""), /href="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? null]);
-      expect(items).toEqual([["a", "Integrations", true, "#/integrations"], ["button", "Run next tick now", true, null]]);
-      expect(menu).toContain('id="board-tick"');
+    // #199: the theme toggle was the last loose icon in the top bar.
+    const menu = /<div id="board-menu"[^>]*>([\s\S]*?)\n<\/div>/.exec(header)?.[1] ?? "";
+    const inner = (id: string): string => new RegExp(`id="${id}"[^>]*>([\\s\\S]*?)</(a|button)>`).exec(menu)?.[1] ?? "";
+    const words = (id: string): string => inner(id).replace(/<[^>]+>/g, "").trim();
+
+    it("holds Integrations, Run next tick now, the theme toggle, a divider, then Source code", () => {
+      const entries = [...menu.matchAll(/<(a|button|hr)\b([^>]*)>/g)].map((m) => [m[1], /id="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? null, /role="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? null]);
+      expect(entries).toEqual([
+        ["a", "board-integrations", "menuitem"],
+        ["button", "board-tick", "menuitem"],
+        ["button", "theme-toggle", "menuitem"],
+        ["hr", null, "separator"],
+        ["a", "board-source", "menuitem"],
+      ]);
+      expect([words("board-integrations"), words("board-tick"), words("board-source")]).toEqual(["Integrations", "Run next tick now", "Source code"]);
+    });
+
+    it("keeps the theme toggle in the menu alone, never loose in the top bar", () => {
+      expect(header.match(/id="theme-toggle"/g)).toHaveLength(1);
+      expect(menu).toContain('id="theme-toggle"');
+    });
+
+    it("draws the theme toggle as a menu entry with its moon and sun and the words it says, no aria-label", () => {
+      const open = /<button id="theme-toggle"[^>]*>/.exec(menu)?.[0] ?? "";
+      const cls = /class="([^"]*)"/.exec(open)?.[1]?.split(" ") ?? [];
+      const menuItem = /<a id="board-integrations"[^>]*class="([^"]*)"/.exec(menu)?.[1]?.split(" ") ?? [];
+      expect(menuItem.length).toBeGreaterThan(0);
+      expect(cls).toEqual(expect.arrayContaining(menuItem));
+      expect(open).not.toContain("aria-label");
+      expect(inner("theme-toggle").match(/<svg /g)).toHaveLength(2);
+      expect(inner("theme-toggle")).toContain('<span id="theme-label">Switch to dark mode</span>');
+    });
+
+    it("says, and switches to, the other theme, closing the menu", () => {
+      const label = { textContent: "" };
+      const root = new FakeClasses();
+      const seen = { stored: "", closed: 0 };
+      const c: Record<string, unknown> = {
+        document: { documentElement: { classList: root } }, themeLabel: label, THEME_KEY: "landrace-theme",
+        localStorage: { setItem: (_k: string, v: string) => { seen.stored = v; } }, closeMenu: () => { seen.closed += 1; },
+      };
+      for (const f of ["isDark", "syncThemeLabel", "toggleTheme"]) runInNewContext(fnSource(f), c);
+      runInNewContext("syncThemeLabel()", c);
+      expect(label.textContent).toBe("Switch to dark mode");
+      runInNewContext("toggleTheme()", c);
+      expect([root.contains("dark"), seen.stored, label.textContent, seen.closed]).toEqual([true, "dark", "Switch to light mode", 1]);
+      runInNewContext("toggleTheme()", c);
+      expect([root.contains("dark"), seen.stored, label.textContent, seen.closed]).toEqual([false, "light", "Switch to dark mode", 2]);
+      expect(APP_JS).toContain('themeToggle.addEventListener("click", toggleTheme)');
+    });
+
+    it("rules the divider in the menu's own border colours", () => {
+      const hr = /<hr [^>]*>/.exec(menu)?.[0] ?? "";
+      const border = /<div id="board-menu"[^>]*class="([^"]*)"/.exec(header)?.[1]?.split(" ").filter((c) => /border-neutral/.test(c)) ?? [];
+      expect(border.length).toBe(2);
+      expect(hr.split(/[\s"]+/)).toEqual(expect.arrayContaining(border));
+    });
+
+    it("links Source code to this package's own repository in a new tab, titled without https://, closing the menu", () => {
+      const open = /<a id="board-source"[^>]*>/.exec(menu)?.[0] ?? "";
+      const attr = (k: string): string | undefined => new RegExp(`\\s${k}="([^"]*)"`).exec(open)?.[1];
+      const url = ownRepository();
+      expect(url).toMatch(/^https:\/\/[^/]+\/yiftahb\/landrace$/);
+      expect([attr("href"), attr("target"), attr("rel"), attr("title")]).toEqual([url, "_blank", "noopener noreferrer", url?.slice("https://".length)]);
+      // The open-in-new glyph, at its right edge.
+      expect(inner("board-source")).toMatch(/^<span>Source code<\/span>\n?<svg [^>]*class="[^"]*\bml-auto\b[^"]*"[^>]*aria-hidden="true"/);
+      expect(APP_JS).toContain('const sourceLink = document.getElementById("board-source");\nif (sourceLink) sourceLink.addEventListener("click", () => closeMenu());');
     });
 
     it("opens and closes under the one-open rule every row's and the panel's menu keep", () => {
@@ -1567,12 +1630,6 @@ describe("the page", () => {
       .toBeLessThan(PAGE_HTML.indexOf('<script src="/app.js" defer></script>'));
   });
 
-  it("has a theme toggle in the header", () => {
-    const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
-    expect(header).toContain('id="theme-toggle"');
-    expect(header).toMatch(/aria-label="Switch to (dark|light) mode"/);
-  });
-
   it("reads the stored theme, else the OS preference, and sets the class before paint — every localStorage access guarded", () => {
     expect(THEME_JS).toContain("localStorage.getItem(");
     expect(THEME_JS).toContain("prefers-color-scheme: dark");
@@ -1620,7 +1677,7 @@ describe("the page", () => {
     expect(APP_JS).toContain('"aria-label", "Actions"');
   });
 
-  it("wires exactly the top bar's ⋯ menu and its two entries, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, the bell's and the Integrations tab's — no more, no less", () => {
+  it("wires exactly the top bar's ⋯ menu and its three entries, the refresh button, the theme toggle, the search box, Collapse all / Expand all, the collapsible lanes' summaries, the row expand toggle, the row menu toggle, the four links, copy, retry, the two document-level close listeners, the item panel's and pairing's, the message box's shortcut, the bell's and the Integrations tab's — no more, no less", () => {
     // Pins the count deliberately: the top bar's ⋯, its Integrations and its
     // Run next tick now, the refresh button and
     // the theme toggle, the search box and the one Collapse all / Expand all
@@ -1643,8 +1700,9 @@ describe("the page", () => {
     // notification's (defined once, in notifyOf). And the message box's
     // Ctrl/⌘+Enter. And the Integrations tab's: one submit and one click, each
     // on its list, and its Back.
+    // And the ⋯ menu's Source code (#199).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(35);
+    expect(listeners).toHaveLength(36);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {
@@ -2104,7 +2162,7 @@ class FakeClasses {
   contains(cls: string): boolean { return this.set.has(cls); }
 }
 
-// From sm up the panel never comes or goes, so opening or closing an item
+// From lg up the panel never comes or goes, so opening or closing an item
 // never moves the board; with no item it says how to fill it.
 describe("the item panel with nothing selected", () => {
   const aside = /<aside id="panel"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
