@@ -95,6 +95,7 @@ describe("the credential store", () => {
       ["broken", `{"person":{"id":"broken"},"connections":{"github":{"fields":{"token":"${token}" oops}}}}`, /broken\.json is not JSON$/],
       ["enum", JSON.stringify({ person: { id: "enum" }, connections: { github: { ...github, source: token } } }), /enum\.json is not a credentials file: connections\.github\.source/],
       ["typed", JSON.stringify({ person: { id: "typed" }, connections: { github: { ...github, connectedAt: token } } }), /typed\.json is not a credentials file: connections\.github\.connectedAt/],
+      ["other", JSON.stringify({ person: { id: token }, connections: {} }), /other\.json names another person, not "other"$/],
     ] as const;
     for (const [person, text, said] of cases) {
       await writeFile(join(dir, `${person}.json`), text);

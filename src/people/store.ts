@@ -66,7 +66,7 @@ export function createCredentialStore(root: string = join(homedir(), CREDENTIALS
       if ((e as { code?: unknown } | null)?.code === "ENOENT") return { person: { id: personId }, connections: {} };
       return failed(`${file} cannot be read: ${messageOf(e)}`);
     }
-    // Neither problem quotes the file: JSON.parse's message echoes the text
+    // No problem quotes the file: JSON.parse's message echoes the text
     // around the fault, and a zod enum issue the value it got, and either can
     // be part of a token. The path and the kind of fault are enough to fix it.
     let json: unknown;
@@ -79,7 +79,9 @@ export function createCredentialStore(root: string = join(homedir(), CREDENTIALS
     if (!parsed.success) {
       return failed(`${file} is not a credentials file: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${issueOf(i)}`).join("; ")}`);
     }
-    if (parsed.data.person.id !== personId) return failed(`${file} names person "${parsed.data.person.id}", not "${personId}"`);
+    // The id the file names is its own text too, and a hand-edited file could
+    // hold anything there; the id asked for is ours, from the file's name.
+    if (parsed.data.person.id !== personId) return failed(`${file} names another person, not "${personId}"`);
     // Parsed from JSON, an optional key is absent or a string, never `undefined`.
     return parsed.data as PersonCredentials;
   };
