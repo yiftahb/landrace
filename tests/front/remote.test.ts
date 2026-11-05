@@ -415,4 +415,23 @@ describe("a remote door whose MCP credential files cannot be read", () => {
       errors.mockRestore();
     }
   });
+
+  // #209: Node's parse message quotes the text around the fault, which can be part of a token.
+  it("says the clients file is not JSON, never quoting the text it holds, on the line and the 503", async () => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const d = await door({ [MCP_CLIENTS_FILE]: '{"a":{"client_secret":"TOKENLIKE0123456789" oops}}' });
+      const reg = await d.fetch(`${PUBLIC}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const said = await reg.text();
+      expect(said).toMatch(new RegExp(`${MCP_CLIENTS_FILE} is not JSON$`));
+      const printed = errors.mock.calls.map(([m]) => String(m)).join("\n");
+      expect(printed).toContain(`${MCP_CLIENTS_FILE} is not JSON`);
+      for (const text of [said, printed]) {
+        expect(text).not.toContain("TOKENLIKE");
+        expect(text).not.toContain("oops");
+      }
+    } finally {
+      errors.mockRestore();
+    }
+  });
 });

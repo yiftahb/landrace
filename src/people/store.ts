@@ -29,6 +29,15 @@ const fileSchema = z
 
 const fileName = ".json";
 
+/** What is wrong at one path, in words that name types and keys but never a value the file holds. */
+function issueOf(issue: z.ZodIssue): string {
+  if (issue.code === "invalid_type") return `expected ${issue.expected}, got ${issue.received}`;
+  if (issue.code === "unrecognized_keys") return `unknown ${issue.keys.length === 1 ? "key" : "keys"} ${issue.keys.map((k) => `"${k}"`).join(", ")}`;
+  // Our own refinement's message, which is fixed text.
+  if (issue.code === "custom") return issue.message;
+  return "not an allowed value";
+}
+
 /**
  * The store at `root`, by default the directory every run is denied reading
  * (the kit's `CREDENTIALS_DENY`, `CREDENTIALS_ROOT` here): one is the other, so the two cannot drift apart.
@@ -57,15 +66,18 @@ export function createCredentialStore(root: string = join(homedir(), CREDENTIALS
       if ((e as { code?: unknown } | null)?.code === "ENOENT") return { person: { id: personId }, connections: {} };
       return failed(`${file} cannot be read: ${messageOf(e)}`);
     }
+    // Neither problem quotes the file: JSON.parse's message echoes the text
+    // around the fault, and a zod enum issue the value it got, and either can
+    // be part of a token. The path and the kind of fault are enough to fix it.
     let json: unknown;
     try {
       json = JSON.parse(text);
-    } catch (e) {
-      return failed(`${file} is not JSON: ${messageOf(e)}`);
+    } catch {
+      return failed(`${file} is not JSON`);
     }
     const parsed = fileSchema.safeParse(json);
     if (!parsed.success) {
-      return failed(`${file} is not a credentials file: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}`);
+      return failed(`${file} is not a credentials file: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${issueOf(i)}`).join("; ")}`);
     }
     if (parsed.data.person.id !== personId) return failed(`${file} names person "${parsed.data.person.id}", not "${personId}"`);
     // Parsed from JSON, an optional key is absent or a string, never `undefined`.

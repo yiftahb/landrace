@@ -59,12 +59,19 @@ async function writeJson(root: string, name: string, value: unknown, nth: number
 /** One of this door's maps, empty when the file is not there yet; anything but a JSON object is refused, naming the file. */
 async function readMap<T>(root: string, name: string): Promise<Map<string, T>> {
   const file = join(root, name);
-  let parsed: unknown;
+  let text: string;
   try {
-    parsed = JSON.parse(await readFile(file, "utf8"));
+    text = await readFile(file, "utf8");
   } catch (e) {
     if ((e as { code?: unknown } | null)?.code === "ENOENT") return new Map();
     throw new Error(`${file} cannot be read: ${messageOf(e)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Never the parser's message: it quotes the text around the fault, which can be part of a secret.
+    throw new Error(`${file} is not JSON`);
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     const held = parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed;
