@@ -95,7 +95,11 @@ denied, checked, refused — still holds when a person's configuration replaces
 the default it sits in, when a caller leaves it out, and when what it reads is
 missing: a gate the spec adds is required wherever it is taken, never an
 optional field, and denies when its input is absent, each a Done-when line.
-Examples use `example.com`, never a real domain. A page that hands out access on a person's click has
+A list of what untrusted work may not touch names every file the trusted
+reader reads, in each place of that kind — every git directory, the main one
+and one the work could remake alike — taken from the reader's own reference
+(git's `gitrepository-layout`), not from the attacks reproduced, and covers
+every way the work runs, the person's own checkout included. Examples use `example.com`, never a real domain. A page that hands out access on a person's click has
 a Done-when line for each way that click could be forged (framing, a foreign
 `Origin`, a replayed or missing one-time token) and one for each cookie's flags. A trigger or route the spec adds or
 changes is checked against every other way out of its stage, the clean state
