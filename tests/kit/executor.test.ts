@@ -593,6 +593,22 @@ describe("a run's deny list, computed when it starts", () => {
     expect(tiny.plans).toEqual([]);
   });
 
+  it("runs an agent that keeps no path rule in a checkout whose path holds a parenthesis, with nobody else here", async () => {
+    const leaky = new Leaky(markingBin());
+    const env = "/w/Projects (old)/.landrace/.env";
+    await run(leaky, () => Promise.resolve({ always: [CREDS, env], people: [] }), ["repo:read"]);
+    expect(leaky.plans).toHaveLength(1);
+  });
+
+  it("refuses an agent that keeps no path rule, for the people, not the parenthesis, when others are here", async () => {
+    const leaky = new Leaky(markingBin());
+    const refused = await run(leaky, () => Promise.resolve({ always: ["/w/Projects (old)/.landrace/.env"], people: ["/w/bo)b"] }), ["repo:read"])
+      .then(() => "", (e: Error) => e.message);
+    expect(refused).toMatch(/other people are on this instance[\s\S]*\/w\/bo\)b[\s\S]*cannot keep a command from reading a path/);
+    expect(refused).not.toContain("cannot be written as a rule");
+    expect(leaky.plans).toEqual([]);
+  });
+
   it("refuses a run kept under a path no rule can hold, rather than leave it readable", async () => {
     const tiny = new Kept(markingBin());
     tiny.kept = { "/w/bob": ["/home/.agent/-w-bob-(x)"] };

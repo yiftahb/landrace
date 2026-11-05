@@ -409,6 +409,19 @@ describe("the Codex integration", () => {
       it("runs as it always has when nobody else is there", async () => {
         await expect(started({ always: ["~/.landrace/credentials", "/r/.landrace/.env"], people: [] })).resolves.toMatchObject({ text: "ran" });
       });
+
+      // Codex keeps no path rule at all, so a path no rule could hold changes
+      // nothing for it: refusing it refused a checkout that always ran.
+      it("runs as it always has in a checkout whose path holds a parenthesis, with nobody else there", async () => {
+        await expect(started({ always: ["~/.landrace/credentials", "/r/Projects (old)/.landrace/.env"], people: [] }))
+          .resolves.toMatchObject({ text: "ran" });
+      });
+
+      it("still refuses, naming the person's folder, when others are there and the checkout's path holds a parenthesis", async () => {
+        const refused = await started({ always: ["/r/Projects (old)/.landrace/.env"], people: ["/tmp/landrace/r/worktrees/bob"] })
+          .then(() => "", (e: Error) => e.message);
+        expect(refused).toMatch(/refused the run: other people are on this instance[\s\S]*\/tmp\/landrace\/r\/worktrees\/bob/);
+      });
     });
 
     it("refuses a key only another integration reads", async () => {

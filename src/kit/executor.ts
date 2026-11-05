@@ -805,9 +805,9 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    * The sandbox's list with what `denyPaths` answers now, and the
    * transcripts the agent keeps under each other person's folder, each once —
    * or a refusal. Not dropped, any of them: a path left off is another
-   * person's worktree left readable. So a path a rule cannot hold — a
-   * parenthesis ends a rule early, and a control character names a path
-   * that is not there — is refused, named; and so is an agent that cannot
+   * person's worktree left readable. So, for an agent that keeps rules, a
+   * path a rule cannot hold — a parenthesis ends a rule early, and a control
+   * character names a path that is not there — is refused, named; and so is an agent that cannot
    * keep a command from a path, once the list holds more than `always` — the
    * credentials and the `.env` it has always been run beside.
    */
@@ -818,20 +818,26 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     const computed = [...always, ...beyond];
     // eslint-disable-next-line no-control-regex -- excluding control chars is the point, not a leftover
     const unwritable = (paths: readonly string[]): string => paths.filter((path) => /[()\x00-\x1F\x7F]/.test(path)).map((p) => JSON.stringify(p)).join(", ");
-    // Each with its own consequence: a checkout under "Projects (old)" puts
-    // the `.env` here with nobody else on the instance.
-    const own = unwritable(always);
-    if (own) throw new Error(`refused the run: ${own} cannot be written as a rule the ${this.id} executor keeps, and left off, the run could read it`);
-    const theirs = unwritable(beyond);
+    // `sandboxProblems` only decides: its words are about the operator's
+    // `agent.sandbox.deny`, which named none of these, and its fix — `deny: []`
+    // — does not lift this refusal.
+    const unkeptBy = (paths: readonly string[]): boolean => paths.length > 0 && (this.sandboxProblems?.({ hosts: [], deny: [...paths] }) ?? []).length > 0;
+    // A path no rule can hold matters only to an agent that keeps rules: one
+    // that keeps none was never denied `always`, so refusing its
+    // unwritable `.env` refused a checkout under "Projects (old)" that always ran.
+    if (!unkeptBy(always)) {
+      // Each with its own consequence: a checkout under "Projects (old)" puts
+      // the `.env` here with nobody else on the instance.
+      const own = unwritable(always);
+      if (own) throw new Error(`refused the run: ${own} cannot be written as a rule the ${this.id} executor keeps, and left off, the run could read it`);
+    }
+    const unkept = unkeptBy(beyond);
+    const theirs = unkept ? "" : unwritable(beyond);
     if (theirs) {
       throw new Error(`refused the run: ${theirs} cannot be written as a rule the ${this.id} executor keeps, ` +
         "and left off, another person's work would be readable");
     }
-    // `sandboxProblems` only decides: its words are about the operator's
-    // `agent.sandbox.deny`, which named none of these, and its fix — `deny: []`
-    // — does not lift this refusal.
-    const unkept = beyond.length ? this.sandboxProblems?.({ hosts: [], deny: beyond }) ?? [] : [];
-    if (unkept.length) {
+    if (unkept) {
       throw new Error(`refused the run: other people are on this instance, and it must not read their work, ${beyond.join(", ")}, ` +
         `but the ${this.id} executor cannot keep a command from reading a path`);
     }
