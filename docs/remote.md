@@ -85,9 +85,9 @@ A person opens the public URL.
 
 Their connections are ready when every connection their steps need is connected and none they stored has expired or failed. On a remote instance that means:
 
-- **Their Claude Code token.** Claude Code's connection is required on a remote instance, whatever the keys say.
+- **Their Claude Code token, in a Claude project.** Claude Code's connection is marked `required: remote`, so it is required on a remote instance, whatever the keys say.
 - **Each [per-person key](configuration.md#per-person-keys).** A key's `env` variable is ignored here, even when it is set: it belongs to the machine, not to a person. Each person's value comes from their own connection.
-- **Any connection a hook marks `required: always`**, and any connection they stored, which must not have expired or failed.
+- **Any connection a hook marks `required: always` or `required: remote`**, and any connection they stored, which must not have expired or failed.
 
 While any of these is missing, nothing runs for that person: no tick lists their items, and their `/mcp` answers `503`. The page is the Integrations tab alone, as [A connection not made](cli.md#landrace-start) describes for a local start. Once their last connection is made, their runtime is built, and the board comes back at the next poll. Other people are not affected.
 
@@ -133,7 +133,7 @@ An override is stored with `source: override` the next time they sign in, in pla
 
 Each person whose connections are ready has a runtime of their own. It loads every workflow in the workspace, with that person's own values.
 
-- **Their own keys.** Every per-person key is filled from their own connections. A step runs on their own Claude Code token, handed to it as `CLAUDE_CODE_OAUTH_TOKEN`. A secret written as a plain value or `$VAR` in `landrace.yaml` is the instance's, and every person's runtime gets the same one.
+- **Their own keys.** Every per-person key is filled from their own connections. In a Claude project, a step runs on their own Claude Code token, handed to it as `CLAUDE_CODE_OAUTH_TOKEN`. Codex has no per-person connection: a Codex step runs on the operator's own Codex login (`CODEX_HOME`). And while anyone else is on the roster, every Codex run is refused, because Codex cannot keep the per-person deny list (see [People on one instance](security.md#people-on-one-instance)). A secret written as a plain value or `$VAR` in `landrace.yaml` is the instance's, and every person's runtime gets the same one.
 - **Their own events.** Every event their runtime logs carries their `person` id and `personEmail`.
 - **One loop for everyone.** One schedule ticks every ready person's runtime together. The agent slots are shared: `tick.concurrency` bounds the steps running across the whole team, not per person.
 
@@ -212,8 +212,8 @@ To remove someone completely, do all four, in this order:
 
 1. Remove them at the provider.
 2. Stop `start`.
-3. Delete their credentials file. Their id is the file's name, and the `person` field of their `signin.ok` events.
-4. Remove their refresh tokens. With [jq](https://jqlang.org/), replace `<person id>` with their id:
+3. Delete their credentials file. Their id is the `person` field of their `signin.ok` events. The file's name is that id URL-encoded, so a `sub` such as `auth0|abc` names `auth0%7Cabc.json`.
+4. Remove their refresh tokens. With [jq](https://jqlang.org/), replace `<person id>` with their id as the `person` field gives it, not the file's name:
 
    ```bash
    cd ~/.landrace/credentials/mcp
