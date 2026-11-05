@@ -103,7 +103,7 @@ Before signing in, a page request is redirected to `/login?return=<path>`, and a
 
 ## After signing in
 
-Each person sets up their own connections once, in the board's Integrations tab. It is in the `⋯` menu at the top right. How the tab works is in [Command line](cli.md#the-board).
+Each person sets up their own connections once, in the board's Integrations tab. It is in the cog menu at the top right. How the tab works is in [Command line](cli.md#the-board).
 
 1. **Paste each credential the tab asks for.** A row that is not connected shows a form, with a hint on where the value comes from. Claude Code's is the output of `claude setup-token`. The connection's check judges the value before it is stored, and the tab shows why it refused one.
 2. **Connect with GitLab or GitHub,** where the instance has that forge's OAuth app. The row shows a link in place of the form. It signs the person in at the forge and brings them back to the tab. Setting up the app is in [Integrations](integrations.md#connect-with-gitlab-or-github).
