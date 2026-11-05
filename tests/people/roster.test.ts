@@ -359,9 +359,13 @@ describe("one runner, many people", () => {
 
     expect(w.named("item.aborted")).toEqual([]);
     expect(w.inFlight("alice")).toBe(1);
+    // #209: an id is the provider's `sub`, and this note is on alice's board:
+    // it names nobody but her. Who could not be listed is the operator's log's.
     expect(lastRows(w, "alice")).toEqual(expect.arrayContaining([
-      { item: "2", outcome: "whether another person also claims it is unknown: bob's items could not be listed" },
+      { item: "2", outcome: "whether another person also claims it is unknown: another person's items could not be listed" },
     ]));
+    expect(JSON.stringify(lastRows(w, "alice"))).not.toContain("bob");
+    expect(w.named("source.failed")).toEqual(expect.arrayContaining([expect.objectContaining({ people: ["bob"] })]));
     expect(w.runs.map((r) => r.item)).toEqual(["1"]);
 
     w.down("bob", false);

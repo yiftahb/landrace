@@ -4,7 +4,7 @@ import { resolvePerson } from "#people/resolve.js";
 import { messageOf, Refusal } from "#runner/errors.js";
 import { createSlotPool } from "#runner/pool.js";
 import { createRuntimeSlot } from "#runner/slot.js";
-import { andList, excludeAmbiguous, listingFailures, listWorkspace, retireRuntime, tickWorkspace } from "#runner/tick.js";
+import { excludeAmbiguous, listingFailures, listWorkspace, retireRuntime, tickWorkspace } from "#runner/tick.js";
 import type {
   Board, BoardView, Person, PersonJudged, PersonRuntime, Roster, RosterOptions, WorkspaceListing, WorkspaceRuntime,
 } from "#namespace.js";
@@ -299,16 +299,25 @@ export function createRoster(opts: RosterOptions): Roster {
       const failed = running.filter((_, i) => (listings[i]?.failed.size ?? 0) > 0).map((r) => r.entry.person.id);
       // One person's tracker down leaves who else claims what unknown: the
       // same rule as two sources, one level up. Runs go on; nothing new starts.
-      const unjudged = failed.length
-        ? `whether another person also claims it is unknown: ${andList(failed)}'s items could not be listed`
-        : undefined;
-      if (unjudged === undefined) {
+      // Each person's note is on their own board, so it names only them: an id
+      // is the provider's `sub`, nobody else's to see. The operator's log names all.
+      const unjudged = failed.length > 0;
+      if (unjudged) opts.log("source.failed", { people: failed, reason: "their items could not be listed, so whether another person also claims an item is unknown" });
+      const unjudgedFor = (personId: string): string => {
+        const others = failed.filter((id) => id !== personId).length;
+        const whose = [
+          ...(failed.includes(personId) ? [`${personId}'s`] : []),
+          ...(others === 0 ? [] : [others === 1 ? "another person's" : "other people's"]),
+        ];
+        return `whether another person also claims it is unknown: ${whose.join(" and ")} items could not be listed`;
+      };
+      if (!unjudged) {
         lastAmbiguous = ambiguousClaims(running.map(({ entry }, i) => ({
           personId: entry.person.id, items: listings[i] === undefined ? [] : claimedIn(listings[i]),
         })));
         for (const [item, people] of lastAmbiguous) opts.log("item.ambiguous", { item, people });
       }
-      const ambiguous = unjudged === undefined ? lastAmbiguous : new Map<string, string[]>();
+      const ambiguous = unjudged ? new Map<string, string[]>() : lastAmbiguous;
 
       await Promise.all(running.map(async ({ entry, rt }, i) => {
         const own = listings[i];
@@ -319,7 +328,7 @@ export function createRoster(opts: RosterOptions): Roster {
           const rows = await tickWorkspace({
             runtime: rt, listed, ...(opts.lock ? { lock: opts.lock } : {}),
             onList: (listing) => opts.seen?.(entry.person, rt, listing),
-            ...(unjudged === undefined ? {} : { unjudged }),
+            ...(unjudged ? { unjudged: unjudgedFor(entry.person.id) } : {}),
           });
           opts.rows?.(entry.person, rt, rows);
         } catch (e) {
