@@ -35,15 +35,15 @@ A step declaring `repo:write` runs shell commands. In this repository that is `b
 agent:
   sandbox:
     hosts: [github.com, registry.npmjs.org]   # the only network a write step reaches
-    deny:  [~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc]
+    deny:  [~/.config/gh, ~/.ssh, ~/.aws, ~/.npmrc, ~/.git-credentials, ~/.config/git/credentials]
 ```
 
 - **Writes** land only in the step's worktree and in the repository's shared `.git` — never in your checkout, your home, `.git/hooks` or `.git/config`.
 - **Network** is confined for commands, not for every tool. The allowlist confines what the shell and anything it runs can reach to `hosts`: a host name, or the sandbox's own `*.example.com` wildcard, with no scheme, port or path. With no `hosts`, a write step's commands have no network at all, and cannot fetch or push. In-process tools such as WebFetch and WebSearch do not go through the sandbox; they follow Claude Code's own permission rules, which deny them under `-p`. Your own settings reach no step, so they cannot allow them; only managed settings, which `--setting-sources` does not govern, could.
-- **Reads** are refused under each `deny` path — by the sandbox for commands, and by a `Read` rule for the Read tool, which the sandbox does not cover. A path starts with `~/`. With no `deny`, the four paths above and `~/.landrace/credentials` apply; a list you write replaces them, so keep the ones you still want. `~/.landrace/credentials` is denied whatever the list says — see [Stored credentials](#stored-credentials).
+- **Reads** are refused under each `deny` path — by the sandbox for commands, and by a `Read` rule for the Read tool, which the sandbox does not cover. A path starts with `~/`. With no `deny`, the six paths above and `~/.landrace/credentials` apply. `~/.git-credentials` and `~/.config/git/credentials` are where git's `store` helper keeps passwords. A list you write replaces them, so keep the ones you still want. `~/.landrace/credentials` and the workspace's `.env` are denied whatever the list says — see [Stored credentials](#stored-credentials).
 - **No way out.** If the sandbox cannot start, the step is refused rather than run unconfined, and no command may ask to run outside it.
 - **Strict keys.** `sandbox` takes `hosts` and `deny` and nothing else; a misspelt key is refused at startup.
-- **Read-only steps** have no shell to confine. They get a `Read` rule for each denied path, `~/.landrace/credentials` included. **The screener** has no tool at all.
+- **Read-only steps** have no shell to confine. They get a `Read` rule for each denied path, `~/.landrace/credentials` and the `.env` included. **The screener** has no tool at all.
 
 What it does not do:
 
@@ -61,7 +61,18 @@ Codex's sandbox is different and keeps less — see [Integrations](integrations.
 
 The Claude Code integration denies `~/.landrace/credentials` to every step and turn, whatever `agent.sandbox.deny` says: a list you write replaces the defaults, and this repository's own `landrace.yaml` writes one. A write step gets it in the sandbox's `denyRead` and as `Read` rules; a read-only step gets the `Read` rules.
 
-**Codex does not keep it.** Codex cannot keep a command from reading a path, so it runs only with `deny: []` (see [Integrations](integrations.md#codex)). Under Codex, every step and turn can read `~/.landrace/credentials`. Do not store a connection you would not hand a step while running Codex.
+**Codex does not keep it.** Codex cannot keep a command from reading a path, so it runs only with `deny: []` (see [Integrations](integrations.md#codex)). Under Codex, every step and turn can read `~/.landrace/credentials` and the workspace's `.env`. Do not store a connection, or keep a secret in `.env`, that you would not hand a step while running Codex.
+
+### The workspace's `.env`
+
+Every step and turn is denied the `.env` beside `landrace.yaml`, normally `.landrace/.env` in your checkout, whatever `agent.sandbox.deny` says. It holds your tokens, and on a remote instance also the sign-in client's secret, each OAuth app's client secret and any shared tracker token. No step needs it: Landrace reads it, and a step gets only what Landrace hands it. It is denied by its absolute path, locally as remotely, in a write step's sandbox `denyRead` and as `Read` rules. When the path you start in runs through a symlink, the `.env` is also denied by its real path, which a worktree's `.git` file names. When the `.env` is itself a symlink, as a dotfiles manager or a secrets mount makes it, the file it points at is denied too. A `.env` symlink that will not resolve, a loop for instance, refuses the run.
+
+- **A checkout path no rule can hold refuses the run for an agent that keeps path rules, such as Claude.** A path holding `(`, `)` or a control character would end a rule early. Rather than leave the `.env` readable, each such run is refused, naming the path. Move the checkout to a path without them. Codex keeps no path rules, so it runs in such a checkout when no one else is on the instance.
+- **Copies are not covered.** A `.env` that `agent.worktree.copy` copies into a worktree is a file inside it — see [Copied files and setup](#copied-files-and-setup).
+
+### What no path covers
+
+Your coding agent's own login, when the operating system's keychain holds it rather than a file, is not denied: it is not a path, so no `deny` entry reaches it. Neither is what a step's commands can ask your git credential helper for (see [A write step's sandbox](#a-write-steps-sandbox)).
 
 ### Copied files and setup
 
@@ -73,14 +84,14 @@ The Claude Code integration denies `~/.landrace/credentials` to every step and t
 
 ## People on one instance
 
-`start` runs a step for each person its roster holds. Each person's worktrees are in a folder of their own, `$TMPDIR/landrace/<repo>/worktrees/<person id>/`, with the id URL-encoded. Locally the roster is only you, so this section changes nothing there.
+`start` runs a step for each person its roster holds. Each person's worktrees are in a folder of their own, `$TMPDIR/landrace/<repo>/worktrees/<person id>/`, with the id URL-encoded. Locally the roster is only you, so nobody else's folder is listed there.
 
-When a person's step starts, Landrace lists what it may not read: `~/.landrace/credentials`, each other person's worktree folder, and the folders where Claude Code keeps the sessions of runs in those worktrees, under `~/.claude/projects/`. The list joins `agent.sandbox.deny` for that run. A write step gets it in the sandbox's `denyRead` and as `Read` rules; a read-only step gets the `Read` rules. The person's own folders are never on it.
+When a person's step starts, Landrace lists what it may not read: `~/.landrace/credentials`, the workspace's `.env`, every folder under `worktrees/` but their own, and the folders where Claude Code keeps the sessions of runs in those folders, under `~/.claude/projects/`. Every folder means each other person the roster holds, and any other folder there when the step starts: a person a sync drops from the roster stays on the list while their folder is there, and their runs finish in it. The list joins `agent.sandbox.deny` for that run. A write step gets it in the sandbox's `denyRead` and as `Read` rules; a read-only step gets the `Read` rules. The person's own folders are never on it.
 
-- **Asked fresh for every run.** Someone who joins on a sync, and a session another person's run started after yours was built, are on your next step's list. A session started while your step is running is not on that step's list.
+- **Asked fresh for every run.** The folder is read again each time, so someone who joins on a sync, and a session another person's run started after yours was built, are on your next step's list. A session started while your step is running is not on that step's list.
 - **A session folder is matched by its name.** Claude Code names it after the run's folder, with every character but a letter or digit turned into `-`. A folder counts as another person's when its name is theirs, or starts with theirs followed by `-`, so `bob` never covers `bobby`. Two paths can encode alike; the match then denies more, never less.
 - **A path no rule can hold refuses the run.** A path holding `(`, `)` or a control character would end a rule early, or name something that is not there. Rather than leave that person readable, the run is refused, naming the path. URL encoding keeps `(` and `)`, so a person id holding either refuses every other person's steps.
-- **An agent that cannot keep the list refuses the run.** Codex cannot keep a command from a path, so while anyone else is on the roster each of its runs is refused. Alone, it runs as before.
+- **An agent that cannot keep the list refuses the run.** Codex cannot keep a command from a path, so while the list names any other person's folder, someone on the roster or someone who has left, each of its runs is refused. With no other folder there, it runs as before, beside the credentials and the `.env`, which it cannot keep from a command either.
 - **Sub-items are filed as the step's person.** The server that serves a step's `landrace_create_child` is started with that person's id, and reads only their connections. It refuses an id the credentials store does not hold.
 - **Agent activity is kept per person.** Each person's runs write to their own activity log, `$TMPDIR/landrace/<repo>/activity/<person id>.person/`, with the id URL-encoded. The board's item panel reads only the caller's own, and only for an item on their board.
 - **Nobody is served under someone else's judging.** Until Landrace has judged a person who signed in, their Integrations tab is refused with "not ready yet" (or "could not be judged", with the scrubbed error, when judging them failed), and their connections are not renewed. The start's own judging belongs to the local person, and stands in for nobody else.
@@ -165,6 +176,7 @@ With [`people.oidc`](remote.md) set, the door may listen beyond loopback, becaus
 - **MCP tokens.** `/mcp` takes only a bearer token Landrace issued, and serves only the tools of the person it was issued to. Access tokens live in memory for an hour. Refresh tokens are stored hashed in a `0600` file under the credentials directory every step is denied reading, and each works once. However often one is rotated, the chain ends 30 days after the person approved the client.
 - **Consent.** Anyone can register an MCP client, so a token is issued only after a signed-in person approves that client on Landrace's consent page. The page is sent with `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so another site cannot overlay it to take your click. Approve is refused with a foreign `Origin`, and without the page's one-time token, which is bound to your session and to that one authorization request and expires in ten minutes. A form on another site therefore cannot approve for you, whatever the browser does with `SameSite`.
 - **One identity, one person.** An identity value — a tracker account, say — that another person already holds is marked failed on the newcomer, whether a lookup or an admin's override gave it.
+- **Worktrees only.** `validate` reports, and `start` refuses, `agent.isolation: none` as `agent.isolation`: each person's agent would run in your own checkout, beside its `.env` and everyone else's work.
 
 Landrace checks who signed in, not what they may do: everyone `people.allow` admits gets an instance of their own on this machine. Keep the list to the people you trust to run steps on this machine: see [Who can sign in](remote.md#who-can-sign-in).
 

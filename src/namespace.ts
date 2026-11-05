@@ -980,12 +980,31 @@ export type ExecutorContext = RuntimeContext & {
   personEnv?: Readonly<Record<string, string>>;
   /**
    * What the person's runs may not read beyond the sandbox's own list: the
-   * credentials and each other person's worktrees. A function, asked as each
-   * run starts: who else is here changes on a sync, and their runs keep
-   * leaving transcripts. Absent, only what the sandbox lists.
+   * credentials, the workspace's `.env`, each other person's worktrees, and
+   * every other folder under the sandbox's worktrees, a departed person's too.
+   * A function, asked as each run starts: who else is here changes on a sync,
+   * and their runs keep leaving transcripts. Absent, only what the sandbox lists.
    */
-  denyPaths?: () => Promise<string[]>;
+  denyPaths?: () => Promise<RunDenials>;
 };
+
+/**
+ * What one run may not read beyond `agent.sandbox.deny`, judged apart: an
+ * agent that cannot keep a path runs beside `always`, as it always has, and is
+ * refused once `people` or `found` names anything.
+ */
+export interface RunDenials {
+  /** Denied every run, alone or not: Landrace's credentials and the workspace's `.env`. */
+  always: string[];
+  /** The roster's other people's worktree folders, absolute; an agent's transcripts under each join them. */
+  people: string[];
+  /**
+   * Every other folder under the sandbox's worktrees the roster does not name
+   * — a person a sync just dropped, or the operator's own — denied as `people`
+   * is, and apart only so a refusal names the case that fired.
+   */
+  found?: string[] | undefined;
+}
 
 /**
  * Which of a person's connections an executor runs on, and how: `id` names
@@ -1083,7 +1102,7 @@ export interface KitSettings {
   /** Set on every run's environment over the kit's own; `create` sets it from `ExecutorContext.personEnv`. */
   personEnv?: Readonly<Record<string, string>> | undefined;
   /** Asked as each run starts, and merged into every tier's deny list; `create` sets it from `ExecutorContext.denyPaths`. */
-  denyPaths?: (() => Promise<string[]>) | undefined;
+  denyPaths?: (() => Promise<RunDenials>) | undefined;
 }
 
 /**

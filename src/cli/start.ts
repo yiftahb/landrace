@@ -1,5 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import { spawn } from "node:child_process";
+import { realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
@@ -16,7 +17,7 @@ import { createCredentialStore, credentialValues } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
 import { createRoster } from "#people/roster.js";
 import { admits, allowProblems } from "#people/allow.js";
-import { denyForPerson, scopeOf } from "#people/isolation.js";
+import { denyForPerson, scopeOf, worktreeFolders } from "#people/isolation.js";
 import { createSlotPool } from "#runner/pool.js";
 import { send as sendPage } from "#ui/server.js";
 import { defineExecutor } from "#hooks/contracts.js";
@@ -62,6 +63,7 @@ import type {
   SeenAt,
   Registry,
   RuntimeConfig,
+  RunDenials,
   RuntimeContext,
   Schedule,
   Screener,
@@ -815,6 +817,43 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sa
 }
 
 /**
+ * What a person's runs may not read, for `ExecutorContext.denyPaths`: the
+ * credentials, the `.env` `loadConfig` reads beside landrace.yaml in `dir`,
+ * and each other person's folder of worktrees — the roster's and, for anyone
+ * with a folder of their own, every other folder there now. Asked as each run
+ * starts, since the roster changes on a sync and a person who left keeps their
+ * folder. Shared by every path that builds an executor which runs: a step, a
+ * screener, a pairing's turn.
+ *
+ * The `.env` by both its spellings: the `dir` the start was given, and its
+ * real path. Started through a symlink, a worktree's `.git` file names the
+ * real repository, so a step can read the `.env` by a path the given one's
+ * rule never matches. And the file itself by its real path: a `.env` that is
+ * a symlink is read from its target, which a step can `cat` by that path.
+ * Read per run, as the folders are; a `dir` or a `.env` that will not resolve
+ * refuses the run rather than leave the real spelling open — except a `.env`
+ * that is not there, which has no other spelling to deny.
+ */
+export function denyPathsFor(
+  dir: string, person: Pick<Person, "id">, sandbox: Sandbox | null, others: () => readonly Pick<Person, "id">[],
+): () => Promise<RunDenials> {
+  const worktrees = join(sandboxRoot(dir), "worktrees");
+  const own = sandbox?.scope;
+  return async () => {
+    const given = resolve(dir, ".env");
+    const target = await realpath(given).catch((e: unknown) => {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw e;
+    });
+    const env = [given, join(await realpath(dir), ".env"), ...(target === undefined ? [] : [target])];
+    return denyForPerson(person, others(), {
+      worktrees, credentials: CREDENTIALS_ROOT, env, own,
+      present: own === undefined ? [] : await worktreeFolders(worktrees),
+    });
+  };
+}
+
+/**
  * The step executor of a runtime built only to read. Its id is still checked
  * against the registry through `registeredExecutor`, so `status` refuses an
  * adapter nothing answers to exactly as `start` does; it just never builds
@@ -1116,12 +1155,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // Anyone but the local person cuts their worktrees in a folder of their own.
   const unscoped = await sandboxFor(loaded.config, dir);
   const sandbox = unscoped === null || person.id === LOCAL_PERSON_ID ? unscoped : { ...unscoped, scope: scopeOf(person) };
-  // What this person's runs may not read: the credentials, and each other
-  // person's folder of worktrees, asked as each run starts, since the roster
-  // changes on a sync. Alone, the credentials every run was already denied.
-  const denyPaths = (): Promise<string[]> => Promise.resolve(denyForPerson(person, opts.others?.() ?? [], {
-    worktrees: join(sandboxRoot(dir), "worktrees"), credentials: CREDENTIALS_ROOT,
-  }));
+  const denyPaths = denyPathsFor(dir, person, sandbox, opts.others ?? (() => []));
   // What each step's agent is doing, for the page's item panel: one log per
   // person, keyed by item as the locks are, so two people's runs of one item
   // never share lines. Not for `landrace status`, which runs no step and must

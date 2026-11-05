@@ -947,7 +947,7 @@ describe("the shipped write steps merge, test, commit and push their own branch"
     const { config } = await loadConfig(".landrace");
     expect(readClaudeSettings(config.agent).sandbox).toEqual({
       hosts: ["github.com", "registry.npmjs.org"],
-      deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc"],
+      deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.git-credentials", "~/.config/git/credentials"],
     });
   });
 
