@@ -1,6 +1,6 @@
 import { extractJsonBlock } from "#agent/json-block.js";
 import { screenPrompt } from "#agent/screen.js";
-import { ensureWorktree, removeWorktree } from "#agent/worktree.js";
+import { checkoutControlPaths, ensureWorktree, gitControlPaths, removeWorktree } from "#agent/worktree.js";
 import {
   CAPABILITIES,
   CONVERSATION_KIND,
@@ -23,6 +23,7 @@ import type {
   Snapshot,
   Stage,
   Step,
+  StepSandbox,
   Workflow,
 } from "#namespace.js";
 import { withLock } from "#runner/lock.js";
@@ -269,13 +270,13 @@ export function createConversation(deps: ConversationDeps): Conversation {
            * a client that disconnected leaves no directory behind — and with
            * it, whatever the agent wrote that it was not entitled to.
            */
-          let sandbox: { path: string } | undefined;
+          let sandbox: StepSandbox | undefined;
           try {
             if (root !== undefined) {
               const on = branch.branch === null
                 ? undefined
                 : { branch: branch.branch, write: mayWriteRepo(step.capabilities) };
-              sandbox = { path: await ensureWorktree(item, root, on, item, { signal: turnSignal, scope }) };
+              sandbox = { path: await ensureWorktree(item, root, on, item, { signal: turnSignal, scope }), root };
             }
 
             // Read before the agent runs, and a failure refuses the turn
@@ -283,6 +284,14 @@ export function createConversation(deps: ConversationDeps): Conversation {
             // verified nothing.
             const start = await sandboxBefore(sandbox, step.capabilities);
             if (!start.ok) throw new Error(`cannot ask: ${start.reason}`);
+
+            // A turn on a step that may write is denied the git control paths
+            // the step is, worktree or none: see `gitControlPaths`.
+            const denyWrite = !mayWriteRepo(step.capabilities)
+              ? []
+              : sandbox
+                ? await gitControlPaths(sandbox.path, sandbox.root)
+                : await checkoutControlPaths([process.cwd(), ...(deps.workspace === undefined ? [] : [deps.workspace])]);
 
             // The person's words, first and unmarked: they are a human turn —
             // the same rule `landrace_reply` follows — so the item shows who
@@ -321,6 +330,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
                 // never reads timeoutMs still stops.
                 timeoutMs: turnTimeoutMs,
                 ...(sandbox ? { cwd: sandbox.path } : {}),
+                ...(denyWrite.length ? { denyWrite } : {}),
                 // Beside the step's own lines, under the round it joined, so
                 // the panel shows an Ask's progress without wiping the step's.
                 ...(deps.activity

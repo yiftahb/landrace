@@ -358,6 +358,19 @@ export function shellLine(argv: readonly HandoffArg[]): string {
 }
 
 /**
+ * Put before every git command the engine runs. A step that may write shares
+ * the repository's git directory, and git runs what its configuration and
+ * hooks name: a hook a step planted, or a `core.hooksPath` or `core.fsmonitor`
+ * it pointed at a script, would run in the engine's own environment — the
+ * forge token, the whole HOME, outside any sandbox — the next time the engine
+ * checks a worktree out or reads its status. Reproduced on git 2.50.1.
+ * Filters are not here: overriding `filter.*` breaks a repository's own
+ * `git lfs install --local`, and a write step is denied the config that sets
+ * them instead (see `gitControlPaths`).
+ */
+export const GIT_GUARD_ARGS: readonly string[] = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+
+/**
  * The env vars a subprocess needs to run at all (locate its own binary, find
  * $HOME for its own credential store, resolve a temp dir) — never the
  * parent's full environment. `spawn` inherits `process.env` wholesale by

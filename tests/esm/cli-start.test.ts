@@ -503,6 +503,37 @@ describe("buildWorkspaceRuntime", () => {
     await expect(buildMain(dir, {})).rejects.toThrow(/executor "codex" could not start: stage "spec" waits for a pairing, but the codex executor can only carry on/);
   });
 
+  /*
+   * A step that may write shares the repository's git directory. An
+   * integration that has not shown it keeps a run from the git paths the
+   * engine lists is refused it at start, naming the step, never left to run
+   * a step that could plant a hook landrace's git then runs. A read step
+   * under the same integration starts.
+   */
+  it("refuses a step that may write under an executor that cannot keep a run from writing a path", async () => {
+    const codex = JSON.stringify(join(process.cwd(), "integrations", "codex", "index.ts"));
+    const startWith = async (capabilities: string): Promise<string> => {
+      const { dir } = await fixture({
+        agent: "codex", agentKeys: "sandbox: { deny: [] }",
+        hookExtra: `\nconst { Codex } = await import((await import("node:url")).pathToFileURL(${codex}).href);\nexport const codex = new Codex();\n`,
+      });
+      await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+      await writeFile(join(workflowIn(dir), "steps", "build.md"), [
+        "---", `capabilities: [${capabilities}]`, "output:", "  discriminator: kind", "  shapes: { done: {} }",
+        "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+        "---", "", "build", "",
+      ].join("\n"));
+      await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW
+        .replace("    terminal: true\n", "    step: steps/build.md\n")
+        .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+      return dir;
+    };
+
+    await expect(buildMain(await startWith("repo:read, repo:write"), {})).rejects.toThrow(
+      /executor "codex" could not start: steps\/build\.md may write the repository, and the codex executor cannot keep a run from writing a path/);
+    await expect(buildMain(await startWith("repo:read"), {})).resolves.toBeDefined();
+  });
+
   // Not only the kit's: a plain Executor hook with no handoff could never be
   // paired with either, and the item would sit in Needs you for good.
   it("refuses a stage that waits for a pairing under a plain executor hook with no handoff, and accepts one with", async () => {

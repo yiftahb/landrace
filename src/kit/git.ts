@@ -13,7 +13,7 @@ import { execFile } from "node:child_process";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { EffectRefused, isReservedId } from "#conventions.js";
+import { EffectRefused, GIT_GUARD_ARGS, isReservedId } from "#conventions.js";
 import type { BranchHeads, Git, Snapshot } from "#namespace.js";
 
 export type { BranchHeads, Git } from "#namespace.js";
@@ -31,7 +31,8 @@ const execFileAsync = promisify(execFile);
 export function gitIn(dir: string): Git {
   return async (args, env = {}, { signal, timeoutMs } = {}) => {
     try {
-      const { stdout } = await execFileAsync("git", args, {
+      // Hooks and fsmonitor off: see GIT_GUARD_ARGS.
+      const { stdout } = await execFileAsync("git", [...GIT_GUARD_ARGS, ...args], {
         cwd: dir,
         env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
         maxBuffer: 16 * 1024 * 1024,

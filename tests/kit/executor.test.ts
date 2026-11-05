@@ -308,6 +308,59 @@ describe("BaseExecutor", () => {
         /^steps\/build\.md lists skills:, which the tiny executor cannot enforce\nsteps\/retro\.md lists plugins:, which the tiny executor cannot enforce$/);
     });
 
+    describe("a step that may write, beside the git paths it may not", () => {
+      class Keeping extends Tiny {
+        protected override readonly keepsDenyWrite = true;
+      }
+      const steps = new Map<string, Step>([
+        ["steps/build.md", { capabilities: ["repo:read", "repo:write"], prompt: "" } as Step],
+        ["steps/review.md", { capabilities: ["repo:read"], prompt: "" } as Step],
+      ]);
+      const GIT = ["/repo/.git/config", "/repo/.git/hooks", "/wt/.git"];
+      const signal = new AbortController().signal;
+
+      it("is refused at startup, naming the step, when the integration does not keep a run from writing a path", async () => {
+        await expect(new Tiny("tiny").create(ctxFor({ adapter: "tiny" }, steps))).rejects.toThrow(
+          /^steps\/build\.md may write the repository, and the tiny executor cannot keep a run from writing a path: its agent could plant a git hook or config that landrace's git, or yours, then runs$/);
+        await expect(new Keeping("tiny").create(ctxFor({ adapter: "tiny" }, steps))).resolves.toBeDefined();
+        // Read steps only: nothing to keep.
+        await expect(new Tiny("tiny").create(ctxFor({ adapter: "tiny" }, new Map([...steps].filter(([p]) => p !== "steps/build.md"))))).resolves.toBeDefined();
+      });
+
+      it("refuses a write run handed paths it cannot keep, and lets a read run by whatever it is handed", async () => {
+        const tiny = new Tiny(markingBin());
+        const cwd = tempDir("tiny-cwd-");
+        await expect(tiny.build(settings).run("p", { round: 1, cwd, signal, capabilities: ["repo:write"], denyWrite: GIT }))
+          .rejects.toThrow("refused the run: it may not write /repo/.git/config, /repo/.git/hooks, /wt/.git, and the tiny executor cannot keep a run from writing a path");
+        expect(tiny.plans).toEqual([]);
+        await expect(tiny.build(settings).run("p", { round: 1, cwd, signal, capabilities: ["repo:read"], denyWrite: GIT })).resolves.toMatchObject({ text: "ok" });
+        expect(tiny.plans.map((p) => p.denyWrite)).toEqual([[]]);
+      });
+
+      it("hands an integration that keeps them every path, on a write run only", async () => {
+        const keeping = new Keeping(markingBin());
+        const cwd = tempDir("tiny-cwd-");
+        await keeping.build(settings).run("p", { round: 1, cwd, signal, capabilities: ["repo:write"], denyWrite: GIT });
+        await keeping.build(settings).run("p", { round: 1, cwd, signal, capabilities: ["repo:read"], denyWrite: GIT });
+        await keeping.build(settings).run("p", { round: 1, cwd, signal });
+        expect(keeping.plans.map((p) => [p.tier, p.denyWrite])).toEqual([["write", GIT], ["read", []], ["screen", []]]);
+      });
+
+      it.each([[undefined], [[]], [["~/.ssh"]]])("hands every path whatever agent.sandbox.deny is: %j", async (deny) => {
+        const keeping = new Keeping(markingBin());
+        const { run } = await keeping.create(ctxFor({ adapter: "tiny", ...(deny === undefined ? {} : { sandbox: { deny } }) }, steps));
+        await run("p", { round: 1, cwd: tempDir("tiny-cwd-"), signal, capabilities: ["repo:write"], denyWrite: GIT });
+        expect(keeping.plans.map((p) => p.denyWrite)).toEqual([GIT]);
+      });
+
+      it.each([["/repo (old)/.git/config"], ["/repo/.git/\nconfig"], ["relative/.git/config"]])("refuses %j, which no rule can hold", async (path) => {
+        const keeping = new Keeping(markingBin());
+        await expect(keeping.build(settings).run("p", { round: 1, cwd: tempDir("tiny-cwd-"), signal, capabilities: ["repo:write"], denyWrite: [path] }))
+          .rejects.toThrow(`refused the run: ${JSON.stringify(path)} cannot be written as a rule the tiny executor keeps`);
+        expect(keeping.plans).toEqual([]);
+      });
+    });
+
     it("refuses a step's MCP server or tool that agent.mcp does not allow, naming the step", async () => {
       const steps = new Map<string, Step>([
         ["steps/a.md", { mcp: ["other"], prompt: "" } as Step],

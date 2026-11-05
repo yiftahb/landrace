@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { DEFAULT_LOCKFILES, ensureWorktree, removeWorktree } from "#agent/worktree.js";
@@ -72,7 +72,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });
@@ -105,7 +105,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: committer,
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });
@@ -122,12 +122,38 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
     expect(r.ok).toBe(false);
     expect(r).not.toHaveProperty("effects");
     await removeWorktree("103", root);
   });
+
+  // A write step elsewhere may have rewritten this worktree's admin folder
+  // while it ran (see worktreeIntact): the agent's own git there would follow it.
+  it.each([["read", ["repo:read"]], ["write", ["repo:read", "repo:write"]]])(
+    "refuses a %s step in a worktree whose commondir names another git directory, and never runs it",
+    async (_tier, capabilities) => {
+      const root = await repo();
+      const path = await ensureWorktree("105", root);
+      const common = realpathSync(join(root, ".git"));
+      const admin = join(common, "worktrees", basename(path));
+      await writeFile(join(admin, "commondir"), `${tmpdir()}\n`);
+      let ran = false;
+      const r = await runStep({
+        item: "1", step: step(capabilities),
+        stageId: "spec", round: 1, snapshot: {},
+        executor: { id: "never", run: async () => { ran = true; return { text: "", sessionId: null }; } },
+        signal: new AbortController().signal,
+        sandbox: { path, root },
+      });
+      expect(r).toMatchObject({ ok: false, kind: "refused" });
+      expect((r as Fail).reason).toContain(join(admin, "commondir"));
+      expect(ran).toBe(false);
+      await writeFile(join(admin, "commondir"), "../..\n");
+      await removeWorktree("105", root);
+    },
+  );
 
   it("lets the same write through for a step that declared repo:write", async () => {
     const root = await repo();
@@ -138,7 +164,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
 
     expect(r).toMatchObject({ ok: true });
@@ -155,7 +181,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: wellBehaved(),
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
     expect(r).toMatchObject({ ok: true });
     await removeWorktree("105", root);
@@ -179,7 +205,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
       signal: new AbortController().signal,
-      sandbox: { path: join(tmpdir(), "lr-not-a-worktree-at-all") },
+      sandbox: { path: join(tmpdir(), "lr-not-a-worktree-at-all"), root: await repo() },
     });
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });
@@ -203,7 +229,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: vanishing,
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });
@@ -478,6 +504,64 @@ describe("converge and the sandbox", () => {
     expect(w.entries.filter((e) => e.kind === "refused")).toHaveLength(1);
     expect(w.entries.filter((e) => e.kind === "malformed")).toHaveLength(0);
     expect(await sandboxes(root)).toEqual([]);
+  });
+
+  describe("the git paths a write step's agent may not write", () => {
+    /** An executor that writes down what each run was handed, and the control paths of where it ran, read as it ran. */
+    const recorder = () => {
+      const runs: Array<{ cwd: string | undefined; denyWrite: readonly string[] | undefined; expected?: string[] }> = [];
+      const executor: Executor = {
+        id: "recorder",
+        run: async (_p, { cwd, denyWrite }) => {
+          runs.push({ cwd, denyWrite });
+          return { text: '```json\n{"kind":"spec"}\n```', sessionId: "sid-1" };
+        },
+      };
+      return { runs, executor };
+    };
+    const write = new Map<string, Step>([["spec", step(["repo:read", "repo:write"])]]);
+    const common = async (dir: string): Promise<string> =>
+      realpathSync(resolve(dir, (await exec("git", ["rev-parse", "--git-common-dir"], { cwd: dir })).stdout.trim()));
+
+    it("hands a write step in a worktree that repository's config, commondir, hooks, info and admin files, and the worktree's .git file", async () => {
+      const root = await repo();
+      const { runs, executor } = recorder();
+      await converge("1", deps(world(), { executor, steps: write, sandbox: { root } }));
+      const [run] = runs;
+      const cwd = run?.cwd as string;
+      const git = await common(root);
+      expect(run?.denyWrite).toEqual(expect.arrayContaining([
+        join(git, "config"), join(git, "config.worktree"), join(git, "commondir"), join(git, "hooks"), join(git, "info"), join(cwd, ".git"),
+      ]));
+      expect(run?.denyWrite?.filter((p) => p.startsWith(join(git, "worktrees"))).map((p) => basename(p)))
+        .toEqual(["config", "config.worktree", "commondir", "gitdir", "hooks", "info"]);
+    });
+
+    it("hands a read step none", async () => {
+      const root = await repo();
+      const { runs, executor } = recorder();
+      await converge("1", deps(world(), { executor, sandbox: { root } }));
+      expect(runs.map((r) => r.denyWrite)).toEqual([undefined]);
+    });
+
+    it("hands a write step with isolation off the control paths of where it runs and of the workspace", async () => {
+      const workspace = await repo();
+      // A linked worktree of its own, whose admin files are the step's to plant in too.
+      await ensureWorktree("9", workspace);
+      const { runs, executor } = recorder();
+      await converge("1", deps(world(), { executor, steps: write, workspace }));
+      const [run] = runs;
+      expect(run?.cwd).toBeUndefined();
+      const theirs = await common(workspace);
+      const here = await common(process.cwd());
+      expect(run?.denyWrite).toEqual(expect.arrayContaining([
+        ...["config", "commondir", "hooks", "info"].map((f) => join(theirs, f)),
+        ...["config", "commondir", "hooks", "info"].map((f) => join(here, f)),
+      ]));
+      expect(run?.denyWrite?.filter((p) => p.startsWith(join(theirs, "worktrees"))).map((p) => basename(p)))
+        .toEqual(["config", "config.worktree", "commondir", "gitdir", "hooks", "info"]);
+      await removeWorktree("9", workspace);
+    });
   });
 
   it("does not reach for a worktree at all when isolation is off", async () => {

@@ -65,6 +65,7 @@ const argvOf = async (
     effort?: string;
     plugins?: readonly string[];
     child?: { parent: string; stage: string; round: number; server?: typeof SERVER };
+    denyWrite?: readonly string[];
   },
 ): Promise<string[]> => {
   const cwd = withCfg({ out: "{{ARGV_JSON}}" });
@@ -1379,6 +1380,27 @@ describe("a writing step's sandbox", () => {
     const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read", "repo:write"] });
     expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({ ...confined(argv), env: INSTRUCTIONS });
     expect(flag(argv, "--permission-mode")).toBe("acceptEdits");
+  });
+
+  /*
+   * The git paths the engine lists, kept from every command by the sandbox
+   * and from the file tools by Edit rules — the path itself and what is
+   * under it, since `hooks` is a folder and `config` a file.
+   */
+  it("denies a writing step each git control path it is handed, in the sandbox and as Edit rules", async () => {
+    const git = ["/repo/.git/config", "/repo/.git/hooks", "/repo/.git/worktrees/1/commondir", "/wt/1/.git"];
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read", "repo:write"], denyWrite: git });
+    const base = confined(argv);
+    expect(JSON.parse(flag(argv, "--settings") as string)).toEqual({
+      sandbox: { ...base.sandbox, filesystem: { ...base.sandbox.filesystem, denyWrite: [...base.sandbox.filesystem.denyWrite, ...git] } },
+      permissions: { deny: [...base.permissions.deny, ...git.flatMap((p) => [`Edit(/${p})`, `Edit(/${p}/**)`])] },
+      env: INSTRUCTIONS,
+    });
+  });
+
+  it("hands a read-only step nothing of the git control paths: it has no Bash and no Edit", async () => {
+    const argv = await argvOf(createClaudeExecutor({ bin }), { capabilities: ["repo:read"], denyWrite: ["/repo/.git/config"] });
+    expect(flag(argv, "--settings")).not.toContain("/repo/.git/config");
   });
 
   /*

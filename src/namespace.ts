@@ -905,6 +905,16 @@ export interface Executor {
        * cannot fork must refuse a run that asks, never resume in place.
        */
       fork?: boolean;
+      /**
+       * For a run that may write: the git paths its agent may not write,
+       * absolute — the repository's config, hooks and info, each admin
+       * folder's control files, and the worktree's `.git` file. The engine
+       * computes them, whatever `agent.sandbox.deny` says: a hook or config a
+       * step planted there runs in the engine's git, or the operator's. An
+       * executor that cannot keep a run from writing a path must refuse a run
+       * that carries any, never drop them.
+       */
+      denyWrite?: readonly string[];
       signal: AbortSignal;
     },
   ): Promise<ExecutorAnswer>;
@@ -1157,6 +1167,12 @@ export interface RunPlan<E = unknown> {
   /** The step's own plugins, in place of the integration's default; absent, that default. */
   plugins?: readonly string[];
   sandbox: SandboxSettings;
+  /**
+   * The git paths the run may not write, absolute — see `Executor.run`'s
+   * `denyWrite`. Empty unless the tier is `write`; the kit has refused the
+   * run already if this integration does not declare `keepsDenyWrite`.
+   */
+  denyWrite: readonly string[];
   /** The integration's own settings. */
   extras: E;
   /** Where `prepare` says what it changed on the way, such as a key it dropped. */
@@ -2441,6 +2457,12 @@ export interface ConvergeDeps {
    * nothing it may judge, because what changed there is not the step's doing.
    */
   sandbox?: Sandbox;
+  /**
+   * The directory `landrace start` was given. With no `sandbox` a write step
+   * runs in the engine's own directory, and its agent is denied the git
+   * control paths of both checkouts: where it runs, and this one.
+   */
+  workspace?: string;
   steps: Map<string, Step>;
   /**
    * The workflow's `budget.stepTimeout`, for a step that names no `timeout` of
@@ -3006,6 +3028,8 @@ export interface ToolOptions {
   /** Where the per-item locks live: the loop's, so the two processes find the same file. */
   lock?: LockOptions;
   sandbox?: Pick<Sandbox, "root" | "scope">;
+  /** As `ConvergeDeps.workspace`: with no `sandbox`, a write turn is denied this checkout's git control paths too. */
+  workspace?: string;
   /** Where a turn's activity goes, so the loop's page shows an Ask asked here too. */
   activity?: ActivityLog;
   /**
@@ -3410,6 +3434,26 @@ export interface WorktreeState {
 }
 
 /**
+ * Where git finds a step's worktree, as the engine names it rather than as
+ * the worktree's own `.git` file does: a step that may write can rewrite that
+ * file, or its admin folder's `commondir`, to hand the engine's git a config
+ * of its own.
+ */
+export interface GitDirs {
+  /** The one admin folder under `<common>/worktrees` whose `gitdir` names the worktree. */
+  GIT_DIR: string;
+  /** The repository's own, as the operator's checkout answers it. */
+  GIT_COMMON_DIR: string;
+  GIT_WORK_TREE: string;
+}
+
+/** A worktree an agent runs in, and the checkout it was cut from: what the engine's git there is pinned to. */
+export interface StepSandbox {
+  path: string;
+  root: string;
+}
+
+/**
  * The branch a step's worktree is checked out on, from its stage's `branch`,
  * and whether the step may commit to it — the branch itself if it may, its
  * commit detached if it may not.
@@ -3507,6 +3551,8 @@ export interface ConversationDeps {
    * nothing to judge, exactly as in a tick with isolation off.
    */
   sandbox?: Pick<Sandbox, "root" | "scope">;
+  /** As `ConvergeDeps.workspace`: with no `sandbox`, a write turn is denied this checkout's git control paths too. */
+  workspace?: string;
   /**
    * The screener, when the operator configured one — the same shape runStep
    * takes, because a turn is an agent invocation like any other and §15 knows

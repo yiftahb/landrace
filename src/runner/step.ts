@@ -22,9 +22,9 @@ import {
   unknownCapabilities,
   workDurationMs,
 } from "#conventions.js";
-import type { Executor, Screener } from "#namespace.js";
+import type { Executor, Screener, StepSandbox } from "#namespace.js";
 import { screenPrompt } from "#agent/screen.js";
-import { changedSince, worktreeState } from "#agent/worktree.js";
+import { changedSince, worktreeIntact, worktreeState } from "#agent/worktree.js";
 import { extractJsonBlock } from "#agent/json-block.js";
 import { messageOf } from "#runner/errors.js";
 import { childServerFor } from "#runner/children.js";
@@ -120,6 +120,9 @@ const MAX_NAMED_CHANGES = 10;
  * than a skip, and it is a refusal *before* anything is paid for — a skipped
  * capability check is the capability not existing.
  *
+ * First, at either tier, the worktree must read as git made it
+ * (`worktreeIntact`), or the run is refused before it starts.
+ *
  * `null` whenever there is nothing to judge — no sandbox, or a declaration
  * that includes `repo:write` and is entitled to change things — so "did we
  * read a before state" and "should we compare" cannot become two conditions
@@ -130,12 +133,20 @@ const MAX_NAMED_CHANGES = 10;
  * one of them comes to be weaker than the other.
  */
 export async function sandboxBefore(
-  sandbox: { path: string } | undefined,
+  sandbox: StepSandbox | undefined,
   capabilities: readonly string[] | undefined,
 ): Promise<{ ok: true; before: WorktreeState | null } | { ok: false; reason: string }> {
-  if (!sandbox || mayWriteRepo(capabilities)) return { ok: true, before: null };
+  if (!sandbox) return { ok: true, before: null };
+  // At either tier: the agent's own git follows the admin folder's
+  // `commondir`, which a write step elsewhere may have rewritten.
   try {
-    return { ok: true, before: await worktreeState(sandbox.path) };
+    await worktreeIntact(sandbox.path, sandbox.root);
+  } catch (e) {
+    return { ok: false, reason: messageOf(e) };
+  }
+  if (mayWriteRepo(capabilities)) return { ok: true, before: null };
+  try {
+    return { ok: true, before: await worktreeState(sandbox.path, sandbox.root) };
   } catch (e) {
     return { ok: false, reason: `the worktree could not be read, so the declared capabilities cannot be enforced: ${messageOf(e)}` };
   }
@@ -151,7 +162,7 @@ export async function sandboxBefore(
  * enforces rather than delegating to the agent.
  */
 export async function sandboxTrespass(
-  sandbox: { path: string } | undefined,
+  sandbox: StepSandbox | undefined,
   before: WorktreeState | null,
 ): Promise<string | null> {
   if (!sandbox || before === null) return null;
@@ -162,7 +173,7 @@ export async function sandboxTrespass(
   // step's output while unable to say what it did to get there.
   let after: WorktreeState;
   try {
-    after = await worktreeState(sandbox.path);
+    after = await worktreeState(sandbox.path, sandbox.root);
   } catch (e) {
     return `the worktree could not be read, so what the agent did there cannot be checked: ${messageOf(e)}`;
   }
@@ -201,7 +212,14 @@ export async function runStep(opts: {
    * nobody else's. With isolation off there is no sandbox, the agent runs in
    * the operator's own checkout, and there is nothing here to judge.
    */
-  sandbox?: { path: string };
+  sandbox?: StepSandbox;
+  /**
+   * For a step that may write: the git paths its agent may not write, so
+   * neither the engine's git nor the operator's runs what it planted
+   * (`gitControlPaths`). Handed to the executor, which refuses a run it
+   * cannot keep them from.
+   */
+  denyWrite?: readonly string[];
   /**
    * The item's graph as it stands after the step, for the items:create
    * backstop. Absent, nothing is checked — like `sandbox`, it is what makes
@@ -373,6 +391,7 @@ export async function runStep(opts: {
       ...(step.plugins === undefined ? {} : { plugins: step.plugins }),
       timeoutMs,
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
+      ...(opts.denyWrite === undefined ? {} : { denyWrite: opts.denyWrite }),
       ...childOpt,
       ...(opts.onActivity ? { onActivity: opts.onActivity } : {}),
     });

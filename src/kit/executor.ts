@@ -16,7 +16,7 @@ import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { CAPABILITIES, CHILD_SERVER_NAME, CREDENTIALS_ROOT, INHERITED_ENV_KEYS, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
+import { CAPABILITIES, CHILD_SERVER_NAME, CREDENTIALS_ROOT, GIT_GUARD_ARGS, INHERITED_ENV_KEYS, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { isLoopback } from "#kit/http.js";
 import type {
@@ -112,7 +112,7 @@ async function assertCwd(cwd: string): Promise<string> {
  */
 async function repositoryRoot(dir: string): Promise<string> {
   try {
-    const { stdout } = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: dir });
+    const { stdout } = await exec("git", [...GIT_GUARD_ARGS, "rev-parse", "--show-toplevel"], { cwd: dir });
     return stdout.trim();
   } catch (e) {
     const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
@@ -573,6 +573,14 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    * ignored would read as a limit the step does not have.
    */
   readonly stepKeys: readonly StepKey[] = [];
+  /**
+   * Whether the agent keeps a run from writing the paths `RunPlan.denyWrite`
+   * lists — the git config, hooks and control files a step that may write
+   * could plant code in for the engine's git, or the operator's, to run.
+   * False until an integration has shown it does: a step that may write is
+   * refused at startup, and a run handed any such path is refused.
+   */
+  protected readonly keepsDenyWrite: boolean = false;
 
   constructor(readonly bin: string) {
     defineExecutor(this);
@@ -765,6 +773,12 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
         if (step[key] !== undefined && !this.stepKeys.includes(key)) problems.push(`${path} lists ${key}:, which the ${this.id} executor cannot enforce`);
       }
       if (step.mcp !== undefined) problems.push(...narrowMcp(step.mcp, known).problems.map((p) => `${path} ${p}`));
+      if (mayWriteRepo(step.capabilities) && !this.keepsDenyWrite) {
+        problems.push(
+          `${path} may write the repository, and the ${this.id} executor cannot keep a run from writing a path: ` +
+          "its agent could plant a git hook or config that landrace's git, or yours, then runs",
+        );
+      }
       if (step.skills?.length && this.stepKeys.includes("skills")) skilled.push([path, step.skills]);
     }
     // Continue and fork both need the agent's own session at the stage, and
@@ -878,7 +892,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
 
     const run: Executor["run"] = async (prompt, {
       round, resume, fork, cwd, capabilities, model: stepModel, effort: stepEffort, mcp: stepMcp, skills, plugins,
-      timeoutMs: stepTimeoutMs, child: binding, onActivity, signal,
+      timeoutMs: stepTimeoutMs, child: binding, onActivity, signal, denyWrite: askedDenyWrite,
     }) => {
       if (signal.aborted) {
         // Nothing checked this before `spawn` in the first cut, so a run
@@ -912,6 +926,23 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       // A permission, not an obligation: a turn that declares the word but was
       // handed no binding simply gets no tool.
       const bound = binding !== undefined && mayCreateItems(capabilities) ? binding : undefined;
+
+      // The git paths a write run may not write, kept by the agent or the run
+      // refused: dropped, a step could plant a hook the engine's git runs.
+      const denyWrite = tier === "write" ? [...(askedDenyWrite ?? [])] : [];
+      if (denyWrite.length && !this.keepsDenyWrite) {
+        throw new Error(
+          `refused the run: it may not write ${denyWrite.join(", ")}, and the ${this.id} executor cannot keep a run from writing a path`,
+        );
+      }
+      // eslint-disable-next-line no-control-regex -- excluding control chars is the point, not a leftover
+      const unruled = denyWrite.filter((path) => /[()\x00-\x1F\x7F]/.test(path) || !path.startsWith("/"));
+      if (unruled.length) {
+        throw new Error(
+          `refused the run: ${unruled.map((p) => JSON.stringify(p)).join(", ")} cannot be written as a rule the ${this.id} executor keeps, ` +
+          "and left off, the run could plant a git hook or config there",
+        );
+      }
 
       // The step's own declaration, or the operator's default when it made
       // none — checked here rather than at construction alone, because a
@@ -969,7 +1000,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
 
       const sandbox = denyPaths === undefined ? configured : { ...configured, deny: await this.deniedNow(configured.deny, denyPaths) };
       const plan: RunPlan<E> = {
-        tier, fork: fork === true, servers, allowed, sandbox, extras, frontDoor,
+        tier, fork: fork === true, servers, allowed, sandbox, denyWrite, extras, frontDoor,
         ...(declared && skills !== undefined ? { skills } : {}),
         ...(declared && plugins !== undefined ? { plugins } : {}),
         ...(chosenModel === undefined ? {} : { model: chosenModel }),

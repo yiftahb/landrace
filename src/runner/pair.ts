@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 
 import { screenPrompt } from "#agent/screen.js";
-import { ensureWorktree, pathFor, removeWorktree, worktreeOf, worktreeState } from "#agent/worktree.js";
+import { ensureWorktree, gitControlPaths, pathFor, removeWorktree, worktreeIntact, worktreeOf, worktreeState } from "#agent/worktree.js";
 import {
   CHILD_SERVER_NAME,
   durationMs,
@@ -256,6 +256,9 @@ export function startPair(deps: PairDeps, item: string, stageId: string): Promis
     // Found before it is cut: the person may already be working in it, and
     // cutting again would rebuild a checkout that has fallen behind.
     const cwd = (await worktreeOf(slotOf(item), root)) ?? (await ensureWorktree(item, root, on, slotOf(item), { signal: deps.ctx.signal }));
+    // The person runs git of their own here, outside any sandbox, and it
+    // follows an admin folder a write step elsewhere could have rewritten.
+    await worktreeIntact(cwd, root);
 
     // The seed holds item text anyone can write, and the command is pasted
     // into a terminal, which acts on control characters before any shell
@@ -324,7 +327,7 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
     if (!branch.ok) throw new Error(branch.reason);
     const on = branch.branch === null ? undefined : { branch: branch.branch, write: mayWriteRepo(step.capabilities) };
     const cwd = (await worktreeOf(slotOf(item), root)) ?? (await ensureWorktree(item, root, on, slotOf(item), { signal: deps.ctx.signal }));
-    const sandbox = { path: cwd };
+    const sandbox = { path: cwd, root };
 
     const scrub = scrubberOf(deps.ctx.secrets, deps.scrub);
     const reject = async (kind: "contract" | "refused", reason: string): Promise<never> => {
@@ -336,6 +339,16 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
     // they worked is theirs, and only the closing turn is held to the step.
     const start = await sandboxBefore(sandbox, step.capabilities);
     if (!start.ok) return reject("refused", start.reason);
+    // The closing turn of a step that may write is denied the git control
+    // paths its step is: see `gitControlPaths`.
+    let denyWrite: string[] = [];
+    if (mayWriteRepo(step.capabilities)) {
+      try {
+        denyWrite = await gitControlPaths(cwd, root);
+      } catch (e) {
+        return reject("refused", messageOf(e));
+      }
+    }
 
     const prompt = finishPrompt(note);
     try {
@@ -353,6 +366,7 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
         resume: sessionOf(root, item, open),
         fork: true,
         cwd,
+        ...(denyWrite.length ? { denyWrite } : {}),
         capabilities: step.capabilities ?? [],
         ...(step.model === undefined ? {} : { model: step.model }),
         ...(step.effort === undefined ? {} : { effort: step.effort }),
@@ -385,7 +399,7 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
 
     // The output is recorded; what is still uncommitted goes with the
     // worktree, and the person is told what that was.
-    const discarded = await worktreeState(cwd).then((s) => s.changes, () => []);
+    const discarded = await worktreeState(cwd, root).then((s) => s.changes, () => []);
     await removeWorktree(item, root, slotOf(item));
     await rm(await seedOf(root, item), { force: true });
     return { stage: stage.id, round, discarded };

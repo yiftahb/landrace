@@ -1,11 +1,11 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { INHERITED_ENV_KEYS } from "#conventions.js";
-import type { RemoteGuard, WorktreeBranch, WorktreePreparation, WorktreeSetup, WorktreeState } from "#namespace.js";
+import { GIT_GUARD_ARGS, INHERITED_ENV_KEYS } from "#conventions.js";
+import type { GitDirs, RemoteGuard, WorktreeBranch, WorktreePreparation, WorktreeSetup, WorktreeState } from "#namespace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { containedPath } from "#workflow/load.js";
 import { messageOf } from "#runner/errors.js";
@@ -105,15 +105,194 @@ function scopeDir(scope: string): string {
   return scope;
 }
 
-/** git's own message, not a stack trace: an operator can act on "not a git repository". */
-async function git(args: string[], cwd: string, what: string): Promise<string> {
+/**
+ * git's own message, not a stack trace: an operator can act on "not a git
+ * repository". Hooks and fsmonitor off (GIT_GUARD_ARGS); `dirs`, for a
+ * command in a step's worktree, pins where git looks.
+ */
+async function git(args: string[], cwd: string, what: string, dirs?: GitDirs): Promise<string> {
   try {
-    const { stdout } = await exec("git", args, { cwd });
+    const { stdout } = await exec("git", [...GIT_GUARD_ARGS, ...args], { cwd, ...(dirs === undefined ? {} : { env: { ...process.env, ...dirs } }) });
     return stdout;
   } catch (e) {
     const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
     throw new Error(`${what}: ${stderr || messageOf(e)}`);
   }
+}
+
+/** The repository's common git directory, resolved, as the operator's checkout at `repoRoot` answers it. */
+async function commonDirOf(repoRoot: string, what: string): Promise<string> {
+  const out = (await git(["rev-parse", "--git-common-dir"], repoRoot, what)).trim();
+  return realpath(resolve(repoRoot, out));
+}
+
+/**
+ * The admin folder under `<common>/worktrees` whose `gitdir` names
+ * `<path>/.git`: the engine finds it, never the worktree's own `.git` file,
+ * which a step that may write can point anywhere.
+ *
+ * Exactly one, or a halt naming what was found: none, and the worktree is not
+ * this repository's; two, and a step made a second — which one git would use
+ * is what the step chose. And none holding `config.worktree`: landrace never
+ * makes one, and with `extensions.worktreeConfig` on, a folder a step renamed
+ * in could set a filter there that runs on the engine's next checkout.
+ */
+async function adminDirOf(path: string, common: string, what: string): Promise<string> {
+  const under = join(common, "worktrees");
+  const names = await readdir(under).catch((e: unknown) => {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [] as string[];
+    throw new Error(`${what}: ${messageOf(e)}`);
+  });
+  const want = join(path, ".git");
+  const naming: string[] = [];
+  for (const name of names) {
+    const folder = join(under, name);
+    const gitdir = await readFile(join(folder, "gitdir"), "utf8").catch(() => null);
+    // Relative to the admin folder when git writes relative paths (worktree.useRelativePaths).
+    if (gitdir !== null && resolve(folder, gitdir.trim()) === want) naming.push(folder);
+  }
+  const [admin] = naming;
+  if (naming.length !== 1 || admin === undefined) {
+    throw new Error(
+      `${what}: refusing to run git in ${path}: ${naming.length === 0
+        ? `no admin folder under ${under} names it`
+        : `${naming.length} admin folders name it, ${naming.join(", ")}, and git would use whichever its .git file points at`}`,
+    );
+  }
+  const own = join(admin, "config.worktree");
+  if (await lstat(own).then(() => true, () => false)) {
+    throw new Error(
+      `${what}: refusing to run git in ${path}: ${own} exists, and landrace never makes one; ` +
+      "a step that may write could have put it there to configure git. Remove it and the item carries on",
+    );
+  }
+  return admin;
+}
+
+/**
+ * Where the engine's git finds a step's worktree: its admin folder by lookup,
+ * the common directory as the operator's checkout answers it — never the
+ * admin folder's `commondir` — and the worktree itself.
+ */
+export async function gitDirsOf(path: string, repoRoot: string): Promise<GitDirs> {
+  const what = `could not find the git directories of ${path}`;
+  const common = await commonDirOf(repoRoot, what);
+  return { GIT_DIR: await adminDirOf(path, common, what), GIT_COMMON_DIR: common, GIT_WORK_TREE: path };
+}
+
+/**
+ * That a worktree reads as git made it, before it is handed to a person or
+ * an agent is run in it, or setup runs there: its `.git` file points at the
+ * admin folder found by lookup, which has a `commondir`
+ * naming this repository's common directory, and no `config`, `hooks` or
+ * `info` of its own. A checkout whose `.git` is a directory has no admin
+ * folder, and passes.
+ *
+ * The engine's own git never reads `commondir` (`gitDirsOf`). But a write
+ * step's sandbox reaches every admin folder, and one git made while the step
+ * ran — another item's worktree, a turn's, a pairing's — was on no list it
+ * was handed. The person pairing there runs git of their own, and so does an
+ * agent run there: both follow `commondir` to whatever the step built, and
+ * run its hooks or fsmonitor. Asked again at each hand-out, never once: a
+ * step still running can write after it, which `docs/security.md` states.
+ */
+export async function worktreeIntact(path: string, repoRoot: string): Promise<void> {
+  const dotGit = join(path, ".git");
+  if (await lstat(dotGit).then((s) => s.isDirectory(), () => false)) return;
+  const what = `refusing to hand out or run in ${path}`;
+  const common = await commonDirOf(repoRoot, what);
+  const admin = await adminDirOf(path, common, what);
+  // The .git file is what a person's or a setup command's git reads first: pointed anywhere
+  // else, it hands that git a directory of the step's, whatever the admin folder holds.
+  const pointer = (await readFile(dotGit, "utf8").catch((e: unknown) => {
+    throw new Error(`${what}: ${messageOf(e)}`);
+  })).match(/^gitdir: (.+?)\s*$/m)?.[1];
+  const pointed = pointer === undefined ? null : await realpath(resolve(path, pointer)).catch(() => resolve(path, pointer));
+  if (pointed !== await realpath(admin)) {
+    throw new Error(
+      `${what}: ${dotGit} points at ${pointed ?? "no gitdir"}, not ${admin}, the admin folder that names it; ` +
+      "a step that may write could have pointed it at a git directory of its own",
+    );
+  }
+  const file = join(admin, "commondir");
+  const named = await readFile(file, "utf8").catch((e: unknown) => {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`${what}: ${messageOf(e)}`);
+  });
+  if (named === null) {
+    throw new Error(`${what}: ${file} is missing, so git there would read ${admin} as a repository of its own`);
+  }
+  const target = resolve(admin, named.trim());
+  const resolved = await realpath(target).catch(() => null);
+  if (resolved !== common) {
+    throw new Error(
+      `${what}: ${file} names ${resolved ?? `${target}, which does not exist`}, not ${common}; ` +
+      "a step that may write could have pointed it at a git directory of its own",
+    );
+  }
+  for (const own of ["config", "hooks", "info"]) {
+    const at = join(admin, own);
+    if (await lstat(at).then(() => true, () => false)) {
+      throw new Error(`${what}: ${at} exists, and git never makes one in an admin folder; a step that may write could have put it there`);
+    }
+  }
+}
+
+// `commondir` in the common directory too: git reads it in any git directory,
+// the main one included, so written there it would hand every git in the
+// checkout — the operator's, and the engine's fetch, push and `worktree add`,
+// whose `rev-parse --git-common-dir` follows it — a config of the step's.
+const COMMON_CONTROL_FILES = ["config", "config.worktree", "commondir", "hooks", "info"];
+const ADMIN_CONTROL_FILES = ["config", "config.worktree", "commondir", "gitdir", "hooks", "info"];
+
+/**
+ * What a write step's agent may not write, so neither the engine's git nor
+ * the operator's runs code it planted: the repository's `config`,
+ * `config.worktree`, `commondir`, `hooks` and `info`, the same five in each
+ * admin folder with its `gitdir`, and `<path>/.git` when it is a file. A
+ * path that is not there yet is listed too: made by the step, it would be
+ * read. An admin folder's own `config` and `hooks` are never git's, but a
+ * step that renamed one away and made it again without `commondir` would have
+ * git — the operator's, in a checkout that is a linked worktree — read them
+ * as a repository's.
+ * Everything else under the git directory — objects, refs, the index, `HEAD` —
+ * stays writable: a step commits, fetches and merges.
+ */
+export async function gitControlPaths(path: string, repoRoot: string): Promise<string[]> {
+  const what = `could not list the git paths a write step may not write in ${path}`;
+  const common = await commonDirOf(repoRoot, what);
+  const under = join(common, "worktrees");
+  const names = await readdir(under).catch((e: unknown) => {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [] as string[];
+    throw new Error(`${what}: ${messageOf(e)}`);
+  });
+  const dotGit = join(path, ".git");
+  const isFile = await lstat(dotGit).then((s) => !s.isDirectory(), () => false);
+  return [
+    ...COMMON_CONTROL_FILES.map((f) => join(common, f)),
+    ...names.sort().flatMap((n) => ADMIN_CONTROL_FILES.map((f) => join(under, n, f))),
+    ...(isFile ? [dotGit] : []),
+  ];
+}
+
+/**
+ * For a write run with no worktree (`agent.isolation: none`): the control
+ * paths of each checkout it reaches — where it runs, and the workspace's —
+ * each once. A directory in no repository has none.
+ */
+export async function checkoutControlPaths(dirs: readonly string[]): Promise<string[]> {
+  const paths: string[] = [];
+  for (const dir of dirs) {
+    let top: string;
+    try {
+      top = await repositoryRoot(dir);
+    } catch (e) {
+      if (/not a git repository/i.test(messageOf(e))) continue;
+      throw e;
+    }
+    paths.push(...(await gitControlPaths(top, top)));
+  }
+  return [...new Set(paths)];
 }
 
 /**
@@ -126,7 +305,7 @@ async function git(args: string[], cwd: string, what: string): Promise<string> {
  */
 async function gitRemote(args: string[], cwd: string, what: string, guard: RemoteGuard): Promise<string> {
   try {
-    const { stdout } = await exec("git", args, {
+    const { stdout } = await exec("git", [...GIT_GUARD_ARGS, ...args], {
       cwd,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
       timeout: guard.timeoutMs,
@@ -164,7 +343,7 @@ export async function repositoryRoot(dir: string): Promise<string> {
 /** The commit `ref` names, or null when there is no such ref. */
 async function commitOf(ref: string, cwd: string, what: string): Promise<string | null> {
   try {
-    const { stdout } = await exec("git", ["rev-parse", "--verify", "-q", `${ref}^{commit}`], { cwd });
+    const { stdout } = await exec("git", [...GIT_GUARD_ARGS, "rev-parse", "--verify", "-q", `${ref}^{commit}`], { cwd });
     return stdout.trim();
   } catch (e) {
     // `-q` makes a ref that is not there exit 1 and say nothing. Anything
@@ -190,7 +369,7 @@ async function commitOf(ref: string, cwd: string, what: string): Promise<string 
 async function caughtUp(branch: string, local: string, repoRoot: string, what: string): Promise<string> {
   const theirs = await commitOf(`refs/remotes/origin/${branch}`, repoRoot, what);
   if (theirs === null || theirs === local) return local;
-  const behind = await exec("git", ["merge-base", "--is-ancestor", local, theirs], { cwd: repoRoot }).then(
+  const behind = await exec("git", [...GIT_GUARD_ARGS, "merge-base", "--is-ancestor", local, theirs], { cwd: repoRoot }).then(
     () => true,
     (e: unknown) => {
       // Exit 1 is "not an ancestor"; anything else is a failure, not an answer.
@@ -210,7 +389,7 @@ async function caughtUp(branch: string, local: string, repoRoot: string, what: s
  */
 async function defaultBranch(repoRoot: string, what: string, guard: RemoteGuard): Promise<string> {
   const named = async (): Promise<string | null> => {
-    const ref = await exec("git", ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { cwd: repoRoot }).then(
+    const ref = await exec("git", [...GIT_GUARD_ARGS, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { cwd: repoRoot }).then(
       ({ stdout }) => stdout.trim(),
       (e: unknown) => {
         // `-q` makes an unset ref exit 1 and say nothing; anything else is a failure, not an absence.
@@ -260,7 +439,7 @@ async function fetchDefault(repoRoot: string, what: string, guard: RemoteGuard):
   // their hooks run, and no submodule's remote asked, which can fail the round
   // whenever origin's new commits move an initialised one.
   await gitRemote(
-    ["-c", "core.hooksPath=/dev/null", "-c", "fetch.recurseSubmodules=false",
+    ["-c", "fetch.recurseSubmodules=false",
       "fetch", "-q", "--no-tags", "--no-write-fetch-head", "origin", `+refs/heads/${branch}:${tracking}`],
     repoRoot, `${what}: fetching origin's ${branch} failed`, guard,
   );
@@ -368,10 +547,13 @@ export async function ensureWorktree(
   // branch again first. Detached, as it stands, at the commit it needs.
   const mine = all.find((w) => w.path === path);
   const released = mine !== undefined && path === kept && attach !== null && mine.branch === null && tip !== null;
-  if (released) await git(["checkout", "-q", "--force", attach], path, what);
+  // In the worktree, git is pinned to the directories the engine found, never
+  // the ones its `.git` file names: a step that may write could rewrite it.
+  const dirs = mine && attach !== null && (mine.branch === attach || released) ? await gitDirsOf(path, repoRoot) : undefined;
+  if (released) await git(["checkout", "-q", "--force", attach], path, what, dirs);
   if (mine && attach !== null && (mine.branch === attach || released)) {
-    await git(["reset", "--hard", "-q", tip ?? "HEAD"], path, what);
-    await git(["clean", "-fdq"], path, what);
+    await git(["reset", "--hard", "-q", tip ?? "HEAD"], path, what, dirs);
+    await git(["clean", "-fdq"], path, what, dirs);
     return path;
   }
   if (mine && attach === null && mine.branch === null && mine.head === detach) return path;
@@ -382,8 +564,11 @@ export async function ensureWorktree(
   // exists but is registered nowhere is the residue of an interrupted remove;
   // the path is ours — `pathFor` is what makes that a fact rather than an
   // assumption — so clearing it is safe.
-  if (mine) await git(["worktree", "remove", "--force", path], repoRoot, what);
+  // A remove git refuses — a `.git` file a step rewrote no longer points back
+  // — is finished by hand: the directory cleared, then the registration pruned.
+  if (mine) await git(["worktree", "remove", "--force", path], repoRoot, what).catch(() => undefined);
   await rm(path, { recursive: true, force: true });
+  if (mine) await git(["worktree", "prune"], repoRoot, what);
   let add: string[];
   if (attach !== null && tip !== null) add = [path, attach];
   // The commit, not origin's ref: a branch started from a remote-tracking ref
@@ -409,7 +594,10 @@ export async function releaseWorktree(item: string, repoRoot: string, scope?: st
   // act on whichever repository encloses it.
   const path = await worktreeOf(keptSlot(item), repoRoot, scope).catch(() => null);
   if (path === null) return;
-  await exec("git", ["checkout", "-q", "--detach"], { cwd: path }).catch(() => undefined);
+  // Pinned like every git in a worktree; a lookup that halts leaves the branch held, quietly.
+  const dirs = await gitDirsOf(path, repoRoot).catch(() => null);
+  if (dirs === null) return;
+  await git(["checkout", "-q", "--detach"], path, "could not release the worktree", dirs).catch(() => undefined);
 }
 
 /**
@@ -423,13 +611,13 @@ export async function removeWorktree(item: string, repoRoot: string, slot: strin
   // would be reporting it from the unwind of something else.
   const path = await pathFor(slot, repoRoot, scope).catch(() => null);
   if (path === null) return;
-  await exec("git", ["worktree", "remove", "--force", path], { cwd: repoRoot }).catch(() => undefined);
+  await exec("git", [...GIT_GUARD_ARGS, "worktree", "remove", "--force", path], { cwd: repoRoot }).catch(() => undefined);
   // The registration and the directory can outlive each other — a remove that
   // failed because the repository moved leaves the directory behind, and that
   // is the disk leak. Both are cleared, and neither failure is reported: the
   // caller is usually already unwinding from something else.
   await rm(path, { recursive: true, force: true }).catch(() => undefined);
-  await exec("git", ["worktree", "prune"], { cwd: repoRoot }).catch(() => undefined);
+  await exec("git", [...GIT_GUARD_ARGS, "worktree", "prune"], { cwd: repoRoot }).catch(() => undefined);
 }
 
 /**
@@ -454,8 +642,8 @@ export async function worktreeOf(slot: string, repoRoot: string, scope?: string)
  * its branch has been brought up to origin's: the commit the step starts
  * from, which is what its record says it saw.
  */
-export async function worktreeHead(path: string): Promise<string> {
-  return (await git(["rev-parse", "HEAD"], path, "could not read the worktree's commit")).trim();
+export async function worktreeHead(path: string, repoRoot: string, dirs?: GitDirs): Promise<string> {
+  return (await git(["rev-parse", "HEAD"], path, "could not read the worktree's commit", dirs ?? (await gitDirsOf(path, repoRoot)))).trim();
 }
 
 /**
@@ -468,12 +656,14 @@ export async function worktreeHead(path: string): Promise<string> {
  * construction: they are not the repository's content, and they are discarded
  * with the worktree either way.
  */
-export async function worktreeState(path: string): Promise<WorktreeState> {
-  const head = await worktreeHead(path);
+export async function worktreeState(path: string, repoRoot: string): Promise<WorktreeState> {
+  const dirs = await gitDirsOf(path, repoRoot);
+  const head = await worktreeHead(path, repoRoot, dirs);
   const status = await git(
     ["status", "--porcelain", "-z", "--untracked-files=all"],
     path,
     "could not read the worktree's status",
+    dirs,
   );
   return { head, changes: status.split("\0").filter((entry) => entry.length > 0) };
 }
@@ -495,8 +685,8 @@ export function changedSince(before: WorktreeState, after: WorktreeState): strin
 }
 
 /** The files `glob` matches in the checkout at `root`, among those `flags` select for `git ls-files`. */
-async function filesMatching(root: string, glob: string, flags: string[], key = "copy"): Promise<string[]> {
-  const out = await git(["ls-files", "-z", ...flags, "--", `:(glob)${glob}`], root, `could not read the files agent.worktree.${key} "${glob}" matches`);
+async function filesMatching(root: string, glob: string, flags: string[], key = "copy", dirs?: GitDirs): Promise<string[]> {
+  const out = await git(["ls-files", "-z", ...flags, "--", `:(glob)${glob}`], root, `could not read the files agent.worktree.${key} "${glob}" matches`, dirs);
   return out.split("\0").filter((f) => f.length > 0);
 }
 
@@ -541,15 +731,15 @@ export async function copyProblems(root: string, globs: readonly string[]): Prom
  * — and a destination whose folder leads outside the worktree, through a
  * link the item's branch committed, is refused rather than written through.
  */
-async function copyInto(path: string, root: string, globs: readonly string[]): Promise<void> {
+async function copyInto(path: string, root: string, globs: readonly string[], dirs: GitDirs): Promise<void> {
   const problems = await copyProblems(root, globs);
   // The item's branch too: a file it committed is untracked in the checkout
   // still, and copying over it would hand the operator's version to the next
   // `git commit -a`.
-  const branch = (await git(["rev-parse", "--abbrev-ref", "HEAD"], path, "could not read the worktree's branch")).trim();
+  const branch = (await git(["rev-parse", "--abbrev-ref", "HEAD"], path, "could not read the worktree's branch", dirs)).trim();
   for (const glob of globs) {
     if (isAbsolute(glob) || glob.split(/[\\/]/).includes("..")) continue;
-    for (const file of await filesMatching(path, glob, [])) {
+    for (const file of await filesMatching(path, glob, [], "copy", dirs)) {
       problems.push(`agent.worktree.copy "${glob}" matches ${file}, which ${branch} tracks; only untracked or ignored files are copied`);
     }
   }
@@ -579,11 +769,11 @@ async function copyInto(path: string, root: string, globs: readonly string[]): P
  * match as the worktree holds it now — tracked, or added and not yet
  * committed — by its path, so one added or removed counts as a change too.
  */
-async function setupHash(path: string, { setup, lockfiles }: WorktreeSetup): Promise<string> {
+async function setupHash(path: string, { setup, lockfiles }: WorktreeSetup, dirs: GitDirs): Promise<string> {
   const hash = createHash("sha256").update(JSON.stringify(setup));
   const files = new Set<string>();
   for (const glob of lockfiles) {
-    for (const file of await filesMatching(path, glob, ["--cached", "--others", "--exclude-standard"], "lockfiles")) files.add(file);
+    for (const file of await filesMatching(path, glob, ["--cached", "--others", "--exclude-standard"], "lockfiles", dirs)) files.add(file);
   }
   for (const file of [...files].sort()) {
     hash.update(`\0${file}\0`);
@@ -649,11 +839,15 @@ function runSetup(command: string, cwd: string, timeoutMs: number, signal?: Abor
  * of truth. A failure throws the command's tail, before the agent is paid for.
  */
 export async function prepareWorktree({ item, path, root, setup, log, signal }: WorktreePreparation): Promise<void> {
-  await copyInto(path, root, setup.copy);
+  // Setup runs the operator's commands outside the sandbox, and any git they start reads the
+  // worktree's `.git` file and its admin folder's `commondir`, not the directories pinned here.
+  await worktreeIntact(path, root);
+  const dirs = await gitDirsOf(path, root);
+  await copyInto(path, root, setup.copy, dirs);
   if (setup.setup.length === 0) return;
-  const what = `could not set up #${item}'s worktree`;
-  const record = resolve(path, (await git(["rev-parse", "--git-path", "landrace-setup"], path, what)).trim());
-  if ((await readFile(record, "utf8").catch(() => null)) === (await setupHash(path, setup))) return;
+  // The admin folder the engine found, not `--git-path`, which reads the worktree's own `.git` file.
+  const record = join(dirs.GIT_DIR, "landrace-setup");
+  if ((await readFile(record, "utf8").catch(() => null)) === (await setupHash(path, setup, dirs))) return;
   await rm(record, { force: true });
   for (const command of setup.setup) {
     log("worktree.setup.started", { item, command });
@@ -666,5 +860,5 @@ export async function prepareWorktree({ item, path, root, setup, log, signal }: 
     log("worktree.setup.finished", { item, command, ms: Date.now() - started });
   }
   // Hashed after, so a setup that rewrites a lockfile is not run again for its own change.
-  await writeFile(record, await setupHash(path, setup));
+  await writeFile(record, await setupHash(path, setup, dirs));
 }

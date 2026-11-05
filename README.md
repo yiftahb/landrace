@@ -197,13 +197,13 @@ Landrace develops itself on GitHub, Claude Code and Slack. The others pass their
 | [Notion](docs/integrations.md#notion) | Docs (spec pages) | Tested offline. Not checked live yet |
 | [Slack](docs/integrations.md#slack) | Notifications | Runs this repository |
 | [Claude Code](docs/integrations.md#claude-code) | Coding agent | Runs this repository |
-| [Codex](docs/integrations.md#codex) | Coding agent | Written against codex-cli 0.154 and tested offline. Not run live yet |
+| [Codex](docs/integrations.md#codex) | Coding agent | Written against codex-cli 0.154 and tested offline. Not run live yet. Refuses steps that may write |
 
 GitHub, GitLab, Jira and Notion each have a script that checks the integration against a live account. To connect something else, see [Writing an integration](docs/hooks.md).
 
 ## Safety
 
-- **Write steps run sandboxed.** A step that may change files runs its shell commands in the coding agent's OS sandbox. Under Claude Code, those commands write only to the step's worktree and the repository's git directory, and reach only the hosts you list. In-process tools such as WebFetch follow Claude Code's own permission rules instead. Codex's sandbox keeps less: see [Integrations](docs/integrations.md#codex).
+- **Write steps run sandboxed.** A step that may change files runs its shell commands in the coding agent's OS sandbox. Under Claude Code, those commands write only to the step's worktree and the repository's git directory, never to its git config or hooks, and reach only the hosts you list. In-process tools such as WebFetch follow Claude Code's own permission rules instead. Codex's sandbox keeps less: see [Integrations](docs/integrations.md#codex).
 - **The agent never holds the tracker's token.** Landrace makes every tracker and forge write itself: pull requests, comments and labels. A write step pushes its own branch with your git credentials, so protect your default branch on the forge before you run one.
 - **Untrusted text cannot forge control state.** Everything Landrace writes ends in a hidden marker, and only the last marker in a comment counts. Landrace escapes text it did not write, so neither an agent nor a commenter can fake a Landrace record.
 - **Prompts are screened.** Before any step that can act, a separate agent run with no tools checks the prompt for injected instructions.

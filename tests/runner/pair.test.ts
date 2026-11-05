@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { lstat, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,13 +71,13 @@ const BUILT = "Built.\n\n```json\n{\"kind\":\"built\"}\n```";
 
 /** An agent that can hand a session over, and remembers what it was asked. */
 function agent(answer = DONE) {
-  const runs: Array<{ prompt: string; resume?: string; fork?: boolean; cwd?: string }> = [];
+  const runs: Array<{ prompt: string; resume?: string; fork?: boolean; cwd?: string; denyWrite?: readonly string[] }> = [];
   const handoffs: Array<{ cwd: string; session: string; promptFile: string; resume?: string }> = [];
   let text = answer;
   const executor: Executor = {
     id: "fake",
     run: async (prompt, o) => {
-      runs.push({ prompt, ...(o.resume ? { resume: o.resume } : {}), ...(o.fork ? { fork: o.fork } : {}), ...(o.cwd ? { cwd: o.cwd } : {}) });
+      runs.push({ prompt, ...(o.resume ? { resume: o.resume } : {}), ...(o.fork ? { fork: o.fork } : {}), ...(o.cwd ? { cwd: o.cwd } : {}), ...(o.denyWrite ? { denyWrite: o.denyWrite } : {}) });
       return { text, sessionId: "sid-fork" };
     },
     handoff: async (o) => {
@@ -197,7 +197,7 @@ describe("starting a pairing", () => {
     const seed = a.handoffs[0]?.promptFile ?? "";
     expect(await readFile(seed, "utf8")).toContain(body);
     // Nothing the person's session could commit, and nothing a hand-in lists as discarded.
-    expect(await worktreeState(started.cwd)).toMatchObject({ changes: [] });
+    expect(await worktreeState(started.cwd, repo)).toMatchObject({ changes: [] });
     // Nowhere a step's sandbox may write — its checkout, or the repository's
     // git directory — so no step can swap it after screening.
     expect(seed.startsWith(`${started.cwd}/`)).toBe(false);
@@ -226,6 +226,21 @@ describe("starting a pairing", () => {
     const again = await startPair(deps, "29", "spec");
     expect(again.session).toBe(first.session);
     expect(records(tracker, "pair")).toHaveLength(1);
+  });
+
+  // A write step of another item may rewrite the pairing slot's admin folder
+  // (see worktreeIntact): the person's own git there would follow it.
+  it("refuses to hand out a worktree whose admin folder a step rewrote, naming the file", async () => {
+    const a = agent();
+    const { deps } = owed(a.executor);
+    const first = await startPair(deps, "29", "spec");
+    const common = realpathSync(join(repo, ".git"));
+    const admin = join(common, "worktrees", "29.pair");
+    expect((await readFile(join(admin, "gitdir"), "utf8")).trim()).toBe(join(first.cwd, ".git"));
+    await writeFile(join(admin, "commondir"), `${tmpdir()}\n`);
+
+    await expect(startPair(deps, "29", "spec")).rejects.toThrow(join(admin, "commondir"));
+    expect(a.handoffs).toHaveLength(1);
   });
 
   it("on a goto target, enters the stage after the pair record and continues the agent's session", async () => {
@@ -289,6 +304,24 @@ describe("starting a pairing", () => {
     expect(await finishPair(deps, "29")).toMatchObject({ stage: "build", round: 2 });
     expect(records(tracker, "output").at(-1)).toMatchObject({ stage: "build", round: 2, by: "pair" });
     expect((await run())?.pairing).toBeNull();
+  });
+
+  // The closing turn of a step that may write is denied the git paths its step is; a read step's, none.
+  it("hands a write step's closing turn the git control paths of its checkout, and a read step's none", async () => {
+    const a = agent(BUILT);
+    const { deps } = built(a.executor);
+    const started = await startPair(deps, "29", "build");
+    await finishPair(deps, "29");
+    const common = realpathSync(join(deps.sandbox?.root as string, ".git"));
+    expect(a.runs[0]?.denyWrite).toEqual(expect.arrayContaining([
+      join(common, "config"), join(common, "hooks"), join(common, "info"), join(started.cwd, ".git"),
+    ]));
+
+    const b = agent();
+    const spec = owed(b.executor);
+    await startPair(spec.deps, "29", "spec");
+    await finishPair(spec.deps, "29");
+    expect(b.runs[0]?.denyWrite).toBeUndefined();
   });
 
   it("refuses a second pairing on another stage while one is open, and writes nothing", async () => {

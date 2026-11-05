@@ -89,6 +89,13 @@ export class Codex extends BaseExecutor {
   readonly efforts = ["none", "low", "medium", "high", "xhigh"];
   /** No `take`: codex names every session itself, so none can start under the engine's id. */
   readonly pairings: readonly PairingKind[] = ["continue", "fork"];
+  /*
+   * `keepsDenyWrite` stays the kit's false: no live run has shown codex's
+   * workspace-write sandbox keeping a command from each git path the engine
+   * lists, and this integration hands it none of them. So a step that may
+   * write is refused under codex until a live check shows it can
+   * (docs/integrations.md).
+   */
   /** Where codex keeps its auth, sessions and config, when not `~/.codex`. */
   readonly envKeys = ["CODEX_HOME"];
   /** The CODEX_HOME sessions are looked up in. The operator's own, but for a test. */
