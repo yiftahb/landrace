@@ -5,7 +5,7 @@ import { appendFile, chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, sy
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { buildWorkspaceRuntime, childServerCommand, localGate, runStart } from "#cli/start.js";
 import { buildChildTool } from "#cli/mcp.js";
@@ -2876,9 +2876,11 @@ describe("runStart with people.oidc", () => {
   it("files each person's sub-items with their own token, and shows each only their own activity for an item both list", async () => {
     const [ALICE_TOKEN, BOB_TOKEN, LOCAL_TOKEN] = ["ghp_alice_pasted_token_long_enough", "ghp_bob_pasted_token_long_enough_x", "ghp_local_stored_token_long_enough"];
     const { dir, record } = await fixture({
-      agent: "fake", agentKeys: "isolation: none", hookExtra: FORGE_CONNECTION, configExtra: REMOTE, workflow: stepped(true),
+      agent: "fake", hookExtra: FORGE_CONNECTION, configExtra: REMOTE, workflow: stepped(true),
       items: [{ id: ITEM, labels: ["lr:auto", "lr:stage:breakdown"] }, { id: "202", labels: ["lr:auto", "lr:stage:breakdown"] }],
     });
+    // Remote steps run in worktrees (#207), which are cut from a commit.
+    await exec("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: dirname(dir) });
     await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
     await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), breakdownStep("repo:read, items:create"));
     const yaml = join(dir, "landrace.yaml");
