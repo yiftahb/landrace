@@ -1285,28 +1285,43 @@ function strokeIcon(shapes) {
 const COPY_SHAPES = [["rect", { x: "9", y: "9", width: "13", height: "13", rx: "2" }], ["path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" }]];
 const CHECK_SHAPES = [["polyline", { points: "20 6 9 17 4 12" }]];
 
+// Per copy-link key, what its last click heard back while its 2 seconds run,
+// the timer that ends them, and the button last drawn for it. Module state
+// like writeNotes, because every poll redraws every row: an answer kept on the
+// button was gone at the next poll, and one arriving after a poll went to a
+// button no longer on the page.
+const copyNotes = new Map();
+const copyTimers = new Map();
+const copyButtons = new Map();
+
+function drawCopyLink(button, key) {
+  const note = copyNotes.get(key);
+  const label = note ? note.label : "Copy link";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.replaceChildren(strokeIcon(note && note.copied ? CHECK_SHAPES : COPY_SHAPES));
+}
+
 // Beside the row's link, never inside it, so copying never opens the tab. Its
 // key is the row's own, so a poll's redraw keeps focus on it, and never the
 // row menu's Copy prompt's.
 function copyLinkFor(row, lane) {
+  const key = rowKey(lane, row.id) + ":copy-link";
   const button = el("button", "${ICON_BUTTON}");
   button.type = "button";
-  button.setAttribute("data-key", rowKey(lane, row.id) + ":copy-link");
-  let timer = null;
-  const show = (label, shapes) => {
-    button.setAttribute("aria-label", label);
-    button.title = label;
-    button.replaceChildren(strokeIcon(shapes));
-  };
-  show("Copy link", COPY_SHAPES);
+  button.setAttribute("data-key", key);
+  copyButtons.set(key, button);
+  drawCopyLink(button, key);
+  const redraw = () => { const live = copyButtons.get(key); if (live) drawCopyLink(live, key); };
   button.addEventListener("click", () => {
-    if (timer !== null) clearTimeout(timer);
-    const answered = (label, shapes) => {
-      if (timer !== null) clearTimeout(timer);
-      show(label, shapes);
-      timer = setTimeout(() => { show("Copy link", COPY_SHAPES); timer = null; }, 2000);
+    const answered = (label, copied) => {
+      const previous = copyTimers.get(key);
+      if (previous !== undefined) clearTimeout(previous);
+      copyNotes.set(key, { label, copied });
+      copyTimers.set(key, setTimeout(() => { copyNotes.delete(key); copyTimers.delete(key); redraw(); }, 2000));
+      redraw();
     };
-    copyText(row.link).then(() => answered("Copied", CHECK_SHAPES), () => answered("Copy failed", COPY_SHAPES));
+    copyText(row.link).then(() => answered("Copied", true), () => answered("Copy failed", false));
   });
   return button;
 }

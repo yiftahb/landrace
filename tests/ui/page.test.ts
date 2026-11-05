@@ -1304,10 +1304,14 @@ describe("an artifact row", () => {
     system: { name: string; icon: { bg: string; glyph: string } | null } | null;
   }
   const NOW = Date.parse("2026-09-28T12:00:00Z");
-  const build = (row: Artifact, depth = 1, extra: Record<string, unknown> = {}): FakeElement => runInNewContext(`
+  // The row builder and the module state it keeps, in one context a test can
+  // draw the row into again, as a poll's render does.
+  const page = (extra: Record<string, unknown> = {}): ((row: Artifact, depth?: number) => FakeElement) => runInNewContext(`
     ${constSource("SVG_NS")}${constSource("INDENT")}${constSource("indentOf")}${constSource("COPY_SHAPES")}${constSource("CHECK_SHAPES")}
-    ${["rowKey", "el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "kindMark", "ago", "external", "treeItem", "toggleFor", "toggleSlot", "copyText", "strokeIcon", "copyLinkFor", "artifactRowFor"].map(fnSource).join("")}
-    artifactRowFor(ROW, ${depth}, ROW.children.length > 0, NOW, "waiting")`, { ROW: row, NOW, document: fakeDocument, navigator: {}, ...extra }) as FakeElement;
+    ${constSource("copyNotes")}${constSource("copyTimers")}${constSource("copyButtons")}
+    ${["rowKey", "el", "luminance", "faintOnDark", "markSvg", "systemIcon", "systemMark", "kindMark", "ago", "external", "treeItem", "toggleFor", "toggleSlot", "copyText", "strokeIcon", "drawCopyLink", "copyLinkFor", "artifactRowFor"].map(fnSource).join("")}
+    (row, depth) => artifactRowFor(row, depth, row.children.length > 0, NOW, "waiting")`, { NOW, document: fakeDocument, navigator: {}, ...extra }) as (row: Artifact, depth?: number) => FakeElement;
+  const build = (row: Artifact, depth = 1, extra: Record<string, unknown> = {}): FakeElement => page(extra)(row, depth);
   const spec: Artifact = {
     id: "spec-19", kind: "document", title: "Spec: Payments revamp", link: "https://acme.github.io/widgets/specs/19/",
     system: { name: "GitHub Pages", icon: { bg: "#24292f", glyph: "GH" } }, closed: null, children: [],
@@ -1441,13 +1445,15 @@ describe("an artifact row", () => {
     // A clipboard that answers as the test says, and timers it runs by hand.
     const harness = (clipboard: { writeText: (t: string) => Promise<void> } | undefined) => {
       const timers: Array<{ fn: () => void; ms: number; live: boolean }> = [];
-      const li = build(spec, 1, {
+      const draw = page({
         navigator: clipboard ? { clipboard } : {},
         setTimeout: (fn: () => void, ms: number) => { timers.push({ fn, ms, live: true }); return timers.length - 1; },
         clearTimeout: (id: number) => { const t = timers[id]; if (t) t.live = false; },
       });
-      const fire = (): void => { for (const t of timers.splice(0)) if (t.live) t.fn(); };
-      return { button: copyOf(li), timers, fire };
+      const fire = (): void => { for (const t of timers) if (t.live) { t.live = false; t.fn(); } };
+      // A poll's render: the row drawn afresh, its old button off the page.
+      const rerender = (): FakeElement | undefined => copyOf(draw(spec, 1));
+      return { button: copyOf(draw(spec, 1)), timers, fire, rerender, draw };
     };
     const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
 
@@ -1507,6 +1513,51 @@ describe("an artifact row", () => {
       h.button?.click();
       await settle();
       expect(said(h.button)).toEqual(["Copy failed", "Copy failed"]);
+    });
+
+    // Review of #199: every 2 s poll redraws every row, so an answer kept on
+    // the button lasted until the next poll, not 2 seconds.
+    it("keeps Copied and its check through a poll's redraw, until its 2 seconds end", async () => {
+      const h = harness({ writeText: () => Promise.resolve() });
+      h.button?.click();
+      await settle();
+      const redrawn = h.rerender();
+      expect(redrawn).not.toBe(h.button);
+      expect(said(redrawn)).toEqual(["Copied", "Copied"]);
+      expect(shapes(redrawn)).toEqual(["polyline"]);
+      h.fire();
+      expect(said(redrawn)).toEqual(["Copy link", "Copy link"]);
+      expect(shapes(redrawn)).toEqual(["rect", "path"]);
+      expect(said(h.rerender())).toEqual(["Copy link", "Copy link"]);
+    });
+
+    it("keeps Copy failed through a poll's redraw too", async () => {
+      const h = harness({ writeText: () => Promise.reject(new Error("denied")) });
+      h.button?.click();
+      await settle();
+      const redrawn = h.rerender();
+      expect(said(redrawn)).toEqual(["Copy failed", "Copy failed"]);
+      expect(shapes(redrawn)).toEqual(["rect", "path"]);
+    });
+
+    it("shows an answer that arrives after a poll on the button the poll drew", async () => {
+      let answer: () => void = () => undefined;
+      const h = harness({ writeText: () => new Promise<void>((r) => { answer = r; }) });
+      h.button?.click();
+      const redrawn = h.rerender();
+      expect(said(redrawn)).toEqual(["Copy link", "Copy link"]);
+      answer();
+      await settle();
+      expect(said(redrawn)).toEqual(["Copied", "Copied"]);
+      expect(shapes(redrawn)).toEqual(["polyline"]);
+    });
+
+    it("keeps one row's answer off another row's button", async () => {
+      const h = harness({ writeText: () => Promise.resolve() });
+      h.button?.click();
+      await settle();
+      expect(said(copyOf(h.draw(pr, 1)))).toEqual(["Copy link", "Copy link"]);
+      expect(said(h.rerender())).toEqual(["Copied", "Copied"]);
     });
 
     it("restarts its 2 seconds on a second click, rather than restoring under the second answer", async () => {
