@@ -28,8 +28,17 @@ export function ambiguousClaims(claims: ReadonlyArray<{ personId: string; items:
   return out;
 }
 
-/** The items a person's listing has them work: every open item one of their workflows owns, and every closed one a `closed: run` stage claims. */
-const claimedIn = (listing: WorkspaceListing): string[] => [...listing.claims.owner.keys(), ...listing.claims.closed.keys()];
+/**
+ * The items a person's listing claims for them: every open item one of their
+ * workflows owns, every closed one a `closed: run` stage claims, and every one
+ * their own board halts because two of their workflows claim it or two of
+ * their sources report it. Left out, that last kind ran for the one other
+ * person who claims it while this person's board halted it.
+ */
+const claimedIn = (listing: WorkspaceListing): string[] => {
+  const { owner, closed, conflicts, clashes } = listing.claims;
+  return [...new Set([...owner.keys(), ...closed.keys(), ...conflicts.keys(), ...clashes.keys()])];
+};
 
 const NOT_RUNNING = "this person's runtime is not running yet";
 

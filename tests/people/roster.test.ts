@@ -107,6 +107,8 @@ interface World {
 async function world(o: {
   people: string[]; items: Array<{ id: string; labels: string[]; closed?: "done" }>; capacity?: number; held?: boolean;
   store?: CredentialStore; release?: Map<string, () => void>; slow?: string[];
+  /** People given a second workflow claiming what their first does: on the same source (a conflict), or on one of its own (a clash). */
+  twice?: Record<string, "same source" | "own source">;
 }): Promise<World> {
   const state = createExternalState({ items: o.items });
   const pool = createSlotPool(o.capacity ?? 3);
@@ -131,12 +133,13 @@ async function world(o: {
         return state.source.read(item, c);
       },
     };
-    return {
-      dir: ".",
-      workflows: [{
-        id: "main", name: "main", description: "test", source,
+    const twice = o.twice?.[person.id];
+    const workflows = (twice === undefined ? ["main"] : ["main", "second"]).map((id): WorkspaceRuntime["workflows"][number] => {
+      const own = id === "second" && twice === "own source" ? { ...source } : source;
+      return {
+        id, name: id, description: "test", source: own,
         deps: {
-          workflow: workflowFor(person.id), steps, source, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, log, scrub: (t) => t,
+          workflow: workflowFor(person.id), steps, source: own, pre: [state.pre], dispatcher: createDispatcher([state.post]), ctx, log, scrub: (t) => t,
           executor: {
             id: "agent",
             run: async (prompt, { signal }) => {
@@ -160,9 +163,12 @@ async function world(o: {
               }
             },
           },
-
         },
-      }],
+      };
+    });
+    return {
+      dir: ".",
+      workflows,
       preflights: [], intervalMs: 60_000, concurrency: pool.capacity, agents: 0, checking: false, asking: [], turnedAway: [],
       // Each person's own runs and own record of what was told, as `start` gives them.
       stop, running: new Map(), seen: new Map(), log, ctx, slots: pool,
@@ -324,6 +330,25 @@ describe("one runner, many people", () => {
     await again;
     expect(w.state.stage("2")).toBe("done");
   });
+
+  /*
+   * An item a person's own workflows both claim, or two of their sources
+   * report, is still theirs: their board halts it, and it must not run for
+   * the one other person who also claims it.
+   */
+  it.each(["same source", "own source"] as const)(
+    "works 7 for nobody when alice's two workflows on the %s both claim it and bob owns it",
+    async (twice) => {
+      const w = await world({ people: ["alice", "bob"], twice: { alice: twice }, items: [{ id: "7", labels: ["for:alice", "for:bob"] }] });
+
+      await w.roster.tick();
+
+      expect(w.runs).toEqual([]);
+      expect(w.state.stage("7")).toBeNull();
+      expect(lastRows(w, "bob")).toEqual([{ item: "7", outcome: "claimed by more than one person: alice and bob" }]);
+      expect(w.named("item.ambiguous")).toEqual([{ name: "item.ambiguous", item: "7", people: ["alice", "bob"] }]);
+    },
+  );
 
   it("ticks alice while bob has no Claude connection, and bob's board is not ready", async () => {
     const w = await world({
