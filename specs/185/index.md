@@ -1,38 +1,42 @@
-I have enough to settle the design. One point the plan left open, and I decided it myself. Ambiguity between people is judged fresh on every roster tick, which is the only place runs start. Page and MCP writes check against the last tick's set instead, because listing every person on each click would break design §6. Writing the spec now.
-
 ## Problem
-`landrace start` runs one runtime for one person. Remote mode (design §3, §6, §8) needs one runtime per connected person, one shared agent cap, and UI and MCP scoped to the caller. Case: issue 7 assigned to alice and bob — nothing stops both runtimes working it.
+`landrace start` runs one runtime for one person. Remote mode (design §3, §6, §8) needs one runtime per connected person, one shared agent cap, and UI/MCP scoped to the caller. Case: issue 7 assigned to alice and bob → both runtimes work it.
 
 ## Decisions
-- Alice opens board → her items only. Bob's item id → 404. Her MCP session lists her items only.
-- Bob missing claude → bob's board `{ ready: false }`; alice ticks.
-- Item claimed by two or more people → nobody runs it. Every board it is on shows a row naming them. `item.ambiguous { item, people }` once per tick.
-- Local: roster `[local]`, `callerOf` → local person, behaviour unchanged. `runStart` keeps `mode.remote` false until Task 9; tests drive remote with a stub `callerOf`.
-- Ambiguity judged fresh each roster tick, the only place runs start. Page/MCP writes judged by the last tick's set: listing everyone per click breaks §6.
-- Any person's listing fails → everyone else's items skipped that tick, runs kept: the two-sources rule, one level up.
-- `take` grants under capacity while the person holds under `ceil(capacity / people asking)`: fair, and a lone asker can still fill the cap. `release` drains every person's turned-away queue, in `order`.
+- Round 2: plan's Task 7 shapes carried whole into Technical design, since later work consumes them by name. Later work named by what it does. Rest unchanged.
+- Alice opens board → her items only. Bob's item id → 404. Her MCP session lists hers only.
+- Bob missing claude → bob's board `ready: false`; alice ticks.
+- Item claimed by ≥2 people → nobody runs it. Each board it's on shows a row naming them. `item.ambiguous { item, people }` once per tick.
+- Local: roster `[local]`, `callerOf` → local person, behaviour unchanged. `mode.remote` stays false until remote mode exists. Tests stub `callerOf`.
+- Ambiguity judged fresh each roster tick, the only place runs start. Page/MCP writes use last tick's set, because listing everyone per click breaks §6.
+- Any person's listing fails → everyone's items skipped that tick, runs kept. Same two-sources rule, one level up.
+- `take` grants under capacity while person holds under `ceil(capacity / askers)`: fair, and a lone asker fills cap. `release` drains turned-away queues in `order`.
 - Per person: `running`, `seen`, ctx, logger. Shared: pool, stop, locks, schedule, telemetry.
-- Corrupt file or failed build → only that person failed, logged.
+- Corrupt credentials file or failed build → only that person `failed`, logged.
 
 ## Technical design
-- `src/people/roster.ts` (new) — `createRoster`, `PersonRuntime`, `ambiguousClaims`. `Roster.tick()`: `order`, list each, `ambiguousClaims`, `excludeAmbiguous`, then `tickWorkspace` each.
-- `src/runner/pool.ts` (new) — `createSlotPool`: `take`, `release`, `order`, `onFree`.
-- `src/runner/tick.ts` — slots from `runtime.slots` (absent → own pool of `concurrency`); `WorkspaceTickOptions.listed`; `excludeAmbiguous`; `unworked` reads `claims.ambiguous`.
-- `src/cli/start.ts` — optional `BuildOptions.person`, `resolution` (absent → today's load); shallow `config` copy, `log.with(personFields(person))`, `ctx.person` per person. Process log carries no person. Schedule runs `roster.tick`. Board sink routes by event `person`. Refresher runs per person. `personGate` generalizes `localGate`.
-- `src/agent/worktree.ts` — `pathFor(item, repoRoot, scope?)`; remote `Sandbox.scope` = encoded person id.
-- `src/front/server.ts` — `FrontDoorOptions.callerOf`, `boardFor(caller)`; null caller → 401.
-- `src/ui/server.ts` — item routes 404 unless `Board.has(item)`; pairing routes 404 when remote.
-- `src/front/mcp.ts` — `toolsFor(caller, workflow?)`; session bound to its caller, another caller → 404; `close(personId?)`.
+- `src/people/roster.ts` (new):
+  - `PersonRuntime = { person: Person; slot: RuntimeSlot; board: Board; statuses: ConnectionStatus[] }`
+  - `createRoster(opts: { dir; loaded; registry; store; mode: { remote: boolean }; build: (person, resolution) => Promise<WorkspaceRuntime | null>; log }): Roster`
+  - `Roster = { people(): PersonRuntime[]; get(personId: string): PersonRuntime | undefined; reload(personId: string): Promise<void>; sync(): Promise<void>; tick(): Promise<void> }`
+  - `ambiguousClaims`
+  - `tick`: `order`, list each, `ambiguousClaims`, `excludeAmbiguous`, `tickWorkspace` each.
+- `src/runner/pool.ts` (new) — `createSlotPool(capacity)` returns `SlotPool = { take(personId): boolean; release(personId): void; order(personIds): string[]; onFree }`.
+- `src/runner/tick.ts` — slots from `runtime.slots` (absent → own pool of `concurrency`). Adds `WorkspaceTickOptions.listed` and `excludeAmbiguous`. `unworked` reads `claims.ambiguous`.
+- `src/cli/start.ts` — optional `BuildOptions.person`, `resolution` (absent → today's load). Per person: shallow `config` copy, `log.with(personFields(person))`, `ctx.person`. Schedule runs `roster.tick`. Board sink routes by event `person`. Refresher runs per person. `personGate` generalizes `localGate`.
+- `src/agent/worktree.ts` — `pathFor(item, repoRoot, scope?)`. Remote `Sandbox.scope` = encoded person id.
+- `src/front/server.ts` — `FrontDoorOptions.callerOf: (req: IncomingMessage) => Person | null`, `boardFor(caller)`. Null caller → 401.
+- `src/ui/server.ts` — item routes 404 unless `Board.has(item)`. Pairing routes 404 when remote.
+- `src/front/mcp.ts` — `toolsFor(caller, workflow?)`. Session bound to its caller; another caller → 404. Adds `close(personId?)`.
 - `src/mcp/server.ts` — `createMcpServer(tools, version, { pairing })`.
-- `src/namespace.ts` — `item.ambiguous`, `HookContext.person`, `Claims.ambiguous?`, `Board.has`, new types.
-- `docs/architecture.md`, `docs/configuration.md` — roster; `tick.concurrency` shared cap.
+- `src/namespace.ts` — `item.ambiguous`, `HookContext.person?: Person`, `Claims.ambiguous?`, `Board.has`, new types.
+- `docs/architecture.md`, `docs/configuration.md` — roster; `tick.concurrency` as shared cap.
 
 ## Done when
 - Pool cap 2: alice asks 3, bob 1 → one each. Alice alone asks 3 → 2. Alice releases while bob waits → bob's item starts.
-- Item claimed by 0 people → absent; 1 → worked by them; 2 or 3 → ambiguous, no run. Closed item a `closed: run` stage claims for two → ambiguous.
-- Alice running item 7, bob assigned → next tick `item.aborted`, no new run.
+- Item claimed by 0 → absent; 1 → worked; 2 or 3 → ambiguous, no run. Closed item that a `closed: run` stage claims for two → ambiguous.
+- Alice running 7, bob gets assigned → next tick `item.aborted`, no new run.
 - Bob's listing fails → alice's items skipped, runs kept. Next clean tick works them.
-- Existing local `.landrace/` start → same rows; only startup events lose `person`.
-- Task 7's nine tests and every existing test pass, unchanged; `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build` pass.
+- Existing local `.landrace/` start → same rows. Startup events carry no `person`.
+- Item's nine tests and every existing test pass unchanged. `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build` pass.
 
 // Generated by AI (claude-opus-5-5:high)
