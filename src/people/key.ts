@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { link, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { processAlive } from "#people/sealed.js";
-import type { CredentialKey, CredentialKeyOptions, KeyHelper, KeyLocator } from "#namespace.js";
+import type { CredentialKey, CredentialKeyOptions, KeyHelper, KeyLocator, KeySource } from "#namespace.js";
 
 /** Where the key is kept in the Keychain and the Secret Service: service and account. */
 export const KEY_SERVICE = "landrace";
@@ -45,14 +45,7 @@ function parseKey(bytes: Buffer, raw: boolean, where: string): Uint8Array {
   throw new Error(`${where} holds something that is not a credentials key: ${KEY_BYTES} bytes, as 64 hex digits${raw ? " or raw" : ""}`);
 }
 
-interface Source {
-  locator: KeyLocator;
-  /** The key, null when the source says plainly it holds none; throws for any other failure. */
-  lookup(): Promise<Uint8Array | null>;
-  store(hex: string): Promise<void>;
-}
-
-function sourceOf(locator: KeyLocator, run: KeyHelper, env: Record<string, string | undefined>): Source | null {
+function sourceOf(locator: KeyLocator, run: KeyHelper, env: Record<string, string | undefined>): KeySource | null {
   if (locator.source === "none") return null;
   if (locator.source === "systemd") {
     const file = join(locator.dir, KEY_CREDENTIAL);
@@ -224,8 +217,9 @@ export function credentialKey(opts: CredentialKeyOptions): Promise<CredentialKey
   if (known) return known;
   const made = find(opts);
   memo.set(id, made);
-  // A failure is not remembered: the next ask asks again.
-  made.catch(() => memo.delete(id));
+  // Only a key found is remembered: a failure, or a source that held none
+  // yet — this very start may make it a moment later — is asked again.
+  made.then((k) => { if (k.key === null) memo.delete(id); }, () => memo.delete(id));
   return made;
 }
 

@@ -17,6 +17,7 @@ You need:
 - **A TLS proxy on the same machine**, which terminates `https` for that host name and forwards to Landrace. [A proxy example](#a-proxy-example) shows one.
 - **The repository, checked out** where `landrace start` runs, with its `.landrace/` folder. Every person's steps cut their worktrees from this one checkout.
 - **The list of who may sign in**: each person's email, or a whole email domain. See [Who can sign in](#who-can-sign-in).
+- **A key to seal the credentials with**: a systemd credential named `landrace-credentials-key`, a container secret of that name in the folder `CREDENTIALS_DIRECTORY` names, or, on a desktop, the Keychain or Secret Service, where `start` makes one. A remote `start` with none is refused. See [Sealed at rest](security.md#sealed-at-rest).
 
 ## Set it up
 
@@ -177,7 +178,7 @@ Registration is open, which is why consent is asked every time. How the consent 
 
 Registration is also bounded. Before each one, Landrace removes every client that registered more than 24 hours ago and holds no live refresh token. Past 1,000 stored clients, `/register` answers `400`, saying the instance holds too many registered clients. Each person keeps at most 16 open MCP sessions: opening a 17th closes their oldest, and that client initializes a new one.
 
-Registered clients are kept in `~/.landrace/credentials/mcp/mcp-clients.json`. Refresh tokens are kept only as hashes in `mcp-tokens.json` beside it. Both files are `0600`. A refresh token works once: using it returns a new one. Every token in that chain ends 30 days after the person approved the client, however often it is used, and then they approve it again. A refresh token stored by an earlier version, which did not keep the approval's time, ends at the end it was stored with. Every code, refresh and access token is refused for a person `people.allow` no longer admits. Access tokens, codes and consent pages live in memory, so after a restart a client refreshes its token. If either file cannot be read or does not hold a JSON object, `start` logs it once and keeps running. The board still works, but `/mcp` and the sign-in routes answer `503` with the file's name until you fix or remove the file and restart. A file that is not JSON is named as such, and nothing from inside it is quoted.
+Registered clients are kept in `~/.landrace/credentials/mcp/mcp-clients.json`. Refresh tokens are kept only as hashes in `mcp-tokens.json` beside it. Both files are `0600`, and sealed as each person's file is ([Sealed at rest](security.md#sealed-at-rest)). A refresh token works once: using it returns a new one. Every token in that chain ends 30 days after the person approved the client, however often it is used, and then they approve it again. A refresh token stored by an earlier version, which did not keep the approval's time, ends at the end it was stored with. Every code, refresh and access token is refused for a person `people.allow` no longer admits. Access tokens, codes and consent pages live in memory, so after a restart a client refreshes its token. If either file cannot be read or does not hold a JSON object, `start` logs it once and keeps running. The board still works, but `/mcp` and the sign-in routes answer `503` with the file's name until you fix or remove the file and restart. A file that is not JSON is named as such, and nothing from inside it is quoted.
 
 ## Checking people
 
@@ -191,7 +192,7 @@ These lines are each person's to fix in their own Integrations tab. They never c
 
 ## What is on disk
 
-Everything a person connects is under `~/.landrace/credentials/`, in the home folder of the user that runs `start`:
+Everything a person connects is under `~/.landrace/credentials/`, in the home folder of the user that runs `start`. Each file is sealed under a key the operating system keeps, so a copy of the disk holds no token; a remote `start` refuses to run without one, naming how to give it one ([Sealed at rest](security.md#sealed-at-rest)):
 
 | Path | Holds | Mode |
 |---|---|---|
@@ -203,8 +204,9 @@ Everything a person connects is under `~/.landrace/credentials/`, in the home fo
 
 The roster, the people `start` runs for, is every person's file but `local.json`, for each person `people.allow` admits. `start` reads it once, when it begins. A person who signs in for the first time joins it then.
 
-**Backups.** Back up the whole `~/.landrace/credentials/` folder, and keep the copy as safe as the credentials in it: it holds every person's tokens. Back up `.landrace/.env` too, for `LANDRACE_OIDC_SECRET`. What is lost without each part:
+**Backups.** Back up the whole `~/.landrace/credentials/` folder, and the credentials key apart from it: for a systemd unit, the encrypted credential, such as `/etc/credstore.encrypted/landrace-credentials-key`, which opens only on the machine that sealed it unless sealed otherwise. Keep the key's copy as safe as the credentials, since the two together hold every person's tokens. Back up `.landrace/.env` too, for `LANDRACE_OIDC_SECRET`. What is lost without each part:
 
+- Without the key, no file in the folder opens. Delete the folder while `start` is stopped, and everyone connects again.
 - Without a person's file, they have no connections. They are in the roster again the next time they sign in, and connect everything again.
 - Without the `mcp/` folder, Landrace knows no MCP client. Each person connects their editor again, and approves it again.
 

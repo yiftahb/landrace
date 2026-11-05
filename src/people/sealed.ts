@@ -2,23 +2,15 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { chmod, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { messageOf } from "#runner/errors.js";
-import type { SealedFiles } from "#namespace.js";
+import type { SealedEnvelope, SealedFiles } from "#namespace.js";
 
 /** The door's two files, under the credentials root, beside every person's. */
 export const MCP_FOLDER = "mcp";
 
 const IV_BYTES = 12;
 
-interface Envelope {
-  landrace: "sealed";
-  v: 1;
-  iv: string;
-  tag: string;
-  data: string;
-}
-
 /** Whether `text` is one of our envelopes. Anything else — a person's JSON, a corrupt file — is plain. */
-function envelopeOf(text: string): Envelope | null {
+function envelopeOf(text: string): SealedEnvelope | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -29,7 +21,7 @@ function envelopeOf(text: string): Envelope | null {
   const e = parsed as Record<string, unknown>;
   if (e["landrace"] !== "sealed") return null;
   return e["v"] === 1 && typeof e["iv"] === "string" && typeof e["tag"] === "string" && typeof e["data"] === "string"
-    ? (e as unknown as Envelope)
+    ? (e as unknown as SealedEnvelope)
     : null;
 }
 
@@ -67,7 +59,7 @@ export function createSealedFiles(root: string, key: Uint8Array | null | (() => 
     const cipher = createCipheriv("aes-256-gcm", k, iv);
     cipher.setAAD(Buffer.from(name, "utf8"));
     const data = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
-    const envelope: Envelope = { landrace: "sealed", v: 1, iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), data: data.toString("base64") };
+    const envelope: SealedEnvelope = { landrace: "sealed", v: 1, iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), data: data.toString("base64") };
     return `${JSON.stringify(envelope)}\n`;
   };
 

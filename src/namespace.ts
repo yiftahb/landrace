@@ -2043,6 +2043,23 @@ export interface CredentialKeyOptions {
   lockWaitMs?: number | undefined;
 }
 
+/** One secret store as `credentialKey` asks it: `lookup` is null only when the store says plainly it holds none, and throws for any other failure. */
+export interface KeySource {
+  locator: KeyLocator;
+  lookup(): Promise<Uint8Array | null>;
+  /** Stores `hex`, the key's 64 hex digits, never on argv. */
+  store(hex: string): Promise<void>;
+}
+
+/** What a sealed file holds on disk: base64 of the IV, the GCM tag and the ciphertext. */
+export interface SealedEnvelope {
+  landrace: "sealed";
+  v: 1;
+  iv: string;
+  tag: string;
+  data: string;
+}
+
 /**
  * The files under the credentials root, each sealed with AES-256-GCM under
  * the key when there is one, its path under `root` the additional data, so a
