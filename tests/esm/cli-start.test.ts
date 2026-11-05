@@ -2373,14 +2373,22 @@ export const spy = brand("preflight", {
 
   it("renews a token near its end, stores it, and the live ctx.secrets every hook reads holds it — never logging either token", async () => {
     const { dir, credentials } = await oauthFixture();
-    const answer = (): Response => new Response(JSON.stringify({ access_token: NEW, refresh_token: NEXT_REFRESH, expires_in: 7200 }), { status: 200 });
+    // The renewal before the build answers a token still inside the window,
+    // so the loop's own pass renews it again under a running runtime.
+    const MID = "glo-mid-access-token-0123456789";
+    const MID_REFRESH = "glr-mid-refresh-token-0123456789";
+    let asked = 0;
+    const answer = (): Response => (asked++ === 0
+      ? new Response(JSON.stringify({ access_token: MID, refresh_token: MID_REFRESH, expires_in: 300 }), { status: 200 })
+      : new Response(JSON.stringify({ access_token: NEW, refresh_token: NEXT_REFRESH, expires_in: 7200 }), { status: 200 }));
     await started(dir, credentials, answer, async (_door, printed) => {
-      await until(() => live()?.get("forgeToken") === OLD, "the runtime's hooks to be handed the stored token");
+      await until(() => live()?.get("forgeToken") !== undefined, "the runtime's hooks to be handed a token");
+      expect([MID, NEW]).toContain(live()?.get("forgeToken"));
       await until(async () => (await credentials.read("local")).connections["forge"]?.fields["token"] === NEW, "the renewed token to be stored");
       await until(() => live()?.get("forgeToken") === NEW, "the live secrets to hold the renewed token");
       expect((await credentials.read("local")).connections["forge"]).toMatchObject({ source: "oauth", refresh: { token: NEXT_REFRESH } });
       await until(() => printed.some((l) => l.includes("connection.refreshed")), "connection.refreshed");
-      for (const secret of [OLD, NEW, REFRESH, NEXT_REFRESH]) expect(printed.join("\n")).not.toContain(secret);
+      for (const secret of [OLD, MID, NEW, REFRESH, MID_REFRESH, NEXT_REFRESH]) expect(printed.join("\n")).not.toContain(secret);
       // Two minutes from its end, but renewed before it: nothing to warn a person of.
       expect(printed.filter((l) => l.includes("connection.expiring"))).toEqual([]);
     });
@@ -2460,6 +2468,40 @@ export const spy = brand("preflight", {
     expect(live()?.get("forgeToken")).toBe(NEW);
     expect(printed.some((l) => l.includes("connection.refreshed"))).toBe(true);
     for (const secret of [OLD, NEW, REFRESH, NEXT_REFRESH]) expect(printed.join("\n")).not.toContain(secret);
+  }, 30_000);
+
+  it("renews a --once start's ready token inside the renewal window before its one pass, which runs on the new token", async () => {
+    const { dir, credentials } = await oauthFixture();
+    // Ready, but two minutes from its end: a step in the one pass would outlive it.
+    expect((await localGate(dir, credentials)).resolution.ready).toBe(true);
+    const answer = (): Response => new Response(JSON.stringify({ access_token: NEW, refresh_token: NEXT_REFRESH, expires_in: 7200 }), { status: 200 });
+    const { printed, refused } = await headless(dir, credentials, answer);
+    expect(refused).toBeNull();
+    expect((await credentials.read("local")).connections["forge"]).toMatchObject({ fields: { token: NEW }, refresh: { token: NEXT_REFRESH } });
+    expect(live()?.get("forgeToken")).toBe(NEW);
+    for (const secret of [OLD, NEW, REFRESH, NEXT_REFRESH]) expect(printed.join("\n")).not.toContain(secret);
+  }, 30_000);
+
+  it("renews a board start's expired token before the person is judged: the runtime is built on it, and no Integrations-tab warning is printed", async () => {
+    const { dir, credentials } = await expired();
+    delete (globalThis as Record<string, unknown>).__lrLiveSecrets;
+    const door = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const fetch = (async () => new Response(JSON.stringify({ access_token: NEW, refresh_token: NEXT_REFRESH, expires_in: 7200 }), { status: 200 })) as typeof globalThis.fetch;
+    const running = runStart(dir, { interactive: false, credentials, serve: door.serve, oauth: { everyMs: 60_000, fetch } });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      // The runtime's preflight ran before the page opened, on the renewed token.
+      expect(live()?.get("forgeToken")).toBe(NEW);
+      expect(said.join("\n")).not.toContain("nothing runs until");
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
   }, 30_000);
 
   it("still refuses a headless start whose expired token the provider will not renew, marking it failed", async () => {

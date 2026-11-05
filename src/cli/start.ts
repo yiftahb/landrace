@@ -1540,8 +1540,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
 
   // Whether the local person is ready, before anything is built. Without a
   // door to connect through — `--once`, `--headless` — a missing connection
-  // refuses the start, in validate's words, as it always has — once an OAuth
-  // token past its end has been offered to its refresh token, below.
+  // refuses the start, in validate's words, as it always has — once every
+  // OAuth token due has been offered to its refresh token, below.
   const store = opts.credentials ?? createCredentialStore();
   let first = await localGate(dir, store);
   if (!first.resolution.ready && !serves) assertLocalUsable(first.local);
@@ -1575,12 +1575,15 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const pageRef: { url: string | null } = { url: null };
 
   try {
-    // A headless start has no refresher running yet, and an OAuth token two
-    // hours old is judged expired though its refresh token could renew it: a
-    // start after a long stop would refuse until someone connected by the
-    // board. One pass of the refresher first — renewed, refused and marked
-    // failed, or left — then the person judged again.
-    if (!first.resolution.ready && !serves) {
+    // One pass of the refresher before the person is judged, for every start:
+    // an OAuth token two hours old is judged expired though its refresh token
+    // could renew it, so a headless start after a long stop would refuse, and
+    // a board start would build no runtime and send the person to the
+    // Integrations tab a moment before the loop's own pass renewed it. And
+    // `--once` runs no loop at all: a token still ready but within the
+    // renewal window would end under a long step of its one pass. Renewed,
+    // refused and marked failed, or left — then the person judged again.
+    {
       const ctx = first.local.loaded;
       await connectionRefresher({
         store, log, gate: () => first,
@@ -1589,6 +1592,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
         reload: async () => { first = await localGate(dir, store, { log, signal: stop.signal }); },
         ...(opts.oauth?.fetch ? { fetch: opts.oauth.fetch } : {}),
       })();
+    }
+    if (!first.resolution.ready && !serves) {
       assertLocalUsable(first.local);
       assertPersonReady(first.resolution);
     }
@@ -1729,7 +1734,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
         }
         console.error(`landrace: triage page at ${ui.url}`);
         if (!current()) {
-          const missing = first.resolution.problems.filter((p) => p.rule.startsWith("connection.")).map((p) => `  ${p.rule}: ${p.message}`);
+          // The judging the build just made, after the renewal pass above.
+          const missing = latest.resolution.problems.filter((p) => p.rule.startsWith("connection.")).map((p) => `  ${p.rule}: ${p.message}`);
           console.error(`landrace: nothing runs until these are connected in the board's Integrations tab:\n${log.scrub(missing.join("\n"))}`);
         }
         pageRef.url = ui.url;
