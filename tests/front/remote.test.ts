@@ -252,6 +252,35 @@ describe("consenting to an MCP client", () => {
     expect(token).not.toBe("");
   });
 
+  /*
+   * #209: a custom scheme has no origin — `new URL("vscode://…").origin` is
+   * the string "null" — so the page once said it would send you to `null`.
+   */
+  it("says where a custom-scheme redirect sends the person: the URI without its query, escaped", async () => {
+    const d = await door();
+    const cookie = await sessionOf(d, ALICE);
+    const redirect = "vscode://anysphere.landrace/call&back?windowId=1";
+    const reg = await d.fetch(`${PUBLIC}/register`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [redirect], token_endpoint_auth_method: "none" }),
+    });
+    const clientId = ((await reg.json()) as { client_id: string }).client_id;
+    const res = await d.fetch(
+      `${PUBLIC}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirect)}&code_challenge=${challenge}&code_challenge_method=S256`,
+      { headers: { cookie } },
+    );
+    const html = await res.text();
+    expect(html).toContain("sent back to <code>vscode://anysphere.landrace/call&amp;back</code>");
+    expect(html).not.toContain("<code>null</code>");
+    expect(html).not.toContain("windowId");
+  });
+
+  it("names an http redirect by its origin alone", async () => {
+    const d = await door();
+    const html = await (await consentPage(d, await register(d), await sessionOf(d, ALICE))).res.text();
+    expect(html).toContain(`sent back to <code>${new URL(CLIENT_REDIRECT).origin}</code>`);
+  });
+
   it("issues a code for an approve from the page itself, back to the client with its state", async () => {
     const d = await door();
     const cookie = await sessionOf(d, ALICE);

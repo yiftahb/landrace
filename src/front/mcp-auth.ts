@@ -33,6 +33,19 @@ const escapeHtml = (text: string): string =>
   text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c);
 
 /**
+ * Where the consent page says it will send the person: the redirect's origin,
+ * or, for a custom scheme such as an editor's `vscode://`, whose origin is the
+ * string "null", the URI itself without its query.
+ */
+function whereTo(redirectUri: string): string {
+  const url = new URL(redirectUri);
+  if (url.origin !== "null") return url.origin;
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
+/**
  * What every consent response carries. Nothing may frame it — a page that
  * overlaid an invisible frame of it would take the person's click on
  * Approve — and nothing it loads comes from anywhere. Its referrer policy is
@@ -183,7 +196,7 @@ export function createMcpAuth(opts: {
 
   const consentPage = (client: OAuthClientInformationFull, params: AuthorizationParams, person: Person, token: string): string => {
     const name = escapeHtml(client.client_name ?? "An unnamed MCP client");
-    const to = escapeHtml(new URL(params.redirectUri).origin);
+    const to = escapeHtml(whereTo(params.redirectUri));
     const who = escapeHtml(person.email ?? person.id);
     return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Allow access to Landrace?</title>
 <style>body{font:15px system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}button{font:inherit;padding:.4rem 1rem;margin-right:.5rem}</style></head>
