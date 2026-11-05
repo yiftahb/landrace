@@ -531,3 +531,83 @@ describe("gitIdentityEnv, the identity a hook commits as", () => {
       .toThrow(/agent\.git\.colour is not a setting[\s\S]*agent\.git\.email must be a non-empty string/);
   });
 });
+
+describe("a run's deny list, computed when it starts", () => {
+  const CREDS = "~/.landrace/credentials";
+
+  /** Tiny, answering for each absolute path the runs it keeps there. */
+  class Kept extends Tiny {
+    kept: Record<string, string[]> = {};
+    protected override transcriptsUnder(dir: string): Promise<string[]> {
+      return Promise.resolve(this.kept[dir] ?? []);
+    }
+  }
+
+  /** An agent whose commands it cannot keep from any path, as Codex's. */
+  class Leaky extends Tiny {
+    protected override sandboxProblems({ deny }: SandboxSettings): string[] {
+      return deny.length ? [`leaky cannot keep ${deny.join(", ")} from a command`] : [];
+    }
+  }
+
+  const run = (tiny: Tiny, denyPaths: () => Promise<string[]>, capabilities?: string[]) =>
+    tiny.build({ ...settings, sandbox: { hosts: [], deny: ["~/.ssh"] }, denyPaths }).run("p", {
+      round: 1, cwd: tempDir("tiny-cwd-"), signal: new AbortController().signal, ...(capabilities ? { capabilities } : {}),
+    });
+
+  it.each([["screen", undefined], ["read", ["repo:read"]], ["write", ["repo:read", "repo:write"]]])(
+    "denies the %s tier each listed path and the runs the agent keeps under each absolute one",
+    async (_tier, capabilities) => {
+      const tiny = new Kept(markingBin());
+      tiny.kept = { "/w/bob": ["/home/.agent/-w-bob-12"], "~/.ssh": ["/never"] };
+      await run(tiny, () => Promise.resolve([CREDS, "/w/bob", "~/.ssh"]), capabilities);
+      expect(tiny.plans[0]?.sandbox.deny).toEqual(["~/.ssh", CREDS, "/w/bob", "/home/.agent/-w-bob-12"]);
+    },
+  );
+
+  it("asks again on every run, so a run kept after the executor was built is denied on the next", async () => {
+    const tiny = new Kept(markingBin());
+    const exec = tiny.build({ ...settings, denyPaths: () => Promise.resolve(["/w/bob"]) });
+    const opts = { round: 1, capabilities: ["repo:read"], signal: new AbortController().signal };
+    await exec.run("p", { ...opts, cwd: tempDir("tiny-cwd-") });
+    tiny.kept = { "/w/bob": ["/home/.agent/-w-bob-13"] };
+    await exec.run("p", { ...opts, cwd: tempDir("tiny-cwd-") });
+    expect(tiny.plans.map((p) => p.sandbox.deny)).toEqual([["/w/bob"], ["/w/bob", "/home/.agent/-w-bob-13"]]);
+  });
+
+  it.each([["a parenthesis", "/w/bo)b"], ["a control character", "/w/bo\nb"]])(
+    "refuses the run, naming the path, when one holds %s",
+    async (_what, path) => {
+      const tiny = new Tiny(markingBin());
+      await expect(run(tiny, () => Promise.resolve([CREDS, path]), ["repo:read"])).rejects.toThrow(JSON.stringify(path));
+      expect(tiny.plans).toEqual([]);
+    },
+  );
+
+  it("refuses a run kept under a path no rule can hold, rather than leave it readable", async () => {
+    const tiny = new Kept(markingBin());
+    tiny.kept = { "/w/bob": ["/home/.agent/-w-bob-(x)"] };
+    await expect(run(tiny, () => Promise.resolve(["/w/bob"]), ["repo:read"])).rejects.toThrow(/-w-bob-\(x\)/);
+    expect(tiny.plans).toEqual([]);
+  });
+
+  it("refuses an agent that cannot keep the list when it names more than the credentials", async () => {
+    const leaky = new Leaky(markingBin());
+    await expect(run(leaky, () => Promise.resolve([CREDS, "/w/bob"]), ["repo:read"])).rejects.toThrow(/\/w\/bob[\s\S]*leaky cannot keep/);
+    expect(leaky.plans).toEqual([]);
+  });
+
+  it("runs that agent as before when the list is the credentials alone", async () => {
+    const leaky = new Leaky(markingBin());
+    await expect(leaky.build({ ...settings, denyPaths: () => Promise.resolve([CREDS]) }).run("p", {
+      round: 1, cwd: tempDir("tiny-cwd-"), capabilities: ["repo:read"], signal: new AbortController().signal,
+    })).resolves.toEqual({ text: "ok", sessionId: "s-1" });
+  });
+
+  it.each([["the step agent", "tiny"], ["a screener for another agent", "other"]])("is handed to %s by create", async (_who, adapter) => {
+    const tiny = new Tiny(markingBin());
+    const { run: go } = await tiny.create({ ...ctxFor({ adapter }), denyPaths: () => Promise.resolve(["/w/bob"]) });
+    await go("p", { round: 1, cwd: tempDir("tiny-cwd-"), signal: new AbortController().signal });
+    expect(tiny.plans[0]?.sandbox.deny).toContain("/w/bob");
+  });
+});

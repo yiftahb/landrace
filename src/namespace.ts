@@ -974,6 +974,13 @@ export type ExecutorContext = RuntimeContext & {
    * Absent when they stored none, and the agent runs as it always has.
    */
   personEnv?: Readonly<Record<string, string>>;
+  /**
+   * What the person's runs may not read beyond the sandbox's own list: the
+   * credentials and each other person's worktrees. A function, asked as each
+   * run starts: who else is here changes on a sync, and their runs keep
+   * leaving transcripts. Absent, only what the sandbox lists.
+   */
+  denyPaths?: () => Promise<string[]>;
 };
 
 /**
@@ -1071,6 +1078,8 @@ export interface KitSettings {
   frontDoor?: FrontDoor | undefined;
   /** Set on every run's environment over the kit's own; `create` sets it from `ExecutorContext.personEnv`. */
   personEnv?: Readonly<Record<string, string>> | undefined;
+  /** Asked as each run starts, and merged into every tier's deny list; `create` sets it from `ExecutorContext.denyPaths`. */
+  denyPaths?: (() => Promise<string[]>) | undefined;
 }
 
 /**
@@ -3154,6 +3163,12 @@ export interface BuildOptions {
    * `ctx.person`.
    */
   person?: Person;
+  /**
+   * The other people this runner runs for, asked as each of this person's
+   * steps starts: their worktrees and their runs' transcripts are what the
+   * step may not read. Absent, nobody else.
+   */
+  others?: () => Person[];
   /**
    * How they were judged, by the caller: each per-person key's value, over
    * what `landrace.yaml` and `.env` answer. Absent, the build judges the
