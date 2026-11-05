@@ -16,7 +16,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { BoardView, BuildOptions, CredentialStore, FrontDoorOptions, LandraceEvent, RunningItem, StartOptions, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
 import { frontDoorListener } from "#front/server.js";
-import { runValidate } from "#cli/validate.js";
+import { reportValidate, runValidate } from "#cli/validate.js";
 import { createCredentialStore } from "#people/store.js";
 import { repositoryRoot } from "#agent/worktree.js";
 import { createActivityLog } from "#runner/activity.js";
@@ -2768,7 +2768,7 @@ export const spy = brand("preflight", {
  */
 describe("runStart with people.oidc", () => {
   const REMOTE = "serve: { host: 0.0.0.0, publicUrl: \"https://landrace.example.org/\" }\n" +
-    "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n";
+    "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value }, allow: [\"@example.invalid\"] }\n";
 
   it("serves a door that asks who is calling, and holds who signed in before but the local file", async () => {
     const { dir } = await fixture({ configExtra: REMOTE, items: [] });
@@ -3106,6 +3106,61 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
     const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
     await expect(runStart(dir, { interactive: false, credentials, serve: inProcessDoor().serve })).rejects.toThrow(/serve\.public-url: people\.oidc is set and serve\.publicUrl is not/);
   });
+
+  // #204: a remote instance that lists nobody would admit nobody.
+  it.each([
+    ["absent", REMOTE.replace(', allow: ["@example.invalid"]', "")],
+    ["empty", REMOTE.replace('allow: ["@example.invalid"]', "allow: []")],
+  ])("refuses a remote start whose people.allow is %s, naming people.allow", async (_, config) => {
+    expect(config).not.toContain("@example.invalid");
+    const { dir } = await fixture({ configExtra: config, items: [] });
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    await expect(runStart(dir, { interactive: false, credentials, serve: inProcessDoor().serve })).rejects.toThrow(/people\.allow: people\.oidc is set and people\.allow lists no one/);
+  });
+
+  /*
+   * #204: removing someone is taking them off people.allow and restarting.
+   * Carol signed in and connected an editor before; the list no longer
+   * names her domain. Her file stays, so putting her back restores her.
+   */
+  it("restarted without a stored person on people.allow, holds no runtime for them, keeps their file, and drops their refresh tokens", async () => {
+    const { dir } = await fixture({ configExtra: REMOTE, items: [] });
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    const alice = { id: "sub-alice", email: "alice@example.invalid" };
+    const carol = { id: "sub-carol", email: "carol@example.org" };
+    await credentials.remember(alice);
+    await credentials.remember(carol);
+    const at = Date.now();
+    await mkdir(join(credentials.root, "mcp"), { recursive: true });
+    await writeFile(join(credentials.root, "mcp", "mcp-tokens.json"), JSON.stringify({
+      a: { clientId: "c1", person: alice, scopes: [], expires: at + 60_000, consentedAt: at },
+      c: { clientId: "c2", person: carol, scopes: [], expires: at + 60_000, consentedAt: at },
+    }));
+    const { serve, drive, options } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    try {
+      await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
+      expect(said.join("\n")).toContain("; 1 have before");
+      expect((await credentials.list()).map((p) => p.id).sort()).toEqual([alice.id, carol.id]);
+      const sessions = options().remote?.sessions;
+      if (!sessions) throw new Error("runStart handed a remote door no sessions");
+      const cookie = sessions.issue(carol).split(";")[0] ?? "";
+      expect((await drive("/board.json", { headers: { cookie } })).status).toBe(401);
+      // The tokens file is read when the door's MCP routes are first reached.
+      const fetch = memoryFetch(frontDoorListener(options(), DOOR_PORT));
+      await fetch("https://landrace.example.org/register", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const kept = JSON.parse(await readFile(join(credentials.root, "mcp", "mcp-tokens.json"), "utf8")) as Record<string, unknown>;
+      expect(Object.keys(kept)).toEqual(["a"]);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
 });
 
 describe("landrace validate with people.oidc", () => {
@@ -3113,11 +3168,13 @@ describe("landrace validate with people.oidc", () => {
     const { dir, credentials } = await unready("secret");
     const yaml = join(dir, "landrace.yaml");
     await writeFile(yaml, `${await readFile(yaml, "utf8")}serve: { host: 0.0.0.0, publicUrl: "https://landrace.example.org/" }\n` +
-      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n");
+      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value }, allow: [\"@example.invalid\"] }\n");
     await credentials.put("sub-alice", { id: "sub-alice", email: "alice@example.invalid" }, "forge", {
       fields: { token: PASTED }, source: "paste", connectedAt: new Date().toISOString(),
     });
     await credentials.remember({ id: "sub-bob", email: "bob@example.invalid" });
+    // Off people.allow: the instance runs nothing for her, so her problems are nobody's to mend.
+    await credentials.remember({ id: "sub-carol", email: "carol@example.org" });
     // The operator's own file: nobody's, remotely, so never judged.
     await credentials.remember({ id: "local" });
     await writeFile(join(dir, "..", ".gitignore"), ".env\n");
@@ -3127,6 +3184,27 @@ describe("landrace validate with people.oidc", () => {
     expect(people).toEqual([expect.stringMatching(/^bob@example\.invalid: connection\.missing: secrets entry "forgeToken" has no value/)]);
   });
 
+  // #204: what a remote instance's configuration says that it may not mean is said, and never fails it.
+  it("warns of a string secret and of a per-person key with env set, naming each, and exits 0", async () => {
+    const { dir, credentials } = await unready("secret");
+    const yaml = join(dir, "landrace.yaml");
+    const config = (await readFile(yaml, "utf8")).replace("forgeToken: { perPerson: true, connection: forge.token }", "forgeToken: { perPerson: true, env: LR_TEST_FORGE_UNSET, connection: forge.token }");
+    expect(config).toContain("githubToken: $LR_TEST_TOKEN");
+    expect(config).toContain("env: LR_TEST_FORGE_UNSET");
+    await writeFile(yaml, `${config}serve: { host: 0.0.0.0, publicUrl: "https://landrace.example.org/" }\n` +
+      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value }, allow: [\"ann@example.com\"] }\n");
+    await writeFile(join(dir, "..", ".gitignore"), ".env\n");
+    const result = await runValidate(dir, { credentials });
+    expect(result.problems).toEqual([]);
+    expect(result.warnings).toEqual([
+      expect.stringMatching(/^secrets\.githubToken is one value for everyone/),
+      expect.stringMatching(/^secrets\.forgeToken names env LR_TEST_FORGE_UNSET, which a remote instance never reads: .*"forge" connection/),
+    ]);
+    const printed: string[] = [];
+    expect(reportValidate(dir, result, { out: (l) => printed.push(l), err: (l) => printed.push(l) })).toBe(0);
+    expect(printed.filter((l) => l.startsWith("warning: "))).toHaveLength(2);
+  });
+
   // `start` refuses a key naming a connection no hook defines whoever is
   // stored; a verdict that waited for someone to sign in flipped as they did.
   it("reports connection.unknown once from the config, with nobody stored or with people stored", async () => {
@@ -3134,7 +3212,7 @@ describe("landrace validate with people.oidc", () => {
     const yaml = join(dir, "landrace.yaml");
     await writeFile(yaml, `${(await readFile(yaml, "utf8")).replace("connection: forge.token", "connection: nope.token")}` +
       `serve: { host: 0.0.0.0, publicUrl: "https://landrace.example.org/" }\n` +
-      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n");
+      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value }, allow: [\"@example.invalid\"] }\n");
     await writeFile(join(dir, "..", ".gitignore"), ".env\n");
     const unknown = [{ rule: "connection.unknown", message: expect.stringMatching(/"forgeToken" names connection "nope", which no hook defines/) }];
     const empty = await runValidate(dir, { credentials });

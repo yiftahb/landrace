@@ -157,6 +157,6 @@ These rules hold for anyone, person or agent, who edits `README.md` or `docs/`. 
 - **Define each Landrace term where it first appears, or use plain words.** The terms are stage, effect, hook, claim, halt, waits, fastlane and relationship.
 - **Write plainly:** present tense, active voice, plain words, one idea per sentence. No superlative without a number. Every claim is checkable. State limits honestly, and say which integrations are unverified.
 - **Diagrams are mermaid,** one concept each, at most about 8 nodes. **Images** live in `docs/assets/`, stay under about 1 MB, carry alt text, and are regenerated when the UI changes.
-- **Links inside the repository are relative,** and every link resolves.
+- **Links inside the repository are relative,** and every link resolves to the section that says what the link claims, not merely to an anchor that exists.
 - **One home per fact.** `docs/` pages and the README link to each other instead of repeating. `docs/README.md` lists every page. A change to a command, a config key, a workflow or an integration updates its page in the same change.
 - **The README is for users. `CLAUDE.md` and `AGENTS.md` are for contributors and agents,** and what they say stays out of the README.

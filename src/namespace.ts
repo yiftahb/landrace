@@ -2174,6 +2174,13 @@ export interface StoredRefresh {
   scopes: string[];
   /** Milliseconds since the epoch. */
   expires: number;
+  /**
+   * When the person consented, in milliseconds since the epoch: every
+   * rotation keeps it, and `expires` never passes it by more than thirty
+   * days. Absent in a record written before it was kept, which lasts until
+   * its own `expires`.
+   */
+  consentedAt?: number;
 }
 
 /**
@@ -2237,6 +2244,13 @@ export interface RosterOptions {
   registry: Pick<Registry, "connections">;
   store: CredentialStore;
   mode: { remote: boolean };
+  /**
+   * Whether `people.allow` admits the person, as `start` loaded it: one
+   * refused is never remembered at sign-in, and one already stored is held
+   * by no runtime. Required, never defaulted — a taker that forgot it would
+   * admit everyone. Locally, `() => true`.
+   */
+  admits: (person: Person) => boolean;
   /** A ready person's runtime, or null when there is none to run. */
   build: (person: Person, resolution: PersonResolution) => Promise<WorkspaceRuntime | null>;
   log: RedactingLogger;
@@ -4040,12 +4054,26 @@ export interface FrontDoorOptions {
   scrub?: (text: string) => string;
 }
 
+/**
+ * What `landrace validate` found. `problems` decide `ok`; `people` are each
+ * stored person's own, remotely, theirs to mend; `warnings` are what a remote
+ * instance's configuration says that it may not mean. Neither of the last two fails it.
+ */
+export interface ValidateResult {
+  ok: boolean;
+  problems: Problem[];
+  people: string[];
+  warnings: string[];
+}
+
 /** What a remote door signs people in with, and where it keeps its MCP clients. */
 export interface RemoteDoor {
   oidc: Oidc;
   sessions: Sessions;
   /** Someone signed in: remembered, judged and built. A `Refusal` turns them away. */
   signIn(person: Person): Promise<void>;
+  /** Whether `people.allow` admits the person: asked again of every MCP grant, refresh and access token. */
+  admits: (person: Person) => boolean;
   /** The 0700 directory `mcp-clients.json` and `mcp-tokens.json` are kept in. */
   authRoot: string;
   /** The start's own log: every event, and every line the door prints, goes through its redaction. */

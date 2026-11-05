@@ -71,8 +71,14 @@ const SIGNED_OUT = `<!doctype html>
 <p><a href="/login">Sign in again</a></p></body></html>
 `;
 
-/** The cookie that binds a sign-in to the browser that began it, sent back only to the callback. */
-const LOGIN_COOKIE = "landrace_login";
+/**
+ * The cookie that binds a sign-in to the browser that began it. Over https
+ * it is `__Host-`, so a sibling subdomain cannot plant one, and a `__Host-`
+ * cookie must be `Path=/`; on loopback http it keeps its old name and is sent
+ * back only under `/login`.
+ */
+const loginCookie = (secure: boolean): { name: string; path: string } =>
+  secure ? { name: "__Host-landrace_login", path: "/" } : { name: "landrace_login", path: "/login" };
 
 /**
  * Nobody known asked for something of someone's. A page — what a browser
@@ -100,7 +106,8 @@ function remoteApp(
 ): (req: IncomingMessage, res: ServerResponse) => void {
   if (publicUrl === undefined) throw new Error("a remote door needs serve.publicUrl: its sign-in callback and its authorization server are built from it");
   const secure = new URL(publicUrl).protocol === "https:";
-  const auth = createMcpAuth({ publicUrl, sessions: door.sessions, root: door.authRoot, origins, log: door.log });
+  const login = loginCookie(secure);
+  const auth = createMcpAuth({ publicUrl, sessions: door.sessions, root: door.authRoot, origins, log: door.log, admits: door.admits });
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", "loopback");
@@ -116,20 +123,20 @@ function remoteApp(
     const asked = typeof req.query["return"] === "string" ? req.query["return"] : null;
     door.oidc.begin(asked).then(({ url, binding }) => {
       res.set({
-        "set-cookie": cookie(LOGIN_COOKIE, binding, { secure, maxAgeSeconds: 600, path: "/login" }), "cache-control": "no-store", "referrer-policy": "no-referrer",
+        "set-cookie": cookie(login.name, binding, { secure, maxAgeSeconds: 600, path: login.path }), "cache-control": "no-store", "referrer-policy": "no-referrer",
       }).redirect(302, url);
     }, failed(res, "starting the sign-in"));
   });
 
   app.get("/login/callback", (req, res) => {
     const callback = new URL(req.originalUrl, publicUrl);
-    const cleared = cookie(LOGIN_COOKIE, "", { secure, maxAgeSeconds: 0, path: "/login" });
+    const cleared = cookie(login.name, "", { secure, maxAgeSeconds: 0, path: login.path });
     const refused = (status: number, reason: string, email?: string): void => {
       door.log("signin.refused", { person: "anonymous", ...(email === undefined ? {} : { personEmail: email }), reason });
       res.set("set-cookie", cleared);
       text(res, status, reason);
     };
-    door.oidc.finish(callback, cookieOf(req, LOGIN_COOKIE)).then(async (done) => {
+    door.oidc.finish(callback, cookieOf(req, login.name)).then(async (done) => {
       if ("refused" in done) return refused(done.status, done.refused);
       try {
         await door.signIn(done.person);

@@ -69,7 +69,7 @@ describe("buildChildTool", () => {
    */
   describe("as a person", () => {
     const REMOTE = "serve: { host: 0.0.0.0, publicUrl: \"https://landrace.example.org/\" }\n" +
-      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n";
+      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value }, allow: [\"@example.invalid\"] }\n";
     const remoteDir = async (): Promise<string> => {
       const dir = await dirWithBreakdown();
       await appendFile(join(dir, "landrace.yaml"), REMOTE);
