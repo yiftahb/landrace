@@ -108,7 +108,7 @@ function remoteApp(
     res.status(status).set({ "cache-control": "no-store", "x-content-type-options": "nosniff" }).type("text/plain").send(body);
   };
   const failed = (res: Response, what: string) => (e: unknown): void => {
-    console.error(`landrace: ${what} failed: ${messageOf(e)}`);
+    console.error(door.log.scrub(`landrace: ${what} failed: ${messageOf(e)}`));
     if (!res.headersSent) text(res, 502, `${what} failed; the landrace log says why`);
   };
 
@@ -178,7 +178,8 @@ export function serveFrontDoor(opts: FrontDoorOptions): Promise<UiServer> {
       server.off("error", reject);
       const port = (server.address() as AddressInfo).port;
       listener = frontDoorListener(opts, port);
-      server.on("error", (e) => console.error(`landrace: front door error: ${messageOf(e)}`));
+      const scrub = opts.scrub ?? opts.remote?.log.scrub ?? ((text: string) => text);
+      server.on("error", (e) => console.error(scrub(`landrace: front door error: ${messageOf(e)}`)));
       const bound = isIPv6(opts.host) ? `[${opts.host}]` : opts.host;
       resolve({
         url: opts.publicUrl ?? `http://${bound}:${port}/`,

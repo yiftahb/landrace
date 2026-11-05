@@ -13,6 +13,7 @@ import { createTools } from "#mcp/tools.js";
 import { createOidc } from "#people/oidc.js";
 import { createSessions } from "#people/session.js";
 import { Refusal } from "#runner/errors.js";
+import { createLogger } from "#runner/events.js";
 import { ANY, hooked, loaded } from "#tests/support/loaded.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { fakeOidc } from "#tests/support/fake-oidc.js";
@@ -32,22 +33,31 @@ const view = (id: string): BoardView => ({
   generatedAt: 1, rows: [], nextTickAt: null, folder: id, workspace: "/repo", workflows: [], needsYou: 0, listed: true,
 });
 
-/** `files`, when given, are written into the MCP credential folder before the door is built. */
-async function door(files: Record<string, string> = {}) {
+/** A value the start's log redacts, as it would a configured secret. */
+const SECRET = "frontdoorsecret0123456789";
+
+/**
+ * `files`, when given, are written into the MCP credential folder before the
+ * door is built. `providerSays`, when given, is what every request to the
+ * provider fails with. `secretFolder` puts SECRET in the folder's own path.
+ */
+async function door(files: Record<string, string> = {}, o: { providerSays?: string; secretFolder?: boolean } = {}) {
   const idp = fakeOidc();
   const sessions = createSessions({ secure: true });
   const events: LandraceEvent[] = [];
-  const log = Object.assign((name: LandraceEvent["name"], data?: Record<string, unknown>) => { events.push({ name, ...data }); }, {});
+  const log = createLogger({ redactValues: [SECRET], sink: (e) => { events.push(e); } });
+  const providerFetch: typeof globalThis.fetch = o.providerSays === undefined ? idp.fetch : () => Promise.reject(new Error(o.providerSays));
   const signedIn: Person[] = [];
   const trackers = { alice: createFakeTracker([{ number: 1 }]), bob: createFakeTracker([{ number: 2 }]) };
   const mcp = createMcpEndpoint({
     workflows: ["main"],
+    scrub: log.scrub,
     toolsFor: (caller): Tools => {
       const tracker = caller.id === "sub-bob" ? trackers.bob : trackers.alice;
       return createTools([hooked(tracker.registry, loaded(ANY, new Map(), "main"))], tracker.ctx);
     },
   });
-  const authRoot = join(await mkdtemp(join(tmpdir(), "lr-remote-")), "credentials", "mcp");
+  const authRoot = join(await mkdtemp(join(tmpdir(), o.secretFolder ? `lr-remote-${SECRET}-` : "lr-remote-")), "credentials", "mcp");
   for (const [name, text] of Object.entries(files)) {
     await mkdir(authRoot, { recursive: true });
     await writeFile(join(authRoot, name), text);
@@ -58,7 +68,7 @@ async function door(files: Record<string, string> = {}) {
     board: { view: async () => view("nobody's") },
     boardFor: (caller) => ({ view: async () => view(caller.id), has: (item) => item === String(ITEMS[caller.id]) }),
     remote: {
-      oidc: createOidc({ oidc: { issuer: idp.issuer, clientId: idp.clientId, clientSecret: "client-secret-value" }, redirectUri: `${PUBLIC}/login/callback`, fetch: idp.fetch }),
+      oidc: createOidc({ oidc: { issuer: idp.issuer, clientId: idp.clientId, clientSecret: "client-secret-value" }, redirectUri: `${PUBLIC}/login/callback`, fetch: providerFetch }),
       sessions, authRoot, log,
       signIn: async (person) => {
         if (person.id === "local") throw new Refusal('nobody signs in as "local"');
@@ -211,6 +221,43 @@ describe("signing in at the door", () => {
     const res = await signIn(d, { ...ALICE, sub: "local" });
     expect(res.status).toBe(403);
     expect(cookieIn(res, "landrace_session")).toBeUndefined();
+  });
+});
+
+// #209: the door's own error lines once skipped the redactor every other line goes through.
+describe("the door's error lines", () => {
+  const printedDuring = async (run: () => Promise<void>): Promise<string> => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await run();
+      for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+      return errors.mock.calls.map(([m]) => String(m)).join("\n");
+    } finally {
+      errors.mockRestore();
+    }
+  };
+
+  it("prints a failed sign-in through the start log's redaction", async () => {
+    let status = 0;
+    const printed = await printedDuring(async () => {
+      const d = await door({}, { providerSays: `the provider echoed ${SECRET}` });
+      status = (await d.fetch(`${PUBLIC}/login`)).status;
+    });
+    expect(status).toBe(502);
+    expect(printed).toContain("starting the sign-in failed");
+    expect(printed).not.toContain(SECRET);
+  });
+
+  it("prints, and answers, a credential file that cannot be read through the start log's redaction", async () => {
+    let said = "";
+    const printed = await printedDuring(async () => {
+      const d = await door({ [MCP_CLIENTS_FILE]: "[]" }, { secretFolder: true });
+      said = await (await d.fetch(`${PUBLIC}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).text();
+    });
+    expect(printed).toContain(MCP_CLIENTS_FILE);
+    expect(said).toContain(MCP_CLIENTS_FILE);
+    expect(printed).not.toContain(SECRET);
+    expect(said).not.toContain(SECRET);
   });
 });
 

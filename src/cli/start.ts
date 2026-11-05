@@ -153,6 +153,7 @@ export async function startUi(
     boardFor?: FrontDoorOptions["boardFor"];
     /** Set, people sign in at the door: see `RemoteDoor`. */
     remote?: FrontDoorOptions["remote"];
+    scrub?: FrontDoorOptions["scrub"];
     serve?: ((opts: FrontDoorOptions) => Promise<UiServer>) | undefined;
   },
 ): Promise<UiServer | null> {
@@ -167,6 +168,7 @@ export async function startUi(
       ...(opts.callerOf === undefined ? {} : { callerOf: opts.callerOf }),
       ...(opts.boardFor === undefined ? {} : { boardFor: opts.boardFor }),
       ...(opts.remote === undefined ? {} : { remote: opts.remote }),
+      ...(opts.scrub === undefined ? {} : { scrub: opts.scrub }),
       board: {
         view: () => opts.board.view(),
         ...(opts.tick === undefined ? {} : { tick: opts.tick }),
@@ -198,7 +200,7 @@ export async function startUi(
  * tick found more than one person claiming, which no tool acts on.
  */
 export function mcpEndpointFor(
-  rt: Pick<WorkspaceRuntime, "workflows" | "ctx" | "activity" | "toolWorkflows">, schedule: Pick<Schedule, "wake">,
+  rt: Pick<WorkspaceRuntime, "workflows" | "ctx" | "activity" | "toolWorkflows" | "log">, schedule: Pick<Schedule, "wake">,
   opts: { ambiguous?: () => ReadonlyMap<string, string[]>; pairing?: boolean } = {},
 ): McpEndpoint {
   const workflows = rt.toolWorkflows ?? [];
@@ -206,6 +208,7 @@ export function mcpEndpointFor(
   return createMcpEndpoint({
     workflows: workflows.map((w) => w.id),
     ...(opts.pairing === undefined ? {} : { pairing: opts.pairing }),
+    scrub: (text) => rt.log.scrub(text),
     toolsFor: (_caller, scope) => createTools(workflows, rt.ctx, {
       ...(sandbox ? { sandbox } : {}),
       ...(rt.activity ? { activity: rt.activity } : {}),
@@ -1876,7 +1879,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       ...(opts.serve ? { serve: opts.serve } : {}),
       // Never reached while `callerOf` names someone, which locally it always does.
       board: { view: () => current()?.board.view() ?? Promise.reject(new Error(NOT_RUNNING)) },
-      callerOf, boardFor,
+      callerOf, boardFor, scrub: (text: string) => log.scrub(text),
       ...(oidc && sessions ? {
         remote: {
           // `serveProblems` refused a remote start without serve.publicUrl, before anything was built.

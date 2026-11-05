@@ -58,6 +58,8 @@ export function createMcpEndpoint(opts: {
   toolsFor: (caller: Person, workflow?: string) => Tools;
   /** Whether the pairing tools are offered. Absent, they are. */
   pairing?: boolean;
+  /** The start log's `scrub`: a failed request's line can quote what a tool was handed. */
+  scrub: (text: string) => string;
 }): McpEndpoint {
   const sessions = new Map<string, { transport: StreamableHTTPServerTransport; caller: string }>();
   const tools = new Map<string, Tools>();
@@ -122,7 +124,7 @@ export function createMcpEndpoint(opts: {
   return {
     handle: (req, res, caller) => {
       handle(req, res, caller ?? { id: LOCAL_PERSON_ID }).catch((e: unknown) => {
-        console.error(`landrace: an MCP request failed: ${messageOf(e)}`);
+        console.error(opts.scrub(`landrace: an MCP request failed: ${messageOf(e)}`));
         if (!res.headersSent) send(res, 500, TEXT, "the MCP request failed; the landrace log says why");
       });
     },

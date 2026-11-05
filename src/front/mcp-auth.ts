@@ -10,7 +10,7 @@ import { getOAuthProtectedResourceMetadataUrl, mcpAuthRouter } from "@modelconte
 import type { OAuthClientInformationFull, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { messageOf } from "#runner/errors.js";
 import { foreignOrigin } from "#ui/server.js";
-import type { IssuedAccess, Logger, McpAuth, Person, PendingConsent, Sessions, StoredRefresh } from "#namespace.js";
+import type { IssuedAccess, McpAuth, Person, PendingConsent, RedactingLogger, Sessions, StoredRefresh } from "#namespace.js";
 
 /** A consent page's token, and the code it grants: each spent once, and worthless after this. */
 const CONSENT_TTL_MS = 10 * 60_000;
@@ -122,7 +122,7 @@ export function createMcpAuth(opts: {
   root: string;
   /** The door's own origins: an approve from any other is refused. */
   origins: readonly string[];
-  log: Logger;
+  log: RedactingLogger;
   now?: () => number;
 }): McpAuth {
   const now = opts.now ?? Date.now;
@@ -148,7 +148,8 @@ export function createMcpAuth(opts: {
   // after it binds. Said once here, and every MCP route answers with it.
   let unreadable: string | null = null;
   loaded.catch((e: unknown) => {
-    unreadable = messageOf(e);
+    // Scrubbed once, for the line and for every 503 that repeats it.
+    unreadable = opts.log.scrub(messageOf(e));
     console.error(`landrace: MCP sign-in is off: ${unreadable}`);
   });
   const ready = (_req: Request, res: Response, next: () => void): void => {
@@ -319,7 +320,7 @@ export function createMcpAuth(opts: {
   const router = express.Router();
   router.post("/authorize/consent", ready, express.urlencoded({ extended: false, limit: "8kb" }), (req, res) => {
     consent(req, res).catch((e: unknown) => {
-      console.error(`landrace: an approval failed: ${messageOf(e)}`);
+      console.error(opts.log.scrub(`landrace: an approval failed: ${messageOf(e)}`));
       if (!res.headersSent) res.status(500).type("text/plain").send("the approval failed; the landrace log says why");
     });
   });
