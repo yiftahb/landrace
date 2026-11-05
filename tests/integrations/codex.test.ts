@@ -440,10 +440,22 @@ describe("the Codex integration", () => {
         "steps/spec.md lists skills:, which the codex executor cannot enforce\nsteps/spec.md lists plugins:, which the codex executor cannot enforce");
     });
 
-    it("takes every shipped step's effort", async () => {
+    /*
+     * Every shipped step's effort is one codex takes; what it refuses is each
+     * step that may write, since no live check has shown it keeps a run from
+     * the git control paths — and nothing else.
+     */
+    it("takes every shipped step's effort, and refuses only the steps that may write", async () => {
       const loaded = await loadConfig(".landrace");
       const { steps } = await loadShipped(loaded.vars);
-      await expect(new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] } }, steps))).resolves.toBeDefined();
+      const writing = [...steps].filter(([, s]) => s.capabilities?.includes("repo:write")).map(([path]) => path);
+      expect(writing.length).toBeGreaterThan(0);
+      const refused = await new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] } }, steps)).then(() => "", (e: unknown) => String(e));
+      expect(refused.replace(/^Error: /, "").split("\n")).toEqual(writing.map((path) =>
+        `${path} may write the repository, and the codex executor cannot keep a run from writing a path: ` +
+        "its agent could plant a git hook or config that landrace's git, or yours, then runs"));
+      const reading = new Map([...steps].filter(([path]) => !writing.includes(path)));
+      await expect(new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] } }, reading))).resolves.toBeDefined();
     });
 
     it("names a step's max, which codex has no level for", async () => {
