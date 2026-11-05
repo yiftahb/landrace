@@ -2,6 +2,9 @@ import { z } from "zod";
 
 import { durationMs, ITEM_BRANCH } from "#conventions.js";
 
+/** A URL's hostname on loopback, as `new URL` spells it: an IPv6 address bracketed. */
+const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
 /**
  * A `secrets` or `vars` value: a string, as it always was, or a key each
  * person supplies for themselves. `env` is a bare variable name, never a
@@ -144,7 +147,40 @@ export const runtimeConfigSchema = z.object({
    * committed file names nobody in particular.
    */
   people: z
-    .object({ local: z.object({ email: z.string().min(1).optional(), name: z.string().min(1).optional() }).strict() })
+    .object({
+      local: z.object({ email: z.string().min(1).optional(), name: z.string().min(1).optional() }).strict().optional(),
+      /**
+       * Set, the instance is remote: everyone signs in through this OpenID
+       * Connect provider, and the door may be served beyond loopback. Absent,
+       * nothing asks who anyone is. `clientId` and `clientSecret` may be a
+       * `$VAR`, resolved as `people.local`'s are. An `http` issuer only on
+       * loopback, where a local test provider runs: anywhere else the ID token
+       * would cross the network in the clear.
+       */
+      oidc: z
+        .object({
+          issuer: z
+            .string()
+            .url()
+            .refine((u) => {
+              // Refined even when `.url()` failed; that failure is already its own message.
+              if (!URL.canParse(u)) return true;
+              const url = new URL(u);
+              return url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK_NAMES.has(url.hostname));
+            }, { message: "must be an https:// URL, or http:// on loopback" }),
+          clientId: z.string().min(1),
+          clientSecret: z.string().min(1),
+        })
+        .strict()
+        .optional(),
+      /**
+       * An identity the admin pins for a person whose lookup cannot find
+       * them: their email, then the connection id, then its fields. Stored
+       * as `source: "override"` when they sign in, and held to the same
+       * rule as a lookup: a value another person holds is refused.
+       */
+      overrides: z.record(z.record(z.record(z.string().min(1)))).optional(),
+    })
     .strict()
     .optional(),
   /**

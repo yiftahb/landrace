@@ -90,10 +90,12 @@ export function configProblems(dir: string, loaded: LoadedConfig): Problem[] {
         "An unset or empty variable would leave every commit an agent or a hook makes without the identity it names",
     })),
     ...loaded.missingPerson.map(({ key, variable }) => ({
-      rule: `people.local.${key}`,
+      rule: `people.${key}`,
       message:
-        `people.local.${key} is $${variable}, which does not resolve to a usable value; set it in ${env}. ` +
-        "It names whose this instance's events are, and an unset or empty variable names no one",
+        `people.${key} is $${variable}, which does not resolve to a usable value; set it in ${env}. ` +
+        (key.startsWith("oidc.")
+          ? "Nobody can sign in without the client the provider issued this instance"
+          : "It names whose this instance's events are, and an unset or empty variable names no one"),
     })),
     ...varsHoldingSecrets(loaded).map((name) => ({
       rule: "vars",
@@ -206,7 +208,11 @@ export async function loadConfig(dir: string): Promise<LoadedConfig> {
     ? resolveIn(git as Record<string, unknown>, ["name", "email"])
     : [];
   // The same, for whose events these are: the email is each operator's own.
-  const missingPerson = config.people ? resolveIn(config.people.local, ["email", "name"]) : [];
+  // And the remote instance's sign-in client, whose secret is the operator's.
+  const missingPerson = [
+    ...(config.people?.local ? resolveIn(config.people.local, ["email", "name"]).map((m) => ({ ...m, key: `local.${m.key}` })) : []),
+    ...(config.people?.oidc ? resolveIn(config.people.oidc, ["clientId", "clientSecret"]).map((m) => ({ ...m, key: `oidc.${m.key}` })) : []),
+  ];
 
   const telemetry = new Map(TELEMETRY_KEYS.flatMap((key) => {
     const value = env.get(key);

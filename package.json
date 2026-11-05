@@ -54,12 +54,15 @@
     "@opentelemetry/sdk-logs": "^0.222.0",
     "@ucast/mongo2js": "^2.0.0",
     "commander": "^13.1.0",
+    "express": "^5",
+    "openid-client": "^6",
     "yaml": "^2.7.1",
     "zod": "^3.24.4"
   },
   "devDependencies": {
     "@eslint/js": "^9.25.0",
     "@tailwindcss/cli": "^4.3.3",
+    "@types/express": "^5.0.6",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.15.2",
     "eslint": "^9.25.0",

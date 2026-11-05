@@ -555,9 +555,9 @@ export interface LoadedConfig {
    */
   missingGit: Array<{ key: string; variable: string }>;
   /**
-   * `people.local` keys written as a `$VAR` that is unset or empty, with the
-   * variable each names. One that resolved is already written back into
-   * `config.people.local`.
+   * `people.local` and `people.oidc` keys written as a `$VAR` that is unset
+   * or empty, each `local.<key>` or `oidc.<key>`, with the variable it names.
+   * One that resolved is already written back into `config.people`.
    */
   missingPerson: Array<{ key: string; variable: string }>;
 }
