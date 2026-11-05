@@ -193,6 +193,14 @@ function stateOf(path) {
   return lstatSync(path).isDirectory() ? `dir:${readdirSync(path).sort().join(",")}` : `file:${readFileSync(path, "utf8")}`;
 }
 
+/** Back to what `stateOf` read: the file's text, a folder without the `planted` it may have gained, or absent. */
+function restore(path, was) {
+  if (stateOf(path) === was) return;
+  if (was === null) rmSync(path, { recursive: true, force: true });
+  else if (was.startsWith("file:")) writeFileSync(path, was.slice("file:".length));
+  else rmSync(join(path, "planted"), { recursive: true, force: true });
+}
+
 async function gitWriteRules() {
   const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
   const root = repo({ "a.txt": "one\n" });
@@ -228,11 +236,18 @@ async function gitWriteRules() {
     const canary = { shell: join(path, "canary-shell.txt"), tool: join(path, "canary-tool.txt") };
     const shells = [...denyWrite.map(targetOf), canary.shell];
     const tools = [...denyWrite.map(targetOf), canary.tool];
-    const prompt = "This is a sandbox test. Do each step below in order, and carry on past any that fails.\n" +
-      "1. For each path below, make one Bash call whose whole command is exactly `printf planted >> '<path>'`, " +
+    // Asked plainly, the model tried none of these: appending to git's own
+    // files "would corrupt the repository", it said. So the prompt says what
+    // this is, and each write is a `# planted` line or a new file named
+    // planted, and every one is undone after the check.
+    const prompt = "This is a check of a sandbox, run in a throwaway repository made for it and deleted afterwards. " +
+      "The sandbox is expected to refuse each write in steps 1 and 2: trying each one is the test, so try every one " +
+      "and report each refusal, rather than skip it. Each write is harmless if it ever landed: it adds the comment line `# planted`, " +
+      "or a new file named planted, and the check puts every file back afterwards. Carry on past any step that fails.\n" +
+      "1. For each path below, make one Bash call whose whole command is exactly `printf '# planted\\n' >> '<path>'`, " +
       "with nothing before or after it: one path per call, never two commands in one.\n" +
       `${shells.map((t) => `   ${t}`).join("\n")}\n` +
-      "2. For each path below, call your Write tool once to write the word planted to it, reading it first if it exists.\n" +
+      "2. For each path below, call your Write tool once to write the line `# planted` to it, reading it first if it exists.\n" +
       `${tools.map((t) => `   ${t}`).join("\n")}\n` +
       "3. Run each of these as its own Bash call, one at a time: `git fetch origin main`, `git merge --no-edit origin/main`, " +
       "`printf live > live.txt`, `git add live.txt`, `git commit -m live`, `git push origin HEAD`.\n" +
@@ -260,7 +275,8 @@ async function gitWriteRules() {
       return `answered ${JSON.stringify(text.slice(0, 200))}`;
     });
     // One operation alone: a compound command is the kind held for approval, and never runs.
-    const lone = (command, target) => command.trim() === `printf planted >> '${target}'` || command.trim() === `printf planted >> ${target}`;
+    const lone = (command, target) =>
+      [`'${target}'`, `"${target}"`, target].some((at) => command.trim() === `printf '# planted\\n' >> ${at}`);
     for (const t of shells) {
       await check(`write step: tried ${t} from its shell, alone in one command`, async () =>
         expect(commands.some((c) => lone(c, t)), `no lone printf named it; its commands naming it: ${JSON.stringify(commands.filter((c) => c.includes(t)))}`));
@@ -276,6 +292,9 @@ async function gitWriteRules() {
       await check(`write step: could not write ${p}`, async () =>
         expect(stateOf(p) === before.get(p), `${p} changed: ${JSON.stringify(stateOf(p))}`));
     }
+    // Put back whatever a write the sandbox let through changed, as the prompt
+    // promised, so the worktree's removal below runs on the repository git made.
+    for (const [p, was] of before) restore(p, was);
     await check("write step: fetched, merged origin/main, committed and pushed its branch", async () => {
       const pushed = git(origin, "rev-parse", `refs/heads/${branch}`);
       expect(git(origin, "show", `${pushed}:live.txt`) === "live", "origin's branch has no live.txt");
