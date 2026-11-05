@@ -881,7 +881,7 @@ export async function personGate(
   const local = await loadLocalConfig(dir, store, opts.person?.id);
   const { loaded } = local;
   assertConfigUsable(dir, loaded);
-  const unserved = serveProblems(loaded.config.serve);
+  const unserved = serveProblems(loaded.config.serve, loaded.config.people?.oidc);
   if (unserved.length) throw new Error(unserved.map((p) => `${p.rule}: ${p.message}`).join("\n"));
   // The redaction list, as the build judges it, but for a per-person secret:
   // one nothing answers yet is the Integrations tab's to mend, and the build
@@ -961,7 +961,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // A door nothing asks a caller about, open to the network, hands anyone who
   // reaches it every item and the loop. `validate` reports the same words.
   // Not for `landrace status`, which serves nothing.
-  const unserved = opts.readOnly ? [] : serveProblems(loaded.config.serve);
+  const unserved = opts.readOnly ? [] : serveProblems(loaded.config.serve, loaded.config.people?.oidc);
   if (unserved.length) throw new Error(unserved.map((p) => `${p.rule}: ${p.message}`).join("\n"));
 
   // Before anything else can log: redactionValues throws on a name no secret

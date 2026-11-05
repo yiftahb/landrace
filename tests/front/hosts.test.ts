@@ -19,6 +19,23 @@ describe("serveProblems", () => {
   it.each(["127.0.0.1", "127.0.0.2", "localhost", "::1"])("passes %s", (host) => {
     expect(serveProblems({ host })).toEqual([]);
   });
+
+  // #187: with sign-in, a wide bind is what remote mode is for.
+  const OIDC = { issuer: "https://id.example.invalid", clientId: "landrace", clientSecret: "x" };
+  it.each(["0.0.0.0", "::", "10.0.0.5"])("passes a wide bind on %s once people.oidc asks who callers are", (host) => {
+    expect(serveProblems({ host, publicUrl: "https://landrace.example.org/" }, OIDC)).toEqual([]);
+  });
+  it("refuses people.oidc with no serve.publicUrl, as serve.public-url, saying why", () => {
+    const problems = serveProblems({ host: "0.0.0.0" }, OIDC);
+    expect(problems.map((p) => p.rule)).toEqual(["serve.public-url"]);
+    expect(problems[0]?.message).toMatch(/people\.oidc is set and serve\.publicUrl is not/);
+  });
+  it("refuses an http serve.publicUrl off loopback, and takes one on loopback", () => {
+    const problems = serveProblems({ host: "0.0.0.0", publicUrl: "http://landrace.example.org/" }, OIDC);
+    expect(problems.map((p) => p.rule)).toEqual(["serve.public-url"]);
+    expect(problems[0]?.message).toMatch(/not https/);
+    expect(serveProblems({ host: "127.0.0.1", publicUrl: "http://127.0.0.1:4545/" }, OIDC)).toEqual([]);
+  });
 });
 
 describe("allowedHosts", () => {

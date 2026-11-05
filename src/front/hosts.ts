@@ -1,6 +1,6 @@
 import { isIPv6 } from "node:net";
 import { isLoopback } from "#kit/http.js";
-import type { FrontDoor, Problem, ServeConfig } from "#namespace.js";
+import type { FrontDoor, OidcConfig, Problem, ServeConfig } from "#namespace.js";
 
 export { isLoopback };
 
@@ -42,11 +42,36 @@ export function frontDoorOrigins(serve: Pick<ServeConfig, "host" | "publicUrl">,
 }
 
 /**
- * Why the door may not be served as configured. Nothing yet asks who a
- * caller is, so a door any other machine can reach hands it every item and
- * the loop's controls.
+ * Why the door may not be served as configured.
+ *
+ * Without `oidc` nothing asks who a caller is, so a door any other machine
+ * can reach hands it every item and the loop's controls. With it, everyone
+ * signs in, and the bind is the operator's choice — but the sign-in's
+ * callback and the MCP clients' authorization server are both built from
+ * `publicUrl`, so it must be set, and `https` off loopback: the session
+ * cookie and every token would otherwise cross the network in the clear.
  */
-export function serveProblems(serve: Pick<ServeConfig, "host">): Problem[] {
+export function serveProblems(serve: Pick<ServeConfig, "host" | "publicUrl">, oidc?: OidcConfig): Problem[] {
+  if (oidc !== undefined) {
+    if (serve.publicUrl === undefined) {
+      return [{
+        rule: "serve.public-url",
+        message:
+          "people.oidc is set and serve.publicUrl is not: the sign-in callback and the MCP clients' authorization server " +
+          "are built from it. Set it to the https:// URL people reach this instance at",
+      }];
+    }
+    const url = new URL(serve.publicUrl);
+    if (url.protocol !== "https:" && !isLoopback(url.hostname)) {
+      return [{
+        rule: "serve.public-url",
+        message:
+          `serve.publicUrl is "${serve.publicUrl}", which is not https: with people.oidc set, every session cookie and token ` +
+          "would cross the network in the clear. Put a TLS proxy in front and name its https:// URL",
+      }];
+    }
+    return [];
+  }
   if (isLoopback(serve.host)) return [];
   return [{
     rule: "serve.unauthenticated",

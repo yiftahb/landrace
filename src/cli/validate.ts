@@ -157,7 +157,7 @@ export async function runValidate(dir: string, opts: { credentials?: CredentialS
   const loaded = local?.loaded ?? null;
   // `start` refuses a door it would serve to anyone; `mcp --pairing` and the
   // child server serve none, so the rule lives here and in `start`.
-  if (loaded) problems.push(...configProblems(dir, loaded), ...serveProblems(loaded.config.serve));
+  if (loaded) problems.push(...configProblems(dir, loaded), ...serveProblems(loaded.config.serve, loaded.config.people?.oidc));
 
   /*
    * A var that did not resolve stops here, and the early return is the point.

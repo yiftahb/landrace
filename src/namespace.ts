@@ -512,6 +512,9 @@ export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>;
 /** `serve:`, parsed: where the front door binds, and the URL a person reaches it by. */
 export type ServeConfig = RuntimeConfig["serve"];
 
+/** `people.oidc`: the provider a remote instance's people sign in through. Set, the instance is remote. */
+export type OidcConfig = NonNullable<NonNullable<RuntimeConfig["people"]>["oidc"]>;
+
 /**
  * The front door as a step must not reach it: the host names it answers to
  * (no port), for a sandbox's allowed hosts and an agent's fetch rules, and

@@ -320,6 +320,15 @@ describe("landrace validate, and the notify block", () => {
     expect(r.problems.filter((p) => p.rule.startsWith("serve"))).toEqual([]);
     expect(r.problems.map((p) => p.rule)).toEqual(["executor"]);
   });
+
+  // #187: with people.oidc set, everyone signs in, and the door may face the network.
+  const OIDC = "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: some-client-secret } }\n";
+  it("passes a wide serve.host once people.oidc is set, and reports serve.public-url when it has no URL", async () => {
+    const wide = await runValidate(await dirFor(`serve: { host: "0.0.0.0", publicUrl: "https://landrace.example.org/" }\n${OIDC}`));
+    expect(wide.problems.filter((p) => p.rule.startsWith("serve"))).toEqual([]);
+    const unnamed = await runValidate(await dirFor(`serve: { host: "0.0.0.0" }\n${OIDC}`));
+    expect(unnamed.problems.filter((p) => p.rule.startsWith("serve")).map((p) => p.rule)).toEqual(["serve.public-url"]);
+  });
 });
 
 describe("landrace next", () => {
