@@ -123,9 +123,9 @@ describe("credentialKey: the macOS Keychain", () => {
     expect(f.made()).toBe(0);
   });
 
-  it("asked without create, answers no key for an absent one and makes none", async () => {
+  it("asked without create, answers no key for an absent one, naming the source it asked, and makes none", async () => {
     const f = fakeStore();
-    expect(await credentialKey({ create: false, platform: "darwin", env: {}, run: f.run })).toEqual({ key: null, locator: { source: "none" } });
+    expect(await credentialKey({ create: false, platform: "darwin", env: {}, run: f.run })).toEqual({ key: null, locator: { source: "keychain" } });
     expect(f.made()).toBe(0);
   });
 });

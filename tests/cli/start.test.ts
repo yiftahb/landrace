@@ -412,10 +412,16 @@ describe("which executor screens", () => {
  */
 describe("the item server an items:create step is handed", () => {
   it("is this process started again as `landrace mcp --pairing` on the absolute workspace directory, as the step's person", () => {
-    expect(childServerCommand("relative/.landrace", "main", "local")).toEqual({
+    expect(childServerCommand("relative/.landrace", "main", "local", { source: "keychain" })).toEqual({
       command: process.execPath,
-      args: [...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace"), "--workflow", "main", "--person=local", "--pairing"],
+      args: [
+        ...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace"), "--workflow", "main", "--person=local",
+        "--key-source=keychain", "--pairing",
+      ],
     });
+    // The Secret Service by the bus it was found on: the agent's environment, which starts the server, carries none.
+    expect(childServerCommand("/w", "main", "local", { source: "secret-service", bus: "unix:path=/run/user/1000/bus" }).args)
+      .toEqual(expect.arrayContaining(["--key-source=secret-service", "--key-bus=unix:path=/run/user/1000/bus"]));
   });
 });
 

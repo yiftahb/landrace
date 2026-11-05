@@ -2016,7 +2016,7 @@ export type KeyLocator =
   | { source: "systemd"; dir: string }
   | { source: "none" };
 
-/** The credentials key and where it came from; `key` is null when `locator` is `none`. */
+/** The credentials key and where it came from; `key` is null when `locator` is `none`, or when it was asked of a source holding none without `create`. */
 export interface CredentialKey {
   key: Uint8Array | null;
   locator: KeyLocator;
@@ -3254,8 +3254,15 @@ export interface StartOptions {
   open?: BrowserOpener;
   /** See BuildOptions.otel. */
   otel?: readonly string[];
-  /** See BuildOptions.credentials. */
+  /**
+   * See BuildOptions.credentials: a store handed in is used as it is, and no
+   * key is looked up. Absent, `start` finds or makes the key and seals the
+   * store at `credentialsRoot` (`~/.landrace/credentials`).
+   */
   credentials?: CredentialStore;
+  credentialsRoot?: string;
+  /** How the key is looked up — the platform, the environment, each helper — for a test to fake; absent, this machine's. */
+  keyLookup?: Pick<CredentialKeyOptions, "platform" | "env" | "run" | "alive">;
   /** Serves the front door. Default `serveFrontDoor`; a test passes one that binds nothing and drives the listener itself. */
   serve?: (opts: FrontDoorOptions) => Promise<UiServer>;
   /** The OAuth refresher's pass, every 60 s by default, and what it and a callback reach a token endpoint with; a test passes a stub. */
@@ -3321,8 +3328,10 @@ export interface BuildOptions {
   board?: () => string | null;
   /** The front door's port, `--ui-port` over `serve.port`: what every step is held from. Absent, `serve.port`. */
   port?: number;
-  /** Where the local person's connections are read from. Absent, `~/.landrace/credentials`. */
+  /** Where the local person's connections are read from. Absent, `~/.landrace/credentials`, under the key already there. */
   credentials?: CredentialStore;
+  /** Where `start` found the key `credentials` is sealed under, pinned on each server a step is handed. Absent, none. */
+  key?: KeyLocator;
   /**
    * The process's one logger, when the caller made it: `start`, whose
    * runtime is rebuilt on a connect and whose events and telemetry must
@@ -4091,8 +4100,8 @@ export interface RemoteDoor {
   signIn(person: Person): Promise<void>;
   /** Whether `people.allow` admits the person: asked again of every MCP grant, refresh and access token. */
   admits: (person: Person) => boolean;
-  /** The 0700 directory `mcp-clients.json` and `mcp-tokens.json` are kept in. */
-  authRoot: string;
+  /** The credentials root's files: `mcp/mcp-clients.json` and `mcp/mcp-tokens.json` are kept through them, sealed as each person's file is. */
+  authFiles: SealedFiles;
   /** The start's own log: every event, and every line the door prints, goes through its redaction. */
   log: RedactingLogger;
 }

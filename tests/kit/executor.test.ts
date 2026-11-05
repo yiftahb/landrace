@@ -565,6 +565,28 @@ describe("a run's deny list, computed when it starts", () => {
     },
   );
 
+  // #205: a systemd credential is a file, and it opens every person's credentials.
+  it("denies every tier the credentials key's directory", async () => {
+    const tiny = new Tiny(markingBin());
+    await run(tiny, () => Promise.resolve({ always: [CREDS], people: [], key: ["/run/credentials/x"] }));
+    expect(tiny.plans[0]?.sandbox.deny).toEqual(["~/.ssh", CREDS, "/run/credentials/x"]);
+  });
+
+  it("refuses an agent that cannot keep a command from the key's directory, naming it, though it runs beside the credentials alone", async () => {
+    const leaky = new Leaky(markingBin());
+    await run(leaky, () => Promise.resolve({ always: [CREDS], people: [] }), ["repo:read"]);
+    expect(leaky.plans).toHaveLength(1);
+    await expect(run(leaky, () => Promise.resolve({ always: [CREDS], people: [], key: ["/run/credentials/x"] }), ["repo:read"]))
+      .rejects.toThrow(/the credentials key is a file in \/run\/credentials\/x.*the tiny executor cannot keep a command from reading a path/);
+    expect(leaky.plans).toHaveLength(1);
+  });
+
+  it("refuses a key directory no rule can hold", async () => {
+    const tiny = new Tiny(markingBin());
+    await expect(run(tiny, () => Promise.resolve({ always: [CREDS], people: [], key: ["/run/cred(x)"] }))).rejects.toThrow(JSON.stringify("/run/cred(x)"));
+    expect(tiny.plans).toEqual([]);
+  });
+
   it("asks again on every run, so a run kept after the executor was built is denied on the next", async () => {
     const tiny = new Kept(markingBin());
     const exec = tiny.build({ ...settings, denyPaths: () => Promise.resolve({ always: [], people: ["/w/bob"] }) });

@@ -186,7 +186,8 @@ async function find(opts: CredentialKeyOptions): Promise<CredentialKey> {
   if (opts.locator !== undefined) {
     throw new Error(`no credentials key is in ${sourceName(locator)}, where landrace start found one; restart it, or see ${KEY_DOCS}`);
   }
-  if (!opts.create) return { key: null, locator: { source: "none" } };
+  // Asked without making one: the source is there, and holds none yet.
+  if (!opts.create) return { key: null, locator };
   if (locator.source === "systemd") {
     // Never made here: systemd's files are read-only, and the unit says what is in them.
     await source.store("");

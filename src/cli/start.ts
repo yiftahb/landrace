@@ -4,7 +4,9 @@ import { realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
-import { assertConfigUsable, redactionValues } from "#config/load.js";
+import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
+import { credentialKey, KEY_CREDENTIAL, KEY_DOCS, keyArgs } from "#people/key.js";
+import { sealAll } from "#people/sealed.js";
 import { perPersonKeys } from "#people/keys.js";
 import { refreshIfNeeded } from "#people/oauth.js";
 import { createOidc } from "#people/oidc.js";
@@ -13,7 +15,7 @@ import { createSessions } from "#people/session.js";
 import {
   assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, lookupIdentities, personEnvOf, resolvePerson,
 } from "#people/resolve.js";
-import { createCredentialStore, credentialValues } from "#people/store.js";
+import { createCredentialStore, credentialValues, defaultCredentialsRoot, readingStore } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
 import { createRoster } from "#people/roster.js";
 import { admits, allowProblems } from "#people/allow.js";
@@ -33,7 +35,9 @@ import type {
   BuildOptions,
   ConversationDeps,
   ConversationLine,
+  CredentialKey,
   CredentialStore,
+  KeyLocator,
   FrontDoorOptions,
   ConnectionDef,
   ConnectionStatus,
@@ -445,15 +449,24 @@ export function boardSink(
  * another's keys. Locally it is always `LOCAL_PERSON_ID`. Joined to its flag
  * with `=`: an id is a sign-in's subject, and one starting with "-" standing
  * alone would be read as a flag of its own.
+ *
+ * And `locator`, where this start found the credentials key: the server asks
+ * that store alone, and never makes one. Where it is, never the key — argv is
+ * readable to every process of this user — and the Secret Service's bus by
+ * name, since the agent's environment, which starts the server, carries none.
  */
-export function childServerCommand(dir: string, workflowId: string, personId: string): ServerCommand {
+export function childServerCommand(dir: string, workflowId: string, personId: string, locator: KeyLocator): ServerCommand {
   return {
     command: process.execPath,
     args: [
-      ...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir), "--workflow", workflowId, `--person=${personId}`, "--pairing",
+      ...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir), "--workflow", workflowId, `--person=${personId}`,
+      ...keyArgs(locator), "--pairing",
     ],
   };
 }
+
+/** The directory a step is denied for the key: systemd's, the one source that is a file. */
+export const keyDirOf = (locator: KeyLocator): string | undefined => (locator.source === "systemd" ? locator.dir : undefined);
 
 /**
  * Per runtime context, the executors already built, so each factory runs
@@ -819,7 +832,8 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sa
 /**
  * What a person's runs may not read, for `ExecutorContext.denyPaths`: the
  * credentials, the `.env` `loadConfig` reads beside landrace.yaml in `dir`,
- * and each other person's folder of worktrees — the roster's and, for anyone
+ * the credentials key's directory when it is a file (`keyDir`, from
+ * `keyDirOf`), and each other person's folder of worktrees — the roster's and, for anyone
  * with a folder of their own, every other folder there now. Asked as each run
  * starts, since the roster changes on a sync and a person who left keeps their
  * folder. Shared by every path that builds an executor which runs: a step, a
@@ -835,7 +849,7 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sa
  * that is not there, which has no other spelling to deny.
  */
 export function denyPathsFor(
-  dir: string, person: Pick<Person, "id">, sandbox: Sandbox | null, others: () => readonly Pick<Person, "id">[],
+  dir: string, person: Pick<Person, "id">, sandbox: Sandbox | null, others: () => readonly Pick<Person, "id">[], keyDir?: string,
 ): () => Promise<RunDenials> {
   const worktrees = join(sandboxRoot(dir), "worktrees");
   const own = sandbox?.scope;
@@ -847,7 +861,7 @@ export function denyPathsFor(
     });
     const env = [given, join(await realpath(dir), ".env"), ...(target === undefined ? [] : [target])];
     return denyForPerson(person, others(), {
-      worktrees, credentials: CREDENTIALS_ROOT, env, own,
+      worktrees, credentials: CREDENTIALS_ROOT, env, own, keyDir,
       present: own === undefined ? [] : await worktreeFolders(worktrees),
     });
   };
@@ -1001,7 +1015,9 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   //
   // A person handed in reads their own store; judged by the caller, their
   // resolution's values win, as a remote instance's must over `.env`'s.
-  const read = await loadLocalConfig(dir, opts.credentials, opts.person?.id);
+  // Handed none — `status` — the store is read under the key already there, never made one.
+  const store = opts.credentials ?? readingStore();
+  const read = await loadLocalConfig(dir, store, opts.person?.id);
   const { resolution } = opts;
   const local = resolution === undefined ? read : {
     ...read,
@@ -1110,14 +1126,13 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // so nothing runs while theirs is missing, expired or unreadable; `validate`
   // reports the same words.
   const people = connectionsOf(hooked.map((h) => ({ id: h.loaded.id, registry: h.registry })));
-  const creds = await localCredentials(local, person, people.connections, opts.credentials);
+  const creds = await localCredentials(local, person, people.connections, store);
   // Read only now when no key was per-person but a hook defines a connection anyway.
   if (creds !== local.credentials) log.redact(credentialValues(creds));
   // As the caller judged them, when it did — remotely, by rules this local
   // judging does not apply — and otherwise as the one local person.
   assertPersonReady(resolution ?? resolvePerson(local.configured, people, person, creds, { remote: false }), people.problems);
   const logins: PersonLogins = { credentials: creds, connections: people.connections };
-  const store = opts.credentials ?? createCredentialStore();
 
   // Between workflows, so only once every hook is loaded: two share a source
   // when they share the loaded object, which is what the tick's claims go
@@ -1155,7 +1170,8 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // Anyone but the local person cuts their worktrees in a folder of their own.
   const unscoped = await sandboxFor(loaded.config, dir);
   const sandbox = unscoped === null || person.id === LOCAL_PERSON_ID ? unscoped : { ...unscoped, scope: scopeOf(person) };
-  const denyPaths = denyPathsFor(dir, person, sandbox, opts.others ?? (() => []));
+  const key: KeyLocator = opts.key ?? { source: "none" };
+  const denyPaths = denyPathsFor(dir, person, sandbox, opts.others ?? (() => []), keyDirOf(key));
   // What each step's agent is doing, for the page's item panel: one log per
   // person, keyed by item as the locks are, so two people's runs of one item
   // never share lines. Not for `landrace status`, which runs no step and must
@@ -1192,7 +1208,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
       ? readOnlyExecutor(registeredExecutor(loaded.config, registry))
       : await stepExecutorFor(loaded.config, registry, ectx, logins);
     const connectionFailed = opts.readOnly ? undefined : connectionFailedFor(loaded.config, registry, logins, failedOpts);
-    const childServer = childServerCommand(dir, id, person.id);
+    const childServer = childServerCommand(dir, id, person.id, key);
     // The same hooks, executor, screener and pairing server as the steps', so
     // a turn asked through the front door's `/mcp` runs as one asked on the page.
     if (!opts.readOnly) {
@@ -1638,6 +1654,35 @@ function currentPanel(current: () => ServedRuntime | null): ItemPanel {
   };
 }
 
+/** What a remote start without a key says: how to give it one. */
+export const NO_KEY_REMOTE =
+  "people.oidc is set, and no secret store holds a key for the credentials every person stores here, so they would be kept as plain JSON. " +
+  `Run it as a systemd unit with LoadCredentialEncrypted=${KEY_CREDENTIAL}:…, or, in a container, mount the key as ${KEY_CREDENTIAL} ` +
+  `in the directory CREDENTIALS_DIRECTORY names; see ${KEY_DOCS}`;
+
+/**
+ * The store at `credentialsRoot` under the key this machine keeps, made if
+ * its source holds none yet, and every plain file there sealed. Remotely, no
+ * source refuses the start before anything is written; locally it says so
+ * once, and the files stay plain JSON.
+ */
+async function sealedStore(dir: string, opts: StartOptions): Promise<{ store: CredentialStore; key: CredentialKey }> {
+  const remote = (await loadConfig(dir)).config.people?.oidc !== undefined;
+  const root = opts.credentialsRoot ?? defaultCredentialsRoot();
+  const lookup = opts.keyLookup ?? {};
+  // Asked of the source first, without making one: a remote start with
+  // nowhere to keep a key is refused before the lock is written.
+  const found = await credentialKey({ create: false, root, ...lookup });
+  if (found.locator.source === "none") {
+    if (remote) throw new Error(NO_KEY_REMOTE);
+    console.error(`landrace: this machine has no secret store landrace keeps a credentials key in, so ${root} stays plain JSON; see ${KEY_DOCS}`);
+  }
+  const key = found.key !== null || found.locator.source === "none" ? found : await credentialKey({ create: true, root, ...lookup });
+  const store = createCredentialStore(root, key.key);
+  await sealAll(store.files, lookup.alive ? { alive: lookup.alive } : {});
+  return { store, key };
+}
+
 export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // One board per workspace: a second would overwrite the record and leave
   // `landrace port` naming one of two. Asked of the board itself, so a
@@ -1659,11 +1704,16 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     if (refused) throw new Error(refused);
   }
 
+  // The store, sealed under the key this machine keeps, before anyone's file
+  // is read: what is still plain is sealed in place now.
+  const { store, key } = opts.credentials
+    ? { store: opts.credentials, key: { key: null, locator: { source: "none" } } satisfies CredentialKey }
+    : await sealedStore(dir, opts);
+
   // Whether the local person is ready, before anything is built. Without a
   // door to connect through — `--once`, `--headless` — a missing connection
   // refuses the start, in validate's words, as it always has — once every
   // OAuth token due has been offered to its refresh token, below.
-  const store = opts.credentials ?? createCredentialStore();
   let first = await localGate(dir, store);
   const { config } = first.local.loaded;
   // Remote — many people, each signed in — when `people.oidc` names where
@@ -1703,6 +1753,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   log.redact([
     ...config.log.redact.flatMap((name) => secretValues.get(name) ?? []), ...credentialValues(first.credentials),
     ...(oidc === undefined ? [] : [oidc.clientSecret]),
+    // The key itself, in each spelling it is ever held in.
+    ...(key.key === null ? [] : [Buffer.from(key.key).toString("hex"), Buffer.from(key.key).toString("base64")]),
   ]);
   const stop = new AbortController();
   // Per person, and shared by every runtime of theirs: a run an old runtime
@@ -1789,7 +1841,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       },
       build: async (person, resolution) => {
         const rt = await buildWorkspaceRuntime(dir, {
-          log, stop, running: own(runsOf, person.id), seen: own(toldOf, person.id), credentials: store, person, slots: pool,
+          log, stop, running: own(runsOf, person.id), seen: own(toldOf, person.id), credentials: store, key: key.locator, person, slots: pool,
           // Asked as each of their steps starts: who else the roster holds then.
           others: () => roster.people().map((p) => p.person).filter((p) => p.id !== person.id),
           // Judged by the local rules the build applies itself; anyone else as the roster judged them.
@@ -1967,8 +2019,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
             await roster.signIn(person);
             schedule.wake();
           },
-          // Under the store's root, which every run is denied reading: its tokens are as much a person's as their logins.
-          authRoot: join(store.root, "mcp"),
+          // Under the store's root, which every run is denied reading, and
+          // sealed under its key: its grants are as much a person's as their logins.
+          authFiles: store.files,
           log, admits: admitted,
         },
       } : {}),
