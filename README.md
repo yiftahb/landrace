@@ -142,7 +142,7 @@ Both also stop for a person at a halt: a step whose output was broken, a push th
 
 - **Needs You**, the home page: every item waiting for a person, across all workflows, most urgent first.
 - **A page per workflow**, with its items in lanes: Needs you, Agent running, Held elsewhere, Waiting, Not admitted and Done.
-- **An item's panel**: its stage, its pull requests and spec, its conversation with Landrace, and its relationships to other items. From 640 px up the panel is always open on the right, so the board never shifts; with nothing selected it says "Select an item to see its details".
+- **An item's panel**: its stage, its pull requests and spec, its conversation with Landrace, and its relationships to other items. From 1024 px up the panel is always open on the right, so the board never shifts; with nothing selected it says "Select an item to see its details".
 
 From the board, a person can reply on an item, ask the step that last ran a question, then hand the item back to its workflow. They can retry a failed step, or send an item back to an earlier step. They can also pair on a step. Browser notifications say when an item needs you.
 
