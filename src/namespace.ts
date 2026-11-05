@@ -3971,6 +3971,8 @@ export interface FrontDoorOptions {
   boardFor?: (caller: Person) => Omit<UiOptions, "allowedHosts" | "origins">;
   /** Set, the door is remote: it signs people in and is its MCP clients' authorization server. `publicUrl` is then required. */
   remote?: RemoteDoor;
+  /** The start log's `scrub`, for the line a server error prints. Absent, the line is printed as is. */
+  scrub?: (text: string) => string;
 }
 
 /** What a remote door signs people in with, and where it keeps its MCP clients. */
@@ -3981,7 +3983,8 @@ export interface RemoteDoor {
   signIn(person: Person): Promise<void>;
   /** The 0700 directory `mcp-clients.json` and `mcp-tokens.json` are kept in. */
   authRoot: string;
-  log: Logger;
+  /** The start's own log: every event, and every line the door prints, goes through its redaction. */
+  log: RedactingLogger;
 }
 
 /**

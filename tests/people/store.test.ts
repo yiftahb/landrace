@@ -82,6 +82,30 @@ describe("the credential store", () => {
     expect(await readFile(join(dir, "broken.json"), "utf8")).toBe("{ not json");
   });
 
+  /*
+   * #209: Node's JSON.parse message quotes the text around the fault, and a
+   * zod enum issue quotes the value it received — either can be part of a
+   * token, and the problem is shown on the board and printed at start.
+   */
+  it("names the file and says it is not JSON, or which keys are wrong, never quoting what the file holds", async () => {
+    const dir = await root();
+    await mkdir(dir, { recursive: true });
+    const token = "ghp_TOKENLIKE0123456789abcdef";
+    const cases = [
+      ["broken", `{"person":{"id":"broken"},"connections":{"github":{"fields":{"token":"${token}" oops}}}}`, /broken\.json is not JSON$/],
+      ["enum", JSON.stringify({ person: { id: "enum" }, connections: { github: { ...github, source: token } } }), /enum\.json is not a credentials file: connections\.github\.source/],
+      ["typed", JSON.stringify({ person: { id: "typed" }, connections: { github: { ...github, connectedAt: token } } }), /typed\.json is not a credentials file: connections\.github\.connectedAt/],
+      ["other", JSON.stringify({ person: { id: token }, connections: {} }), /other\.json names another person, not "other"$/],
+    ] as const;
+    for (const [person, text, said] of cases) {
+      await writeFile(join(dir, `${person}.json`), text);
+      const { problem } = await createCredentialStore(dir).read(person);
+      expect(problem).toMatch(said);
+      expect(problem).not.toContain(token.slice(4, 14));
+      expect(problem).not.toContain("oops");
+    }
+  });
+
   it("keeps any person id inside the root, encoded, and refuses an empty one", async () => {
     const dir = await root();
     const store = createCredentialStore(dir);

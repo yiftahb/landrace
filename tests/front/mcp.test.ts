@@ -6,23 +6,28 @@ import { createMcpEndpoint } from "#front/mcp.js";
 import { mcpEndpointFor } from "#cli/start.js";
 import { frontDoorListener } from "#front/server.js";
 import { createTools } from "#mcp/tools.js";
+import { createLogger } from "#runner/events.js";
 import { ANY, hooked, loaded } from "#tests/support/loaded.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { memoryFetch } from "#tests/support/memory-http.js";
 
 const PORT = 4545;
+const SECRET = "ghp_frontdoorsecret0123456789";
 const DOOR = `http://127.0.0.1:${PORT}`;
 const empty: BoardView = { generatedAt: 1, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace", workflows: [], needsYou: 0, listed: true };
 
 /** Two workflows on one tracker, served as `landrace start` serves them, and every tools built, by scope. */
-function door(over: Partial<FrontDoorOptions> = {}) {
+function door(over: Partial<FrontDoorOptions> = {}, failWith?: string) {
   const tracker = createFakeTracker([{ number: 1 }]);
   const workflows = [hooked(tracker.registry, loaded(ANY, new Map(), "a")), hooked(tracker.registry, loaded(ANY, new Map(), "b"))];
   const scopes: Array<string | undefined> = [];
   let wakes = 0;
+  const log = createLogger({ redactValues: [SECRET], sink: () => {} });
   const mcp = createMcpEndpoint({
     workflows: workflows.map((w) => w.id),
+    scrub: log.scrub,
     toolsFor: (_caller, scope): Tools => {
+      if (failWith !== undefined) throw new Error(failWith);
       scopes.push(scope);
       return createTools(workflows, tracker.ctx, { wake: () => { wakes++; }, ...(scope === undefined ? {} : { scope }) });
     },
@@ -116,7 +121,8 @@ describe("the front door's /mcp", () => {
   it("wakes the loop's own schedule after a person's write, with no wake file", async () => {
     const tracker = createFakeTracker([{ number: 4 }]);
     const wake = jest.fn(() => "started" as const);
-    const mcp = mcpEndpointFor({ workflows: [], ctx: tracker.ctx, toolWorkflows: [hooked(tracker.registry, loaded(ANY))] }, { wake });
+    const log = createLogger({ sink: () => {} });
+    const mcp = mcpEndpointFor({ workflows: [], ctx: tracker.ctx, log, toolWorkflows: [hooked(tracker.registry, loaded(ANY))] }, { wake });
     const fetch = memoryFetch(frontDoorListener({ host: "127.0.0.1", port: PORT, board: { view: async () => empty }, mcp }, PORT));
     const client = await connect(fetch, `${DOOR}/mcp`);
     await client.callTool({ name: "landrace_items", arguments: {} });
@@ -126,6 +132,44 @@ describe("the front door's /mcp", () => {
     expect(wake).toHaveBeenCalledTimes(1);
     await client.close();
     await mcp.close();
+  });
+
+  /*
+   * #209: each session holds a server and its transport in memory, and
+   * nothing ended one but the client, so one person could open them forever.
+   */
+  it("closes a person's oldest session when they open a 17th, and nobody else's", async () => {
+    const { fetch, mcp } = door({ callerOf: (req) => ({ id: String(req.headers["x-who"] ?? "nobody") }) });
+    const as = (who: string): typeof globalThis.fetch => (input, init) =>
+      fetch(input, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), "x-who": who } });
+    const bobs = await connect(as("bob"), `${DOOR}/mcp`);
+    const alices: Client[] = [];
+    for (let i = 0; i < 17; i++) alices.push(await connect(as("alice"), `${DOOR}/mcp`));
+    const [first, second, ...rest] = alices;
+    if (first === undefined || second === undefined) throw new Error("no sessions");
+    await expect(first.listTools()).rejects.toThrow(/404|no such MCP session/);
+    expect((await second.listTools()).tools.length).toBeGreaterThan(0);
+    expect((await rest[rest.length - 1]?.listTools())?.tools.length).toBeGreaterThan(0);
+    expect((await bobs.listTools()).tools.length).toBeGreaterThan(0);
+    await mcp.close();
+  });
+
+  // #209: the line once skipped the redactor every other line goes through.
+  it("prints a failed request's line through the start log's redaction", async () => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { fetch } = door({}, `the tracker answered with ${SECRET} in its body`);
+      const r = await fetch(`${DOOR}/mcp`, {
+        method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } }),
+      });
+      expect(r.status).toBe(500);
+      const printed = errors.mock.calls.map(([m]) => String(m)).join("\n");
+      expect(printed).toContain("an MCP request failed: the tracker answered with");
+      expect(printed).not.toContain(SECRET);
+    } finally {
+      errors.mockRestore();
+    }
   });
 
   it("refuses a body far past any tool call with 413", async () => {

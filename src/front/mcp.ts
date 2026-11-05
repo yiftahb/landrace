@@ -12,6 +12,9 @@ import { send } from "#ui/server.js";
 /** Far past any tool call's arguments; the transport itself caps nothing. */
 const MAX_BODY_BYTES = 1024 * 1024;
 
+/** Open MCP sessions one person may hold; opening another closes their oldest. */
+const MAX_SESSIONS = 16;
+
 const TEXT = "text/plain; charset=utf-8";
 
 /** The request's JSON body, `null` past MAX_BODY_BYTES, `undefined` when it is not JSON. */
@@ -55,6 +58,8 @@ export function createMcpEndpoint(opts: {
   toolsFor: (caller: Person, workflow?: string) => Tools;
   /** Whether the pairing tools are offered. Absent, they are. */
   pairing?: boolean;
+  /** The start log's `scrub`: a failed request's line can quote what a tool was handed. */
+  scrub: (text: string) => string;
 }): McpEndpoint {
   const sessions = new Map<string, { transport: StreamableHTTPServerTransport; caller: string }>();
   const tools = new Map<string, Tools>();
@@ -74,6 +79,14 @@ export function createMcpEndpoint(opts: {
     const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
+        // Each session holds a server in memory until its client ends it, so a
+        // person keeps MAX_SESSIONS at most: their oldest gives way. The map
+        // keeps insertion order, so the first of theirs is the oldest.
+        const theirs = [...sessions].filter(([, s]) => s.caller === caller.id);
+        for (const [old, s] of theirs.slice(0, Math.max(0, theirs.length - MAX_SESSIONS + 1))) {
+          sessions.delete(old);
+          s.transport.close().catch(() => {});
+        }
         sessions.set(id, { transport, caller: caller.id });
       },
     });
@@ -111,7 +124,7 @@ export function createMcpEndpoint(opts: {
   return {
     handle: (req, res, caller) => {
       handle(req, res, caller ?? { id: LOCAL_PERSON_ID }).catch((e: unknown) => {
-        console.error(`landrace: an MCP request failed: ${messageOf(e)}`);
+        console.error(opts.scrub(`landrace: an MCP request failed: ${messageOf(e)}`));
         if (!res.headersSent) send(res, 500, TEXT, "the MCP request failed; the landrace log says why");
       });
     },

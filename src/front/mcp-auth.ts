@@ -3,14 +3,14 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Request, Response } from "express";
 import { express } from "#front/express.js";
-import { InvalidGrantError, InvalidTargetError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { InvalidGrantError, InvalidTargetError, InvalidTokenError, TemporarilyUnavailableError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import type { AuthorizationParams, OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import { getOAuthProtectedResourceMetadataUrl, mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import type { OAuthClientInformationFull, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { messageOf } from "#runner/errors.js";
 import { foreignOrigin } from "#ui/server.js";
-import type { IssuedAccess, Logger, McpAuth, Person, PendingConsent, Sessions, StoredRefresh } from "#namespace.js";
+import type { IssuedAccess, McpAuth, Person, PendingConsent, RedactingLogger, Sessions, StoredRefresh } from "#namespace.js";
 
 /** A consent page's token, and the code it grants: each spent once, and worthless after this. */
 const CONSENT_TTL_MS = 10 * 60_000;
@@ -18,6 +18,9 @@ const CODE_TTL_MS = 5 * 60_000;
 /** An access token lasts an hour; its refresh token, rotated on each use, thirty days. */
 const ACCESS_TTL_S = 60 * 60;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60_000;
+/** Registered clients kept at most; one older than a day with no live refresh token is pruned first. */
+const MAX_CLIENTS = 1000;
+const STALE_CLIENT_MS = 24 * 60 * 60_000;
 
 /** The files this keeps, beside each other in `root`. */
 export const MCP_CLIENTS_FILE = "mcp-clients.json";
@@ -28,6 +31,19 @@ const secret = (): string => randomBytes(32).toString("base64url");
 
 const escapeHtml = (text: string): string =>
   text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c);
+
+/**
+ * Where the consent page says it will send the person: the redirect's origin,
+ * or, for a custom scheme such as an editor's `vscode://`, whose origin is the
+ * string "null", the URI itself without its query.
+ */
+function whereTo(redirectUri: string): string {
+  const url = new URL(redirectUri);
+  if (url.origin !== "null") return url.origin;
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
 
 /**
  * What every consent response carries. Nothing may frame it — a page that
@@ -59,12 +75,19 @@ async function writeJson(root: string, name: string, value: unknown, nth: number
 /** One of this door's maps, empty when the file is not there yet; anything but a JSON object is refused, naming the file. */
 async function readMap<T>(root: string, name: string): Promise<Map<string, T>> {
   const file = join(root, name);
-  let parsed: unknown;
+  let text: string;
   try {
-    parsed = JSON.parse(await readFile(file, "utf8"));
+    text = await readFile(file, "utf8");
   } catch (e) {
     if ((e as { code?: unknown } | null)?.code === "ENOENT") return new Map();
     throw new Error(`${file} cannot be read: ${messageOf(e)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Never the parser's message: it quotes the text around the fault, which can be part of a secret.
+    throw new Error(`${file} is not JSON`);
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     const held = parsed === null ? "null" : Array.isArray(parsed) ? "an array" : typeof parsed;
@@ -99,7 +122,7 @@ export function createMcpAuth(opts: {
   root: string;
   /** The door's own origins: an approve from any other is refused. */
   origins: readonly string[];
-  log: Logger;
+  log: RedactingLogger;
   now?: () => number;
 }): McpAuth {
   const now = opts.now ?? Date.now;
@@ -125,7 +148,8 @@ export function createMcpAuth(opts: {
   // after it binds. Said once here, and every MCP route answers with it.
   let unreadable: string | null = null;
   loaded.catch((e: unknown) => {
-    unreadable = messageOf(e);
+    // Scrubbed once, for the line and for every 503 that repeats it.
+    unreadable = opts.log.scrub(messageOf(e));
     console.error(`landrace: MCP sign-in is off: ${unreadable}`);
   });
   const ready = (_req: Request, res: Response, next: () => void): void => {
@@ -173,7 +197,7 @@ export function createMcpAuth(opts: {
 
   const consentPage = (client: OAuthClientInformationFull, params: AuthorizationParams, person: Person, token: string): string => {
     const name = escapeHtml(client.client_name ?? "An unnamed MCP client");
-    const to = escapeHtml(new URL(params.redirectUri).origin);
+    const to = escapeHtml(whereTo(params.redirectUri));
     const who = escapeHtml(person.email ?? person.id);
     return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Allow access to Landrace?</title>
 <style>body{font:15px system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}button{font:inherit;padding:.4rem 1rem;margin-right:.5rem}</style></head>
@@ -188,9 +212,22 @@ export function createMcpAuth(opts: {
   const provider: OAuthServerProvider = {
     clientsStore: {
       getClient: async (id) => (await loaded).clients.get(id),
+      // Open to anyone who reaches it, so bounded: a client that registered a
+      // day ago and holds no refresh token never finished signing in, or was
+      // let go, and gives way to a new one; past the cap, nobody new.
       registerClient: async (client) => {
         const full = client as OAuthClientInformationFull;
-        (await loaded).clients.set(full.client_id, full);
+        const { clients, refresh } = await loaded;
+        const at = now();
+        const holding = new Set([...refresh.values()].filter((r) => r.expires >= at).map((r) => r.clientId));
+        for (const [id, c] of clients) {
+          const issued = c.client_id_issued_at;
+          if (issued !== undefined && issued * 1000 < at - STALE_CLIENT_MS && !holding.has(id)) clients.delete(id);
+        }
+        if (clients.size >= MAX_CLIENTS) {
+          throw new TemporarilyUnavailableError(`this instance holds too many registered clients (${MAX_CLIENTS}); ask its operator to clear ${MCP_CLIENTS_FILE}`);
+        }
+        clients.set(full.client_id, full);
         await saveClients();
         return full;
       },
@@ -283,7 +320,7 @@ export function createMcpAuth(opts: {
   const router = express.Router();
   router.post("/authorize/consent", ready, express.urlencoded({ extended: false, limit: "8kb" }), (req, res) => {
     consent(req, res).catch((e: unknown) => {
-      console.error(`landrace: an approval failed: ${messageOf(e)}`);
+      console.error(opts.log.scrub(`landrace: an approval failed: ${messageOf(e)}`));
       if (!res.headersSent) res.status(500).type("text/plain").send("the approval failed; the landrace log says why");
     });
   });

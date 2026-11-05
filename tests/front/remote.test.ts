@@ -13,6 +13,7 @@ import { createTools } from "#mcp/tools.js";
 import { createOidc } from "#people/oidc.js";
 import { createSessions } from "#people/session.js";
 import { Refusal } from "#runner/errors.js";
+import { createLogger } from "#runner/events.js";
 import { ANY, hooked, loaded } from "#tests/support/loaded.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { fakeOidc } from "#tests/support/fake-oidc.js";
@@ -32,22 +33,30 @@ const view = (id: string): BoardView => ({
   generatedAt: 1, rows: [], nextTickAt: null, folder: id, workspace: "/repo", workflows: [], needsYou: 0, listed: true,
 });
 
-/** `files`, when given, are written into the MCP credential folder before the door is built. */
-async function door(files: Record<string, string> = {}) {
+/** A value the start's log redacts, as it would a configured secret. */
+const SECRET = "frontdoorsecret0123456789";
+
+/**
+ * `files`, when given, are written into the MCP credential folder before the
+ * door is built. `signInSays`, when given, is what remembering a person who
+ * signed in fails with. `secretFolder` puts SECRET in the folder's own path.
+ */
+async function door(files: Record<string, string> = {}, o: { signInSays?: string; secretFolder?: boolean } = {}) {
   const idp = fakeOidc();
   const sessions = createSessions({ secure: true });
   const events: LandraceEvent[] = [];
-  const log = Object.assign((name: LandraceEvent["name"], data?: Record<string, unknown>) => { events.push({ name, ...data }); }, {});
+  const log = createLogger({ redactValues: [SECRET], sink: (e) => { events.push(e); } });
   const signedIn: Person[] = [];
   const trackers = { alice: createFakeTracker([{ number: 1 }]), bob: createFakeTracker([{ number: 2 }]) };
   const mcp = createMcpEndpoint({
     workflows: ["main"],
+    scrub: log.scrub,
     toolsFor: (caller): Tools => {
       const tracker = caller.id === "sub-bob" ? trackers.bob : trackers.alice;
       return createTools([hooked(tracker.registry, loaded(ANY, new Map(), "main"))], tracker.ctx);
     },
   });
-  const authRoot = join(await mkdtemp(join(tmpdir(), "lr-remote-")), "credentials", "mcp");
+  const authRoot = join(await mkdtemp(join(tmpdir(), o.secretFolder ? `lr-remote-${SECRET}-` : "lr-remote-")), "credentials", "mcp");
   for (const [name, text] of Object.entries(files)) {
     await mkdir(authRoot, { recursive: true });
     await writeFile(join(authRoot, name), text);
@@ -62,6 +71,7 @@ async function door(files: Record<string, string> = {}) {
       sessions, authRoot, log,
       signIn: async (person) => {
         if (person.id === "local") throw new Refusal('nobody signs in as "local"');
+        if (o.signInSays !== undefined) throw new Error(o.signInSays);
         signedIn.push(person);
       },
     },
@@ -214,6 +224,43 @@ describe("signing in at the door", () => {
   });
 });
 
+// #209: the door's own error lines once skipped the redactor every other line goes through.
+describe("the door's error lines", () => {
+  const printedDuring = async (run: () => Promise<void>): Promise<string> => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await run();
+      for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+      return errors.mock.calls.map(([m]) => String(m)).join("\n");
+    } finally {
+      errors.mockRestore();
+    }
+  };
+
+  it("prints a failed sign-in through the start log's redaction", async () => {
+    let status = 0;
+    const printed = await printedDuring(async () => {
+      const d = await door({}, { signInSays: `the tracker echoed ${SECRET}` });
+      status = (await signIn(d, ALICE)).status;
+    });
+    expect(status).toBe(502);
+    expect(printed).toContain("signing in failed: the tracker echoed");
+    expect(printed).not.toContain(SECRET);
+  });
+
+  it("prints, and answers, a credential file that cannot be read through the start log's redaction", async () => {
+    let said = "";
+    const printed = await printedDuring(async () => {
+      const d = await door({ [MCP_CLIENTS_FILE]: "[]" }, { secretFolder: true });
+      said = await (await d.fetch(`${PUBLIC}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).text();
+    });
+    expect(printed).toContain(MCP_CLIENTS_FILE);
+    expect(said).toContain(MCP_CLIENTS_FILE);
+    expect(printed).not.toContain(SECRET);
+    expect(said).not.toContain(SECRET);
+  });
+});
+
 describe("signing out at the door", () => {
   /*
    * /logout once sent the browser on to /login, which sends it straight to
@@ -250,6 +297,35 @@ describe("consenting to an MCP client", () => {
     expect(html).toContain("Test &lt;Editor&gt;");
     expect(html).not.toContain("<Editor>");
     expect(token).not.toBe("");
+  });
+
+  /*
+   * #209: a custom scheme has no origin — `new URL("vscode://…").origin` is
+   * the string "null" — so the page once said it would send you to `null`.
+   */
+  it("says where a custom-scheme redirect sends the person: the URI without its query, escaped", async () => {
+    const d = await door();
+    const cookie = await sessionOf(d, ALICE);
+    const redirect = "vscode://anysphere.landrace/call&back?windowId=1";
+    const reg = await d.fetch(`${PUBLIC}/register`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [redirect], token_endpoint_auth_method: "none" }),
+    });
+    const clientId = ((await reg.json()) as { client_id: string }).client_id;
+    const res = await d.fetch(
+      `${PUBLIC}/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirect)}&code_challenge=${challenge}&code_challenge_method=S256`,
+      { headers: { cookie } },
+    );
+    const html = await res.text();
+    expect(html).toContain("sent back to <code>vscode://anysphere.landrace/call&amp;back</code>");
+    expect(html).not.toContain("<code>null</code>");
+    expect(html).not.toContain("windowId");
+  });
+
+  it("names an http redirect by its origin alone", async () => {
+    const d = await door();
+    const html = await (await consentPage(d, await register(d), await sessionOf(d, ALICE))).res.text();
+    expect(html).toContain(`sent back to <code>${new URL(CLIENT_REDIRECT).origin}</code>`);
   });
 
   it("issues a code for an approve from the page itself, back to the client with its state", async () => {
@@ -324,6 +400,54 @@ describe("consenting to an MCP client", () => {
     const back = new URL((await approve(d, cookie, `token=${token}&decision=deny`)).headers.get("location") ?? "");
     expect(back.searchParams.get("error")).toBe("access_denied");
     expect(back.searchParams.get("code")).toBeNull();
+  });
+});
+
+describe("registering MCP clients", () => {
+  /*
+   * #209: /register is open and unauthenticated, so without a bound anyone
+   * who reaches it grows mcp-clients.json and the map behind it forever.
+   */
+  const HOUR_S = 60 * 60;
+  const clientsOf = (count: number, issuedAt: number, prefix = "c"): Record<string, unknown> => Object.fromEntries(
+    Array.from({ length: count }, (_, i) => [`${prefix}${i}`, {
+      client_id: `${prefix}${i}`, client_id_issued_at: issuedAt, redirect_uris: [CLIENT_REDIRECT], token_endpoint_auth_method: "none",
+    }]),
+  );
+  const registration = (d: Door): Promise<Response> => d.fetch(`${PUBLIC}/register`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ redirect_uris: [CLIENT_REDIRECT], token_endpoint_auth_method: "none" }),
+  });
+  const nowS = (): number => Math.floor(Date.now() / 1000);
+
+  it("refuses the 1,001st registration, saying the instance holds too many, and stores nothing", async () => {
+    const d = await door({ [MCP_CLIENTS_FILE]: JSON.stringify(clientsOf(1000, nowS() - HOUR_S)) });
+    const res = await registration(d);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error_description: string }).error_description).toMatch(/holds too many registered clients/);
+    expect(Object.keys(JSON.parse(await readFile(join(d.authRoot, MCP_CLIENTS_FILE), "utf8")) as object)).toHaveLength(1000);
+  });
+
+  it("registers the 1,000th", async () => {
+    const d = await door({ [MCP_CLIENTS_FILE]: JSON.stringify(clientsOf(999, nowS() - HOUR_S)) });
+    expect((await registration(d)).status).toBe(201);
+    expect(Object.keys(JSON.parse(await readFile(join(d.authRoot, MCP_CLIENTS_FILE), "utf8")) as object)).toHaveLength(1000);
+  });
+
+  it("first prunes clients older than 24 hours that hold no refresh token, keeping one that does", async () => {
+    const old = nowS() - 25 * HOUR_S;
+    const tokens = { hash: { clientId: "old1", person: { id: "sub-alice" }, scopes: [], expires: Date.now() + 60_000 } };
+    const d = await door({
+      [MCP_CLIENTS_FILE]: JSON.stringify({ ...clientsOf(998, nowS() - 23 * HOUR_S), ...clientsOf(2, old, "old") }),
+      [MCP_TOKENS_FILE]: JSON.stringify(tokens),
+    });
+    const res = await registration(d);
+    expect(res.status).toBe(201);
+    const kept = JSON.parse(await readFile(join(d.authRoot, MCP_CLIENTS_FILE), "utf8")) as Record<string, unknown>;
+    expect(Object.keys(kept)).toHaveLength(1000);
+    expect(kept["old0"]).toBeUndefined();
+    expect(kept["old1"]).toBeDefined();
+    expect(kept["c0"]).toBeDefined();
   });
 });
 
@@ -411,6 +535,25 @@ describe("a remote door whose MCP credential files cannot be read", () => {
       // The board's own routes are not the MCP ones: an anonymous / still goes to sign-in.
       expect((await d.fetch(`${PUBLIC}/`)).status).toBe(302);
       expect(errors.mock.calls.filter(([m]) => String(m).includes(bad))).toHaveLength(1);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  // #209: Node's parse message quotes the text around the fault, which can be part of a token.
+  it("says the clients file is not JSON, never quoting the text it holds, on the line and the 503", async () => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const d = await door({ [MCP_CLIENTS_FILE]: '{"a":{"client_secret":"TOKENLIKE0123456789" oops}}' });
+      const reg = await d.fetch(`${PUBLIC}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const said = await reg.text();
+      expect(said).toMatch(new RegExp(`${MCP_CLIENTS_FILE} is not JSON$`));
+      const printed = errors.mock.calls.map(([m]) => String(m)).join("\n");
+      expect(printed).toContain(`${MCP_CLIENTS_FILE} is not JSON`);
+      for (const text of [said, printed]) {
+        expect(text).not.toContain("TOKENLIKE");
+        expect(text).not.toContain("oops");
+      }
     } finally {
       errors.mockRestore();
     }
