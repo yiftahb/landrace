@@ -12,11 +12,12 @@ import {
 import { createCredentialStore, credentialValues } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
 import { createRoster } from "#people/roster.js";
+import { denyForPerson, scopeOf } from "#people/isolation.js";
 import { createSlotPool } from "#runner/pool.js";
 import { send as sendPage } from "#ui/server.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
-import { durationMs, LOCAL_PERSON_ID, RECORD_EFFECT } from "#conventions.js";
+import { CREDENTIALS_ROOT, durationMs, LOCAL_PERSON_ID, RECORD_EFFECT } from "#conventions.js";
 import { stepTimeoutMs } from "#runner/budget.js";
 import type {
   ActivityLog,
@@ -1091,7 +1092,13 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // assemble, run, and fail at its first paid step.
   // Anyone but the local person cuts their worktrees in a folder of their own.
   const unscoped = await sandboxFor(loaded.config, dir);
-  const sandbox = unscoped === null || person.id === LOCAL_PERSON_ID ? unscoped : { ...unscoped, scope: encodeURIComponent(person.id) };
+  const sandbox = unscoped === null || person.id === LOCAL_PERSON_ID ? unscoped : { ...unscoped, scope: scopeOf(person) };
+  // What this person's runs may not read: the credentials, and each other
+  // person's folder of worktrees, asked as each run starts, since the roster
+  // changes on a sync. Alone, the credentials every run was already denied.
+  const denyPaths = (): Promise<string[]> => Promise.resolve(denyForPerson(person, opts.others?.() ?? [], {
+    worktrees: join(sandboxRoot(dir), "worktrees"), credentials: CREDENTIALS_ROOT,
+  }));
   // What each step's agent is doing, for the page's item panel: one log for
   // the workspace, keyed by item as the locks are. Not for `landrace status`,
   // which runs no step and must write nothing.
@@ -1111,7 +1118,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     // steps, whose efforts it refuses now rather than at each step's first run.
     // A context of its own per workflow, so a factory two workflows share is
     // built once for each, against that workflow's steps (see `executorFor`).
-    const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps, pairingStages: pairingStages(workflow), frontDoor };
+    const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps, pairingStages: pairingStages(workflow), frontDoor, denyPaths };
     // Named on what converge and notify log for it — `agent.limited` among
     // them — without a field of its own in deps.
     const workflowLog = log.with({ workflow: id });
@@ -1697,6 +1704,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       build: async (person, resolution) => {
         const rt = await buildWorkspaceRuntime(dir, {
           log, stop, running: own(runsOf, person.id), seen: own(toldOf, person.id), credentials: store, person, slots: pool,
+          // Asked as each of their steps starts: who else the roster holds then.
+          others: () => roster.people().map((p) => p.person).filter((p) => p.id !== person.id),
           // Judged by the local rules the build applies itself; anyone else as the roster judged them.
           ...(person.id === local.id ? {} : { resolution }),
           // An agent that refused the person's own login: it is marked failed,

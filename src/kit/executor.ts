@@ -606,6 +606,14 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
   protected sandboxProblems?(sandbox: SandboxSettings): string[];
 
   /**
+   * Where the agent keeps what its runs under `dir` did — their transcripts —
+   * by absolute path, read when a run starts. Another person's are denied as
+   * their worktrees are: a transcript holds every file the run read. Absent,
+   * the agent keeps nothing outside the directory it ran in.
+   */
+  protected transcriptsUnder?(dir: string): Promise<string[]>;
+
+  /**
    * Why skills a step lists are not ones the repository at `root` defines,
    * one sentence each, read after the step's path. Asked at startup, once per
    * step that lists any. Absent, nothing is checked.
@@ -732,7 +740,8 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     // `security.model`, and it gets no server whatever the block says.
     if (ctx.config.agent.adapter !== this.id) {
       const screener = this.build({
-        servers: {}, tools: {}, sandbox: { hosts: [], deny: [...DEFAULT_DENY] }, log: ctx.log, frontDoor: ctx.frontDoor, personEnv: ctx.personEnv, ...this.extrasOf({}).extras,
+        servers: {}, tools: {}, sandbox: { hosts: [], deny: [...DEFAULT_DENY] }, log: ctx.log, frontDoor: ctx.frontDoor, personEnv: ctx.personEnv,
+        denyPaths: ctx.denyPaths, ...this.extrasOf({}).extras,
       });
       return { run: screener.run };
     }
@@ -782,10 +791,43 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     ctx.redact(mcpRedactionValues(resolved.servers));
     const executor = this.build({
       ...(rest as unknown as KitSettings & E), servers: resolved.servers, tools: resolved.tools, log: ctx.log, frontDoor: ctx.frontDoor, personEnv: ctx.personEnv,
+      denyPaths: ctx.denyPaths,
     });
     // Pairing only here, where `agent:` is this integration's: a screener
     // built from another agent's block is never the one a person pairs with.
     return { run: executor.run, ...(executor.handoff ? { handoff: executor.handoff } : {}) };
+  }
+
+  /**
+   * The sandbox's list with what `denyPaths` answers now, and the
+   * transcripts the agent keeps under each absolute path on it, each once —
+   * or a refusal. Not dropped, any of them: a path left off is another
+   * person's worktree left readable. So a path a rule cannot hold — a
+   * parenthesis ends a rule early, and a control character names a path
+   * that is not there — is refused, named; and so is an agent that cannot
+   * keep a command from a path, once the list holds more than the
+   * credentials it has always been run beside.
+   */
+  private async deniedNow(configured: readonly string[], denyPaths: () => Promise<string[]>): Promise<string[]> {
+    const listed = await denyPaths();
+    const kept = await Promise.all(listed.filter((path) => path.startsWith("/")).map((path) => this.transcriptsUnder?.(path) ?? Promise.resolve([])));
+    const computed = [...listed, ...kept.flat()];
+    // eslint-disable-next-line no-control-regex -- excluding control chars is the point, not a leftover
+    const unwritable = computed.filter((path) => /[()\x00-\x1F\x7F]/.test(path));
+    if (unwritable.length) {
+      throw new Error(`refused the run: ${unwritable.map((p) => JSON.stringify(p)).join(", ")} cannot be written as a rule the ${this.id} executor keeps, ` +
+        "and left off, another person's work would be readable");
+    }
+    const beyond = computed.filter((path) => path !== CREDENTIALS_DENY);
+    // `sandboxProblems` only decides: its words are about the operator's
+    // `agent.sandbox.deny`, which named none of these, and its fix — `deny: []`
+    // — does not lift this refusal.
+    const unkept = beyond.length ? this.sandboxProblems?.({ hosts: [], deny: beyond }) ?? [] : [];
+    if (unkept.length) {
+      throw new Error(`refused the run: other people are on this instance, and it must not read their work, ${beyond.join(", ")}, ` +
+        `but the ${this.id} executor cannot keep a command from reading a path`);
+    }
+    return [...new Set([...configured, ...computed])];
   }
 
   /**
@@ -795,7 +837,8 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    */
   build(settings: KitSettings & E): Executor {
     const {
-      model, effort, servers: mcpServers, tools: mcpTools, sandbox, git, log, timeoutMs = FALLBACK_TIMEOUT_MS, frontDoor = NO_DOOR, personEnv,
+      model, effort, servers: mcpServers, tools: mcpTools, sandbox: configured, git, log, timeoutMs = FALLBACK_TIMEOUT_MS, frontDoor = NO_DOOR, personEnv,
+      denyPaths,
     } = settings;
     const extras = settings as unknown as E;
 
@@ -890,6 +933,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       const allowed: AllowedTools = Object.fromEntries(Object.keys(servers).map((name) =>
         [name, name === server?.name ? server.tools : stepAllowed[name] ?? null]));
 
+      const sandbox = denyPaths === undefined ? configured : { ...configured, deny: await this.deniedNow(configured.deny, denyPaths) };
       const plan: RunPlan<E> = {
         tier, fork: fork === true, servers, allowed, sandbox, extras, frontDoor,
         ...(declared && skills !== undefined ? { skills } : {}),

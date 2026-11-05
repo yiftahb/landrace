@@ -27,7 +27,14 @@ describe("the Claude integration's command lines", () => {
     expect(Object.keys(ARGV_CASES).sort()).toEqual(Object.keys(recorded).sort());
   });
 
-  it.each(Object.entries(ARGV_CASES))("builds today's argv for %s", async (name, c) => {
+  // A person alone on the instance — every local start — is denied the
+  // credentials and no one else's work, which every run already was: `start`
+  // hands every runtime a `denyPaths`, and alone it changes no flag (#186).
+  it.each(Object.entries(ARGV_CASES).flatMap(([name, c]) => [
+    [name, c, undefined],
+    [`${name}, alone on the instance`, c, () => Promise.resolve(["~/.landrace/credentials"])],
+  ] as const))("builds today's argv for %s", async (label, c, denyPaths) => {
+    const name = label.replace(/, alone on the instance$/, "");
     const home = mkdtempSync(join(tmpdir(), "fake-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "fake-agent-"));
     dirs.push(home, cwd);
@@ -38,7 +45,7 @@ describe("the Claude integration's command lines", () => {
     }
     const { mcpServers = {}, mcpTools = {}, plugins = [], sandbox = { hosts: [], deny: ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"] }, ...rest } =
       c.executor as Record<string, never>;
-    const executor = new Claude({ bin, home }).build({ ...rest, servers: mcpServers, tools: mcpTools, plugins, sandbox });
+    const executor = new Claude({ bin, home }).build({ ...rest, servers: mcpServers, tools: mcpTools, plugins, sandbox, denyPaths });
     const r = await executor.run("p", { round: 1, signal: new AbortController().signal, cwd, ...c.run });
     const argv = JSON.parse(r.text) as string[];
     const built = argv.includes("--add-dir") ? dirname(argv[argv.indexOf("--add-dir") + 1] as string) : undefined;
