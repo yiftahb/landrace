@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -35,7 +35,23 @@ describe("landrace mcp over stdio", () => {
 
   it("is what a pairing's server, and with --child a step's, is started as", () => {
     const { args } = childServerCommand("/w/.landrace", "main", "sub-alice");
-    expect(args.slice(-8)).toEqual(["mcp", "--workspace", "/w/.landrace", "--workflow", "main", "--person", "sub-alice", "--pairing"]);
+    expect(args.slice(-7)).toEqual(["mcp", "--workspace", "/w/.landrace", "--workflow", "main", "--person=sub-alice", "--pairing"]);
+  });
+
+  /*
+   * A person id is a sign-in's subject, which can start with "-". The CLI
+   * must read it as the id, which only the refusal naming it can show: a
+   * local configuration refuses any person but the local one, by name.
+   */
+  it("reads a person id starting with - as the id, from the CLI the loop spawns", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "lr-mcp-person-"));
+    await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: claude, model: opus }\n");
+    const { args } = childServerCommand(dir, "main", "-sub-x");
+    const failed = await run(process.execPath, [
+      join(process.cwd(), "src", "cli", "index.ts"), ...args.slice(args.indexOf("mcp")), "--child", "1", "--stage", "breakdown", "--round", "1",
+    ]).then(() => null, (e: { code?: number; stderr?: string }) => e);
+    expect(failed?.code).toBe(1);
+    expect(failed?.stderr).toContain('only the local person "local" runs steps here, not "-sub-x"');
   });
 
   it("refuses --child with no --person, from the CLI the loop spawns, before reading any configuration", async () => {

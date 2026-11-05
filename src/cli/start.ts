@@ -436,13 +436,15 @@ export function boardSink(
  * the one a step's create_child is; a bare `landrace mcp` serves nothing.
  * `personId` is whose step it serves: the child server reads that person's
  * stored connections, so one person's sub-items are never filed with
- * another's keys. Locally it is always `LOCAL_PERSON_ID`.
+ * another's keys. Locally it is always `LOCAL_PERSON_ID`. Joined to its flag
+ * with `=`: an id is a sign-in's subject, and one starting with "-" standing
+ * alone would be read as a flag of its own.
  */
 export function childServerCommand(dir: string, workflowId: string, personId: string): ServerCommand {
   return {
     command: process.execPath,
     args: [
-      ...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir), "--workflow", workflowId, "--person", personId, "--pairing",
+      ...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir), "--workflow", workflowId, `--person=${personId}`, "--pairing",
     ],
   };
 }
