@@ -92,7 +92,10 @@ No implementation plan, no step list, no test list: build plans its own steps.
 Under 400 words. Every path exists. Every Done-when check is observable. No step list.
 Nothing the item decided is reopened. A promise that something always holds —
 denied, checked, refused — still holds when a person's configuration replaces
-the default it sits in. A page that hands out access on a person's click has
+the default it sits in, when a caller leaves it out, and when what it reads is
+missing: a gate the spec adds is required wherever it is taken, never an
+optional field, and denies when its input is absent, each a Done-when line.
+Examples use `example.com`, never a real domain. A page that hands out access on a person's click has
 a Done-when line for each way that click could be forged (framing, a foreign
 `Origin`, a replayed or missing one-time token) and one for each cookie's flags. A trigger or route the spec adds or
 changes is checked against every other way out of its stage, the clean state
