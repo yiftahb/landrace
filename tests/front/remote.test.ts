@@ -106,6 +106,17 @@ async function consentPage(d: Door, clientId: string, cookie: string): Promise<{
   return { res, token: /name="token" value="([^"]+)"/.exec(html)?.[1] ?? "" };
 }
 
+/**
+ * The Origin a browser sends on a form POST from a page served under
+ * `policy` to its own origin — the Fetch standard's "serializing a request
+ * origin": `no-referrer` sends `null`, as does a cross-origin request under
+ * `same-origin`; every other policy sends the page's origin. Set by hand,
+ * the tests would pass against a page no real browser could submit.
+ */
+function browserOrigin(policy: string | null, pageOrigin: string): string {
+  return policy === "no-referrer" ? "null" : pageOrigin;
+}
+
 const approve = (d: Door, cookie: string, body: string, origin = PUBLIC): Promise<Response> =>
   d.fetch(`${PUBLIC}/authorize/consent`, {
     method: "POST", headers: { cookie, origin, "content-type": "application/x-www-form-urlencoded" }, body,
@@ -222,6 +233,31 @@ describe("consenting to an MCP client", () => {
     expect(`${back.origin}${back.pathname}`).toBe(CLIENT_REDIRECT);
     expect(back.searchParams.get("state")).toBe("st-1");
     expect(back.searchParams.get("code")).toEqual(expect.any(String));
+  });
+
+  it("issues a code and a deny for the Origin a browser sends from the page under its own Referrer-Policy", async () => {
+    const d = await door();
+    const cookie = await sessionOf(d, ALICE);
+    const clientId = await register(d);
+    const shown = await consentPage(d, clientId, cookie);
+    const origin = browserOrigin(shown.res.headers.get("referrer-policy"), PUBLIC);
+    expect(origin).toBe(PUBLIC);
+    const approved = await approve(d, cookie, `token=${shown.token}&decision=approve`, origin);
+    expect(approved.status).toBe(302);
+    expect(new URL(approved.headers.get("location") ?? "").searchParams.get("code")).toEqual(expect.any(String));
+
+    const again = await consentPage(d, clientId, cookie);
+    const denied = await approve(d, cookie, `token=${again.token}&decision=deny`, browserOrigin(again.res.headers.get("referrer-policy"), PUBLIC));
+    expect(new URL(denied.headers.get("location") ?? "").searchParams.get("error")).toBe("access_denied");
+  });
+
+  it("refuses an approve whose Origin is null — a sandboxed frame or a no-referrer page elsewhere — and issues no code", async () => {
+    const d = await door();
+    const cookie = await sessionOf(d, ALICE);
+    const { token } = await consentPage(d, await register(d), cookie);
+    const res = await approve(d, cookie, `token=${token}&decision=approve`, "null");
+    expect(res.status).toBe(403);
+    expect(res.headers.get("location")).toBeNull();
   });
 
   it("refuses an approve from another origin, and issues no code", async () => {

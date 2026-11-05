@@ -32,14 +32,17 @@ const escapeHtml = (text: string): string =>
 /**
  * What every consent response carries. Nothing may frame it — a page that
  * overlaid an invisible frame of it would take the person's click on
- * Approve — and nothing it loads comes from anywhere.
+ * Approve — and nothing it loads comes from anywhere. Its referrer policy is
+ * `same-origin`, never `no-referrer`: under that a browser sends the form's
+ * POST with `Origin: null`, which the Origin check refuses, so no real
+ * browser could ever approve. Off-site it still sends nothing.
  */
 const CONSENT_HEADERS: Record<string, string> = {
   "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
   "cache-control": "no-store",
-  "referrer-policy": "no-referrer",
+  "referrer-policy": "same-origin",
 };
 
 /** A JSON file written whole, 0600 under a 0700 directory: a crash mid-write leaves the old one. */
