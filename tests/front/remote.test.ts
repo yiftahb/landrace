@@ -327,6 +327,54 @@ describe("consenting to an MCP client", () => {
   });
 });
 
+describe("registering MCP clients", () => {
+  /*
+   * #209: /register is open and unauthenticated, so without a bound anyone
+   * who reaches it grows mcp-clients.json and the map behind it forever.
+   */
+  const HOUR_S = 60 * 60;
+  const clientsOf = (count: number, issuedAt: number, prefix = "c"): Record<string, unknown> => Object.fromEntries(
+    Array.from({ length: count }, (_, i) => [`${prefix}${i}`, {
+      client_id: `${prefix}${i}`, client_id_issued_at: issuedAt, redirect_uris: [CLIENT_REDIRECT], token_endpoint_auth_method: "none",
+    }]),
+  );
+  const registration = (d: Door): Promise<Response> => d.fetch(`${PUBLIC}/register`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ redirect_uris: [CLIENT_REDIRECT], token_endpoint_auth_method: "none" }),
+  });
+  const nowS = (): number => Math.floor(Date.now() / 1000);
+
+  it("refuses the 1,001st registration, saying the instance holds too many, and stores nothing", async () => {
+    const d = await door({ [MCP_CLIENTS_FILE]: JSON.stringify(clientsOf(1000, nowS() - HOUR_S)) });
+    const res = await registration(d);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error_description: string }).error_description).toMatch(/holds too many registered clients/);
+    expect(Object.keys(JSON.parse(await readFile(join(d.authRoot, MCP_CLIENTS_FILE), "utf8")) as object)).toHaveLength(1000);
+  });
+
+  it("registers the 1,000th", async () => {
+    const d = await door({ [MCP_CLIENTS_FILE]: JSON.stringify(clientsOf(999, nowS() - HOUR_S)) });
+    expect((await registration(d)).status).toBe(201);
+    expect(Object.keys(JSON.parse(await readFile(join(d.authRoot, MCP_CLIENTS_FILE), "utf8")) as object)).toHaveLength(1000);
+  });
+
+  it("first prunes clients older than 24 hours that hold no refresh token, keeping one that does", async () => {
+    const old = nowS() - 25 * HOUR_S;
+    const tokens = { hash: { clientId: "old1", person: { id: "sub-alice" }, scopes: [], expires: Date.now() + 60_000 } };
+    const d = await door({
+      [MCP_CLIENTS_FILE]: JSON.stringify({ ...clientsOf(998, nowS() - 23 * HOUR_S), ...clientsOf(2, old, "old") }),
+      [MCP_TOKENS_FILE]: JSON.stringify(tokens),
+    });
+    const res = await registration(d);
+    expect(res.status).toBe(201);
+    const kept = JSON.parse(await readFile(join(d.authRoot, MCP_CLIENTS_FILE), "utf8")) as Record<string, unknown>;
+    expect(Object.keys(kept)).toHaveLength(1000);
+    expect(kept["old0"]).toBeUndefined();
+    expect(kept["old1"]).toBeDefined();
+    expect(kept["c0"]).toBeDefined();
+  });
+});
+
 describe("an MCP client with a person's token", () => {
   const client = async (d: Door, bearer: string) => {
     const c = new Client({ name: "test", version: "0" });

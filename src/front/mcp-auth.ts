@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Request, Response } from "express";
 import { express } from "#front/express.js";
-import { InvalidGrantError, InvalidTargetError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { InvalidGrantError, InvalidTargetError, InvalidTokenError, TemporarilyUnavailableError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import type { AuthorizationParams, OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import { getOAuthProtectedResourceMetadataUrl, mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -18,6 +18,9 @@ const CODE_TTL_MS = 5 * 60_000;
 /** An access token lasts an hour; its refresh token, rotated on each use, thirty days. */
 const ACCESS_TTL_S = 60 * 60;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60_000;
+/** Registered clients kept at most; one older than a day with no live refresh token is pruned first. */
+const MAX_CLIENTS = 1000;
+const STALE_CLIENT_MS = 24 * 60 * 60_000;
 
 /** The files this keeps, beside each other in `root`. */
 export const MCP_CLIENTS_FILE = "mcp-clients.json";
@@ -195,9 +198,22 @@ export function createMcpAuth(opts: {
   const provider: OAuthServerProvider = {
     clientsStore: {
       getClient: async (id) => (await loaded).clients.get(id),
+      // Open to anyone who reaches it, so bounded: a client that registered a
+      // day ago and holds no refresh token never finished signing in, or was
+      // let go, and gives way to a new one; past the cap, nobody new.
       registerClient: async (client) => {
         const full = client as OAuthClientInformationFull;
-        (await loaded).clients.set(full.client_id, full);
+        const { clients, refresh } = await loaded;
+        const at = now();
+        const holding = new Set([...refresh.values()].filter((r) => r.expires >= at).map((r) => r.clientId));
+        for (const [id, c] of clients) {
+          const issued = c.client_id_issued_at;
+          if (issued !== undefined && issued * 1000 < at - STALE_CLIENT_MS && !holding.has(id)) clients.delete(id);
+        }
+        if (clients.size >= MAX_CLIENTS) {
+          throw new TemporarilyUnavailableError(`this instance holds too many registered clients (${MAX_CLIENTS}); ask its operator to clear ${MCP_CLIENTS_FILE}`);
+        }
+        clients.set(full.client_id, full);
         await saveClients();
         return full;
       },
