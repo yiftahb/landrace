@@ -128,6 +128,26 @@ describe("the front door's /mcp", () => {
     await mcp.close();
   });
 
+  /*
+   * #209: each session holds a server and its transport in memory, and
+   * nothing ended one but the client, so one person could open them forever.
+   */
+  it("closes a person's oldest session when they open a 17th, and nobody else's", async () => {
+    const { fetch, mcp } = door({ callerOf: (req) => ({ id: String(req.headers["x-who"] ?? "nobody") }) });
+    const as = (who: string): typeof globalThis.fetch => (input, init) =>
+      fetch(input, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), "x-who": who } });
+    const bobs = await connect(as("bob"), `${DOOR}/mcp`);
+    const alices: Client[] = [];
+    for (let i = 0; i < 17; i++) alices.push(await connect(as("alice"), `${DOOR}/mcp`));
+    const [first, second, ...rest] = alices;
+    if (first === undefined || second === undefined) throw new Error("no sessions");
+    await expect(first.listTools()).rejects.toThrow(/404|no such MCP session/);
+    expect((await second.listTools()).tools.length).toBeGreaterThan(0);
+    expect((await rest[rest.length - 1]?.listTools())?.tools.length).toBeGreaterThan(0);
+    expect((await bobs.listTools()).tools.length).toBeGreaterThan(0);
+    await mcp.close();
+  });
+
   it("refuses a body far past any tool call with 413", async () => {
     const { fetch } = door();
     const r = await fetch(`${DOOR}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: `"${"x".repeat(2 * 1024 * 1024)}"` });
