@@ -1,45 +1,50 @@
-I've written the spec for #204 below. I settled the item's three open questions myself, since nobody is in this session to answer them. They are the second, third and fourth bullets under Decisions, so check those first. The spec is under 400 words and every existing path it names is one I opened. `src/people/allow.ts` is new.
+I've revised the spec for #204 with your three changes. Everything else is unchanged from the version you approved. By my rough hand count it is around 390 words, just under the 400 limit, but no tool counted it. I checked that every existing file it names is real. `src/people/allow.ts` is new.
+
+- **`admits` is required everywhere it's taken.** That covers `RosterOptions`, `RemoteDoor`, `createSessions` and `createMcpAuth`. Local mode passes `() => true` explicitly.
+- **`admits` denies by default.** It returns false when the list or the email is missing. The email matters most: `Person.email` is optional in `src/namespace.ts`, so a person with no email is refused.
+- **`example.com` replaces `acme.com`** in every example and check.
+
+I added three lines to Done when. One for each deny-by-default case, plus one that fails `pnpm typecheck` if any caller leaves out `admits`.
 
 ## Problem
-Remote mode admits anyone provider signs in: `signIn` (`src/people/roster.ts`) refuses only `local`. Google provider → any Google account gets runtime, store file, works repo on shared `githubToken`. MCP refresh rotation renews 30 days forever, never re-checks person. `landrace_session` tossable from sibling subdomain.
+Remote mode admits anyone provider signs in: `signIn` (`src/people/roster.ts`) refuses only `local`. Any Google account works repo on shared `githubToken`. MCP refresh renews forever. `landrace_session` tossable from sibling subdomain.
 
 ## Decisions
-1. Operator sets `people.allow: ["ann@acme.com", "@acme.com"]`.
-2. Unlisted person signs in → 403 `<email> is not admitted to this instance`; no store file.
-3. Remove: drop from list, restart. Sessions, refresh tokens, runtime gone.
+1. Operator sets `people.allow: ["ann@example.com", "@example.com"]`.
+2. Unlisted sign-in → 403 `<email> is not admitted to this instance`; no store file.
+3. Remove: drop from list, restart; sessions, refresh tokens, runtime end.
 
-- Match lowercase: exact email, or `@domain` equal to text after last `@`. No subdomains, no wildcards: fewest surprises.
-- No `hd` claim: verified email suffices; one rule.
-- `/logout` revokes no MCP token: removal stays list + restart, one way.
-- Re-check reads list `start` loaded: removal is restart anyway.
-- Check sits in `Sessions` and bearer verify: board, `/authorize`, consent, `/mcp` all covered.
-- Refresh record lacking `consentedAt` (pre-ship) keeps own `expires`, never extended.
-- Two cookies of one name read as none: tossing never picks.
+- Match lowercase: exact email, or `@domain` = text after last `@`; no subdomains: fewest surprises.
+- Opens settled: no `hd`; `/logout` keeps MCP tokens; re-check uses list `start` loaded: one rule, one removal path.
+- Round 2: `admits` required everywhere taken, local passes `() => true`: forgotten optional field lets everyone in.
+- Round 2: `admits` false on missing list or missing email (`Person.email` optional): denies by default.
+- Round 2: `example.com` (RFC 2606) replaces real `acme.com`.
 
 ## Technical design
 - `src/config/schema.ts` — `people.allow`: string array, each `local@domain` or `@domain`.
 - `src/people/allow.ts` (new) — `admits(allow: readonly string[] | undefined, email: string | undefined): boolean`; `allowProblems(people): Problem[]`, rule `people.allow`, remote with none.
-- `src/cli/validate.ts` — `allowProblems` beside `serveProblems`; result gains `warnings: string[]`, remote only: each string `secrets` entry, each per-person key whose `env` is set.
+- `src/cli/validate.ts` — adds `allowProblems`; result gains `warnings: string[]`, remote: string `secrets` entries, per-person keys with `env` set.
 - `src/cli/index.ts` — prints `warning:` lines; exit code ignores them.
-- `src/cli/start.ts` — `allowProblems` beside `serveProblems`; one `admit(person)` handed to `createSessions`, `createRoster`, `RemoteDoor`.
-- `src/namespace.ts` — `RosterOptions.admits?`, `RemoteDoor.admits`, `StoredRefresh.consentedAt?: number`.
+- `src/cli/start.ts` — refuses via `allowProblems`; predicate over `people.allow` and `person.email` remote, `() => true` local, to all four takers.
+- `src/namespace.ts` — `RosterOptions.admits`, `RemoteDoor.admits` required, `(person: Person) => boolean`; `StoredRefresh.consentedAt?: number`.
 - `src/people/roster.ts` — `signIn` throws `Refusal` before `store.remember`; `wanted` filters by `admits`.
-- `src/people/session.ts` — `createSessions({ secure, admits })`: `__Host-landrace_session` when secure; off-list → null. `cookieOf`: duplicate name → undefined.
+- `src/people/session.ts` — `createSessions({ secure, admits })`, both required; `__Host-landrace_session` when secure; off-list → null; `cookieOf`: duplicate name → undefined, never picks.
 - `src/front/server.ts` — `__Host-landrace_login`, `Path=/` when secure.
-- `src/front/mcp-auth.ts` — `admits` option; load drops off-list records, persists; `issue(clientId, person, scopes, consentedAt)`, `expires = consentedAt + REFRESH_TTL_MS`; refresh, `verifyAccessToken` refuse off-list.
+- `src/front/mcp-auth.ts` — `createMcpAuth` requires `admits`; load drops off-list records; `issue(clientId, person, scopes, consentedAt)`, `expires = consentedAt + REFRESH_TTL_MS`; refresh, `verifyAccessToken` refuse off-list.
 - `docs/remote.md`, `docs/security.md`, `docs/configuration.md` — allow, absolute refresh, removal, warnings; drop "No allow-list".
 
 ## Done when
-- Remote, `people.allow` absent or `[]`: `validate` exit 1, `start` refused, both naming `people.allow`.
-- Local without it: `validate` passes.
-- Schema refuses `*`, `@`, `acme.com`.
+- Remote, `people.allow` absent or `[]`: `validate` exit 1, `start` refused, naming `people.allow`; local passes.
+- `admits(undefined, "ann@example.com")` false.
+- `admits(["@example.com"], undefined)` false.
+- Taker without `admits`: `pnpm typecheck` fails.
+- Schema refuses `*`, `@`, `example.com`.
+- `@example.com` admits `ANN@Example.com`, not `a@sub.example.com`.
 - Unlisted callback: 403 naming email; store unchanged.
-- `@acme.com` admits `ANN@Acme.com`, not `a@sub.acme.com`.
-- After restart, stored off-list person: no runtime, file kept, refresh entry gone.
-- `admits` false: held session → `/login` or 401; access token → `/mcp` 401; refresh → `invalid_grant`.
-- Refresh rotated daily fails 30 days after consent; pre-ship record fails at its `expires`.
-- https: both `__Host-` cookies `Secure; HttpOnly; SameSite=Lax; Path=/`, no `Domain`.
-- Loopback http: old names, paths, no `Secure`.
+- Restart, stored off-list person: no runtime, file kept, refresh entry gone.
+- Off-list: session → `/login` or 401; access token → `/mcp` 401; refresh → `invalid_grant`.
+- Refresh rotated daily fails 30 days after consent; record without `consentedAt` fails at own `expires`.
+- https: both `__Host-` cookies `Secure; HttpOnly; SameSite=Lax; Path=/`, no `Domain`; loopback http: old names, no `Secure`.
 - Two session cookies: anonymous.
 - Consent: framed refused, foreign `Origin` 403, replayed or missing token 400.
 - Remote string secret, per-person key with `env` set: `validate` warns naming each, exit 0.
