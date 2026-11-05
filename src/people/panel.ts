@@ -10,7 +10,8 @@ const byId = (a: ConnectionDef, b: ConnectionDef): number => (a.id < b.id ? -1 :
 /**
  * The Integrations tab over a person's credentials file.
  *
- * `gate` answers what the latest judging of the person learned — the
+ * `gate` answers what the latest judging of the caller learned — locally the
+ * one person, remotely whoever is asking — the
  * connections its hooks define, the configuration before the store as
  * `resolvePerson` takes it, and the context a check runs in — asked afresh on
  * every call, so after a reload that re-read the hooks lists and
@@ -29,7 +30,7 @@ const byId = (a: ConnectionDef, b: ConnectionDef): number => (a.id < b.id ? -1 :
  */
 export function createPeoplePanel(opts: {
   store: CredentialStore;
-  gate: () => {
+  gate: (personId: string) => {
     registry: Pick<Registry, "connections">; loaded: LoadedConfig; ctx: RuntimeContext;
     lookups?: { person: string; reasons: ReadonlyMap<string, string> };
   };
@@ -53,7 +54,7 @@ export function createPeoplePanel(opts: {
 
   return {
     me: async (caller): Promise<MeView> => {
-      const { registry, loaded, lookups, ctx } = opts.gate();
+      const { registry, loaded, lookups, ctx } = opts.gate(caller.id);
       const creds = await opts.store.read(caller.id);
       const at = now();
       const reasons = lookups?.person === caller.id ? lookups.reasons : new Map<string, string>();
@@ -88,7 +89,7 @@ export function createPeoplePanel(opts: {
     },
 
     connect: async (caller: Person, id: string, fields: Record<string, string>): Promise<ConnectionStatus> => {
-      const { registry, ctx } = opts.gate();
+      const { registry, ctx } = opts.gate(caller.id);
       const def = defOf(registry, id);
       // Who a person is on a system is looked up from their email, never
       // taken from them: pasting one would let anyone claim to be anyone.
@@ -105,7 +106,7 @@ export function createPeoplePanel(opts: {
     },
 
     begin: async (caller, id) => {
-      const { registry, ctx } = opts.gate();
+      const { registry, ctx } = opts.gate(caller.id);
       const def = defOf(registry, id);
       const door = opts.door?.() ?? null;
       if (door === null) throw new Refusal(`"${id}" cannot be connected yet: Landrace does not know its own address until the board is up`);
@@ -114,7 +115,7 @@ export function createPeoplePanel(opts: {
     },
 
     finish: async (caller, id, callback) => {
-      const { registry, ctx } = opts.gate();
+      const { registry, ctx } = opts.gate(caller.id);
       const def = defOf(registry, id);
       let value: ConnectionValue;
       try {
@@ -130,7 +131,7 @@ export function createPeoplePanel(opts: {
     },
 
     disconnect: async (caller, id) => {
-      defOf(opts.gate().registry, id);
+      defOf(opts.gate(caller.id).registry, id);
       await opts.store.remove(caller.id, id);
       opts.log("person.disconnected", { connection: id });
       await reload(caller.id, `"${id}" is disconnected`);
