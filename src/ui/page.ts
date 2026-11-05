@@ -3,8 +3,6 @@
  * copy step. Script and style are served as their own routes so the CSP can
  * forbid anything inline.
  */
-import { ownRepository } from "#cli/version.js";
-
 export { APP_CSS } from "#ui/styles.generated.js";
 
 /**
@@ -101,16 +99,15 @@ const MARK = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" clas
 export const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><style>path { fill: #111111 } @media (prefers-color-scheme: dark) { path { fill: #f5f5f5 } }</style><path d="${MARK_PATH}"/></svg>`;
 
 /**
- * The ⋯ menu's last entry, under a divider: this package's own repository,
- * from package.json, so the URL has one home and src/ never names its host.
- * A copy with no repository it can open as a page has no entry, and no
- * divider left over above nothing.
+ * A stroke icon in the theme toggle's style, for the board menu's cog and
+ * each of its entries, so all of them read as one set.
  */
-const SOURCE_URL = ownRepository();
-const SOURCE_LINK = SOURCE_URL === null ? "" : `<hr role="separator" class="my-1 border-neutral-200 dark:border-neutral-700">
-<a id="board-source" href="${SOURCE_URL.replace(/&/g, "&amp;")}" title="${SOURCE_URL.slice("https://".length).replace(/&/g, "&amp;")}" role="menuitem" target="_blank" rel="noopener noreferrer" class="${MENU_ITEM}"><span>Source code</span>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ml-auto h-4 w-4 shrink-0" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>
-`;
+const strokeIcon = (shapes: string): string =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 shrink-0" aria-hidden="true">${shapes}</svg>`;
+
+const COG_ICON = strokeIcon('<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>');
+const PLUG_ICON = strokeIcon('<path d="M12 22v-5"></path><path d="M9 8V2"></path><path d="M15 8V2"></path><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"></path>');
+const PLAY_ICON = strokeIcon('<polygon points="6 3 20 12 6 21 6 3"></polygon>');
 
 export const PAGE_HTML = `<!doctype html>
 <html lang="en" class="scroll-pt-[var(--header-h)]" aria-busy="true">
@@ -141,16 +138,18 @@ ${MARK}
 <button id="notify-toggle" type="button" aria-pressed="false" aria-label="Notify me when an item needs you" title="Notify me when an item needs you" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-50 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">🔔</button>
 <div class="flex max-w-sm items-start gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 has-[p:empty]:hidden dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"><p id="notify-note" role="status" aria-live="polite"></p><button id="notify-note-close" type="button" aria-label="Dismiss" title="Dismiss" class="shrink-0 rounded px-1 hover:bg-amber-100 dark:hover:bg-amber-900">✕</button></div>
 <div class="relative shrink-0">
-<button id="board-more" type="button" aria-label="Board actions" aria-haspopup="menu" aria-expanded="false" title="Board actions" data-key="board:trigger" class="${ICON_BUTTON}">⋯</button>
+<button id="board-more" type="button" aria-label="Board actions" aria-haspopup="menu" aria-expanded="false" title="Board actions" data-key="board:trigger" class="${ICON_BUTTON}">${COG_ICON}</button>
 <div id="board-menu" data-key="board:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-48 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
-<a id="board-integrations" href="#/integrations" role="menuitem" class="${MENU_ITEM}">Integrations</a>
-<button id="board-tick" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">Run next tick now</button>
+<a id="board-integrations" href="#/integrations" role="menuitem" class="${MENU_ITEM}">${PLUG_ICON}
+<span>Integrations</span></a>
+<button id="board-tick" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">${PLAY_ICON}
+<span id="board-tick-label">Run next tick now</span></button>
 <button id="theme-toggle" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-<span id="theme-label">Switch to dark mode</span>
+<span id="theme-label">Dark mode</span>
 </button>
-${SOURCE_LINK}</div>
+</div>
 </div>
 </div>
 </div>
@@ -1500,7 +1499,7 @@ function navItem(entry, selected) {
 }
 
 // Only the pages that hold items: Integrations is a settings page, reached
-// from the top bar's ⋯ menu, and the sidebar is hidden while it is open.
+// from the top bar's cog menu, and the sidebar is hidden while it is open.
 function renderNav(view, page) {
   const entries = [{ id: null, name: "Needs You", needsYou: view.needsYou }, ...view.workflows];
   const key = JSON.stringify([page, entries]);
@@ -1519,7 +1518,7 @@ function renderNav(view, page) {
 
 // The Integrations tab: what the person has connected, and a paste form for
 // each credential they have not. While nothing runs for want of one, it is
-// the whole page; otherwise it opens from the ⋯ menu on its own, the sidebar
+// the whole page; otherwise it opens from the cog menu on its own, the sidebar
 // hidden, with Back to the board page it was opened from.
 const INTEGRATIONS = "#/integrations";
 function onIntegrationsRoute(hash) { return (hash || "").startsWith(INTEGRATIONS); }
@@ -1848,14 +1847,16 @@ function schedulePoll(delay) {
   pollTimer = setTimeout(() => { pollOnce().then(() => schedulePoll(POLL_MS)); }, delay);
 }
 
-// The ⋯ menu's Run next tick now. Choosing it leaves the menu open, so the
-// answer it says — "queued", "failed" — is seen where it was asked.
+// The board menu's Run next tick now. Choosing it leaves the menu open, so the
+// answer it says — "queued", "failed" — is seen where it was asked. Its words
+// live in their own span: writing the button's textContent would wipe its icon.
 const tickButton = document.getElementById("board-tick");
-const TICK_LABEL = tickButton.textContent;
+const tickLabel = document.getElementById("board-tick-label");
+const TICK_LABEL = tickLabel.textContent;
 let restoreTimer = null;
 
 function setTickButton(text, disabled) {
-  tickButton.textContent = text;
+  tickLabel.textContent = text;
   tickButton.disabled = disabled;
 }
 
@@ -1888,15 +1889,11 @@ tickButton.addEventListener("click", () => {
     .catch(() => tickAnswered(0, ""));
 });
 
-// The top bar's ⋯ is a menu like the panel's, under the same one-open rule,
-// and like it lives in the skeleton, so no poll redraws it. Integrations is a
-// link: choosing it leaves the menu, and the hash change shows the tab.
-// Source code opens a new tab, so the menu goes as well; a copy with no
-// repository has no such entry.
+// The top bar's cog opens a menu like the panel's, under the same one-open
+// rule, and like it lives in the skeleton, so no poll redraws it. Integrations
+// is a link: choosing it leaves the menu, and the hash change shows the tab.
 document.getElementById("board-more").addEventListener("click", () => toggleMenu("board"));
 document.getElementById("board-integrations").addEventListener("click", () => closeMenu());
-const sourceLink = document.getElementById("board-source");
-if (sourceLink) sourceLink.addEventListener("click", () => closeMenu());
 document.getElementById("integrations-back").addEventListener("click", goBack);
 
 // Re-read the tracker, with no step and no agent — the icon-only twin of the
@@ -2886,8 +2883,9 @@ followPermission();
 
 pollOnce().then(() => schedulePoll(POLL_MS));
 
-// An entry in the top bar's ⋯ menu, so its words are on screen, not in an
-// aria-label: a menu lists what each entry does.
+// An entry in the top bar's board menu, so its words are on screen, not in an
+// aria-label: a menu lists what each entry does. They name the mode a click
+// turns on, as its icon does — the moon in the light theme, the sun in the dark.
 const themeToggle = document.getElementById("theme-toggle");
 const themeLabel = document.getElementById("theme-label");
 
@@ -2899,7 +2897,7 @@ function isDark() {
 // first, with no defer, for exactly that reason) — this only ever syncs the
 // label to whatever that decided, never the other way round.
 function syncThemeLabel() {
-  themeLabel.textContent = isDark() ? "Switch to light mode" : "Switch to dark mode";
+  themeLabel.textContent = isDark() ? "Light mode" : "Dark mode";
 }
 
 // The choice is made, so the menu goes, as it does for Integrations.

@@ -7,8 +7,6 @@ import type { UpdateCommand, UpdateDeps, VersionDeps } from "#namespace.js";
 // tests, `node src/cli/index.ts` in a clone — has no build, and reads the
 // package.json it is run beside instead.
 declare const __LANDRACE_VERSION__: string | undefined;
-// package.json's `repository` as it is written there, stamped the same way.
-declare const __LANDRACE_REPOSITORY__: unknown;
 
 const REGISTRY = "https://registry.npmjs.org/landrace/latest";
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
@@ -30,26 +28,6 @@ export function ownVersion(): string {
   if (typeof __LANDRACE_VERSION__ === "string") return __LANDRACE_VERSION__;
   const version = ownPackage()?.version;
   return typeof version === "string" ? version : "unknown";
-}
-
-/**
- * A package.json `repository` — a string or `{ url }` — as a web address, with
- * npm's `git+` and the trailing `.git` dropped; null for anything a browser
- * could not open as a page.
- */
-export function repositoryUrl(raw: unknown): string | null {
-  const url = typeof raw === "string" ? raw
-    : raw !== null && typeof raw === "object" && typeof (raw as { url?: unknown }).url === "string" ? (raw as { url: string }).url
-    : null;
-  if (url === null) return null;
-  const web = url.replace(/^git\+/, "").replace(/\.git$/, "");
-  return /^https:\/\/[^\s"'<>]+$/.test(web) ? web : null;
-}
-
-/** Where this package's own source lives, from a build's stamp or package.json; null where neither says. */
-export function ownRepository(): string | null {
-  if (typeof __LANDRACE_REPOSITORY__ !== "undefined") return repositoryUrl(__LANDRACE_REPOSITORY__);
-  return repositoryUrl(ownPackage()?.repository);
 }
 
 /**
