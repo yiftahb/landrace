@@ -6,6 +6,7 @@ import { defineConnection } from "#hooks/contracts.js";
 import { personFields } from "#people/person.js";
 import { ambiguousClaims, createRoster } from "#people/roster.js";
 import { createCredentialStore } from "#people/store.js";
+import { lookupIdentities, resolvePerson } from "#people/resolve.js";
 import { createDispatcher } from "#runner/effects.js";
 import { createLogger } from "#runner/events.js";
 import { createSlotPool } from "#runner/pool.js";
@@ -466,5 +467,102 @@ describe("one runner, many people", () => {
     });
     await roster.sync();
     expect(roster.people().map((p) => p.person.id)).toEqual(["local"]);
+  });
+});
+
+/*
+ * #187: a remote roster is everyone who signed in. A sign-in remembers the
+ * person, writes what an admin pinned for them, and an identity value
+ * another person already holds is theirs, never the newcomer's.
+ */
+describe("signing in", () => {
+  const ctx = (loaded: LoadedConfig): RuntimeContext => ({ config: loaded.config, secrets: loaded.secretValues, signal: new AbortController().signal, log: () => {} });
+  /** Every email resolves to the one account, as a tracker whose lookup matched the wrong person would. */
+  const tracker = defineConnection({
+    id: "tracker", label: "Tracker", kind: "identity", fields: ["account"], resolve: async () => ({ account: "acct-alice" }),
+  });
+  const identities = new Map<string, ConnectionDef>([["tracker", tracker]]);
+  const ALICE: Person = { id: "sub-alice", email: "alice@example.invalid" };
+  const BOB: Person = { id: "sub-bob", email: "bob@example.invalid" };
+
+  async function remote(o: { store?: CredentialStore; overrides?: Record<string, Record<string, Record<string, string>>> } = {}) {
+    const loaded = await configured();
+    const store = o.store ?? await storeOf([]);
+    const events: LandraceEvent[] = [];
+    const roster = createRoster({
+      dir: ".", loaded, registry: { connections: identities }, store, mode: { remote: true },
+      log: createLogger({ sink: (e) => events.push(e) }), build: async () => null,
+      ...(o.overrides ? { overrides: o.overrides } : {}),
+      // As `start` judges: each identity not yet stored is looked up, then the person resolved.
+      judge: async (person) => {
+        const looked = await lookupIdentities(store, person, identities, await store.read(person.id), ctx(loaded));
+        return { resolution: resolvePerson(loaded, { connections: identities }, person, looked.credentials, { remote: true }, new Date(), looked.lookups) };
+      },
+    });
+    return { roster, store, events };
+  }
+  const stateOf = (roster: Roster, id: string): string | undefined => roster.get(id)?.statuses.find((s) => s.id === "tracker")?.state;
+
+  it("leaves the local person's file out of a remote roster", async () => {
+    const { roster } = await remote({ store: await storeOf(["local", "alice"]) });
+    await roster.sync();
+    expect(roster.people().map((p) => p.person.id)).toEqual(["alice"]);
+  });
+
+  it("remembers someone who connected nothing, so a sync holds them", async () => {
+    const { roster, store } = await remote();
+    await roster.signIn(ALICE);
+    expect(await store.list()).toEqual([ALICE]);
+    expect(roster.people().map((p) => p.person)).toEqual([ALICE]);
+    expect(stateOf(roster, ALICE.id)).toBe("connected");
+  });
+
+  it("marks bob's identity failed when it resolves to the account alice already holds, and leaves alice connected", async () => {
+    const { roster, store } = await remote();
+    await roster.signIn(ALICE);
+    await roster.signIn(BOB);
+    expect(stateOf(roster, ALICE.id)).toBe("connected");
+    expect(stateOf(roster, BOB.id)).toBe("failed");
+    expect((await store.read(BOB.id)).connections["tracker"]?.failure).toMatch(/already belongs to another person/);
+    expect((await store.read(ALICE.id)).connections["tracker"]?.failure).toBeUndefined();
+    // Signing in again changes nothing: alice keeps it.
+    await roster.signIn(ALICE);
+    expect(stateOf(roster, ALICE.id)).toBe("connected");
+  });
+
+  it("holds the clash however the two sign in at once: exactly one of them keeps the account", async () => {
+    const { roster } = await remote();
+    await Promise.all([roster.signIn(ALICE), roster.signIn(BOB)]);
+    expect([stateOf(roster, ALICE.id), stateOf(roster, BOB.id)].sort()).toEqual(["connected", "failed"]);
+  });
+
+  it("stores what an admin pinned for bob's email as an override, in place of a lookup", async () => {
+    const { roster, store } = await remote({ overrides: { "bob@example.invalid": { tracker: { account: "acct-bob" } } } });
+    await roster.signIn(ALICE);
+    await roster.signIn(BOB);
+    expect((await store.read(BOB.id)).connections["tracker"]).toEqual(expect.objectContaining({ fields: { account: "acct-bob" }, source: "override" }));
+    expect(stateOf(roster, BOB.id)).toBe("connected");
+  });
+
+  it("holds an override to the same rule: one naming alice's account is refused", async () => {
+    const { roster } = await remote({ overrides: { "bob@example.invalid": { tracker: { account: "acct-alice" } } } });
+    await roster.signIn(ALICE);
+    await roster.signIn(BOB);
+    expect(stateOf(roster, BOB.id)).toBe("failed");
+    expect(stateOf(roster, ALICE.id)).toBe("connected");
+  });
+
+  it("logs an override no hook can take, naming why, and stores nothing for it", async () => {
+    const { roster, store, events } = await remote({ overrides: { "alice@example.invalid": { nothing: { account: "x" } } } });
+    await roster.signIn(ALICE);
+    expect(Object.keys((await store.read(ALICE.id)).connections)).toEqual(["tracker"]);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "connection.failed", person: ALICE.id, error: expect.stringMatching(/people\.overrides.*"nothing".*no hook defines it as an identity/) }),
+    ]));
+  });
+
+  it("refuses to sign anyone in as the local person, whose file is the operator's", async () => {
+    const { roster } = await remote();
+    await expect(roster.signIn({ id: "local", email: "x@example.invalid" })).rejects.toThrow(/local/);
   });
 });

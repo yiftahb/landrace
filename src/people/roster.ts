@@ -1,7 +1,7 @@
-import { compareIds } from "#conventions.js";
+import { compareIds, LOCAL_PERSON_ID } from "#conventions.js";
 import { localPerson } from "#people/person.js";
 import { resolvePerson } from "#people/resolve.js";
-import { messageOf } from "#runner/errors.js";
+import { messageOf, Refusal } from "#runner/errors.js";
 import { createSlotPool } from "#runner/pool.js";
 import { createRuntimeSlot } from "#runner/slot.js";
 import { andList, excludeAmbiguous, listingFailures, listWorkspace, retireRuntime, tickWorkspace } from "#runner/tick.js";
@@ -39,6 +39,10 @@ const claimedIn = (listing: WorkspaceListing): string[] => {
   const { owner, closed, conflicts, clashes } = listing.claims;
   return [...new Set([...owner.keys(), ...closed.keys(), ...conflicts.keys(), ...clashes.keys()])];
 };
+
+/** Whether two connections hold the same fields, whatever order they were written in. */
+const sameFields = (a: Record<string, string>, b: Record<string, string>): boolean =>
+  JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
 
 const NOT_RUNNING = "this person's runtime is not running yet";
 
@@ -94,7 +98,12 @@ export function createRoster(opts: RosterOptions): Roster {
       statuses: [],
       board: currentBoard(() => boards.current),
       slot: createRuntimeSlot<WorkspaceRuntime>(async () => {
-        const { resolution } = await judge(entry.person);
+        let { resolution } = await judge(entry.person);
+        // A judging can look an identity up and store it, so its clash is
+        // checked after every one, not only a sign-in's: a lookup that failed
+        // at sign-in and found someone else's account at a later reload is
+        // the same mistake. Marked, the person is judged again over it.
+        if (opts.mode.remote && await markClashes(entry.person)) ({ resolution } = await judge(entry.person));
         entry.statuses = resolution.statuses;
         if (!resolution.ready) {
           // A file that does not read is this person's to mend, said once per judging.
@@ -118,10 +127,90 @@ export function createRoster(opts: RosterOptions): Roster {
     return entry;
   };
 
-  /** Who the roster should hold: the local person, or every person the store has a file for. */
+  /**
+   * Who the roster should hold: the local person, or every person the store
+   * has a file for — but the local one's, which is the operator's own and
+   * nobody signs in as.
+   */
   const wanted = async (): Promise<Person[]> => {
     if (!opts.mode.remote) return [opts.local ?? localPerson(opts.loaded)];
-    return opts.store.list();
+    return (await opts.store.list()).filter((p) => p.id !== LOCAL_PERSON_ID);
+  };
+
+  // One clash check at a time, each reading every file afresh just before
+  // it writes: two run side by side would each read the other's value
+  // before it was marked, and both keep the account.
+  let clashing: Promise<unknown> = Promise.resolve();
+  const markClashes = (person: Person): Promise<boolean> => {
+    const next = clashing.then(() => clashesOf(person));
+    clashing = next.catch(() => {});
+    return next;
+  };
+
+  /**
+   * Each identity of the person's whose value another person already holds,
+   * marked failed. Held means stored, not failed, and stored no later than
+   * theirs: one stored at the same moment fails the one checked first, and
+   * the other, checked next, finds it failed and keeps the account. Overrides
+   * are held to this too — pinning someone else's account is no way round it.
+   */
+  const clashesOf = async (person: Person): Promise<boolean> => {
+    const mine = await opts.store.read(person.id);
+    if (mine.problem !== undefined) return false;
+    const identities = [...opts.registry.connections.values()].filter((d) => d.kind === "identity");
+    const others = [];
+    for (const other of await wanted()) {
+      if (other.id === person.id) continue;
+      const theirs = await opts.store.read(other.id);
+      if (theirs.problem === undefined) others.push(theirs);
+    }
+    let marked = false;
+    for (const def of identities) {
+      const value = mine.connections[def.id];
+      if (value === undefined || value.failure !== undefined) continue;
+      const held = others.some((o) => {
+        const theirs = o.connections[def.id];
+        return theirs !== undefined && theirs.failure === undefined && sameFields(theirs.fields, value.fields)
+          && Date.parse(theirs.connectedAt) <= Date.parse(value.connectedAt);
+      });
+      if (!held) continue;
+      const at = new Date().toISOString();
+      await opts.store.put(person.id, mine.person, def.id, {
+        ...value, failedAt: at, failure: `this ${def.label} account already belongs to another person; ask an admin to set people.overrides for you`,
+      });
+      marked = true;
+    }
+    return marked;
+  };
+
+  /**
+   * What `people.overrides` pins for the person's email, stored as an
+   * override where it is not already: an override replaces a lookup, and
+   * one already stored keeps its failure. An override naming what no hook
+   * defines as an identity of those fields is logged and stored nowhere.
+   */
+  const applyOverrides = async (person: Person): Promise<void> => {
+    const email = person.email?.toLowerCase();
+    const pinned = Object.entries(opts.overrides ?? {}).find(([e]) => e.toLowerCase() === email)?.[1];
+    if (pinned === undefined) return;
+    const creds = await opts.store.read(person.id);
+    for (const [id, fields] of Object.entries(pinned).sort(([a], [b]) => compareIds(a, b))) {
+      const def = opts.registry.connections.get(id);
+      const wantedFields = def === undefined ? [] : [...def.fields].sort();
+      const given = Object.keys(fields).sort();
+      if (def?.kind !== "identity" || given.length !== wantedFields.length || given.some((f, i) => f !== wantedFields[i])) {
+        opts.log("connection.failed", {
+          person: person.id,
+          error: def?.kind === "identity"
+            ? `people.overrides gives "${id}" ${given.join(", ") || "nothing"}, but it holds ${wantedFields.join(", ")}`
+            : `people.overrides names "${id}", but no hook defines it as an identity`,
+        });
+        continue;
+      }
+      const stored = creds.connections[id];
+      if (stored?.source === "override" && sameFields(stored.fields, fields)) continue;
+      await opts.store.put(person.id, person, id, { fields: { ...fields }, source: "override", connectedAt: new Date().toISOString() });
+    }
   };
 
   /** One person's reload, its failure theirs alone: logged, and the roster goes on. */
@@ -167,6 +256,15 @@ export function createRoster(opts: RosterOptions): Roster {
         entry.person = { ...entry.person, ...person };
         await reloadQuietly(entry);
       }
+    },
+    signIn: async (person) => {
+      if (person.id === LOCAL_PERSON_ID) throw new Refusal(`nobody signs in as "${LOCAL_PERSON_ID}": that file is the operator's own`);
+      await opts.store.remember(person);
+      await applyOverrides(person);
+      const entry = entryFor(person);
+      entry.person = { ...entry.person, ...person };
+      // Judged — every identity not stored looked up, then its clash checked — and built.
+      await reloadQuietly(entry);
     },
     tick: async () => {
       const order = pool.order(ready().map((r) => r.entry.person.id));

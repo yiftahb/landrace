@@ -1986,6 +1986,8 @@ export interface CredentialStore {
   root: string;
   read(personId: string): Promise<PersonCredentials>;
   put(personId: string, person: Person, connId: string, value: ConnectionValue): Promise<void>;
+  /** Writes who the person is, keeping what they connected; makes their file when there is none. */
+  remember(person: Person): Promise<void>;
   remove(personId: string, connId: string): Promise<void>;
   /** Every person with a file, readable or not — one that is not, by its id alone. */
   list(): Promise<Person[]>;
@@ -2095,6 +2097,14 @@ export interface Roster {
   get(personId: string): PersonRuntime | undefined;
   reload(personId: string): Promise<void>;
   sync(): Promise<void>;
+  /**
+   * Someone signed in, remotely: remembered in the store, given what
+   * `people.overrides` pins for their email, judged — each identity not
+   * stored looked up — and their runtime reloaded. An identity value another
+   * person already holds is marked failed on theirs, never taken. The local
+   * person is refused: their file is the operator's.
+   */
+  signIn(person: Person): Promise<void>;
   tick(): Promise<void>;
   /** The items the last judged tick found claimed by more than one person, each with who: what a write from the page or the MCP goes by. */
   ambiguous(): ReadonlyMap<string, string[]>;
@@ -2115,6 +2125,8 @@ export interface RosterOptions {
   /** A ready person's runtime, or null when there is none to run. */
   build: (person: Person, resolution: PersonResolution) => Promise<WorkspaceRuntime | null>;
   log: RedactingLogger;
+  /** `people.overrides`: by email, each identity an admin pins, written on sign-in. */
+  overrides?: Record<string, Record<string, Record<string, string>>>;
   /** The one person a local roster holds. Absent, `people.local`'s. */
   local?: Person;
   /** The slots every runtime shares, and the order people are listed and ticked in. Absent, a pool of `tick.concurrency`. */
