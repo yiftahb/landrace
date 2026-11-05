@@ -11,6 +11,7 @@ import type { Board, Executor, ExecutorContext, LandraceEvent, Registry, Schedul
 import { createBoard } from "#ui/board.js";
 import { createActivityLog } from "#runner/activity.js";
 import { createDispatcher } from "#runner/effects.js";
+import { Refusal } from "#runner/errors.js";
 import { buildSnapshot } from "#runner/snapshot.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
 import { describeLoopback } from "#tests/support/loopback.js";
@@ -410,10 +411,10 @@ describe("which executor screens", () => {
  * worktree, so a relative one would resolve somewhere else entirely.
  */
 describe("the item server an items:create step is handed", () => {
-  it("is this process started again as `landrace mcp --pairing` on the absolute workspace directory", () => {
-    expect(childServerCommand("relative/.landrace", "main")).toEqual({
+  it("is this process started again as `landrace mcp --pairing` on the absolute workspace directory, as the step's person", () => {
+    expect(childServerCommand("relative/.landrace", "main", "local")).toEqual({
       command: process.execPath,
-      args: [...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace"), "--workflow", "main", "--pairing"],
+      args: [...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace"), "--workflow", "main", "--person=local", "--pairing"],
     });
   });
 });
@@ -849,7 +850,7 @@ describe("the item panel", () => {
     const tracker = createFakeTracker([{ number: 12, labels: ["lr:auto", "lr:stage:spec", "lr:awaiting"] }]);
     tracker.say(12, `Which markets?${renderMarker({ stage: "spec", kind: "output", round: 1, session: "sid-1" })}`);
     const root = await mkdtemp(join(tmpdir(), "lr-start-panel-"));
-    const activity = createActivityLog(root, (t) => t);
+    const activity = createActivityLog(root, "local", (t) => t);
     const panel = panelFor({
       source: tracker.registry.source as Source, pre: tracker.registry.pre,
       dispatcher: createDispatcher(tracker.registry.post),
@@ -1180,5 +1181,39 @@ describe("connectionRefresher", () => {
     expect(live.get("forgeToken")).toBe("glo-stored-0123456789");
     // Another start may have stored it: this process's log redacts it from now on.
     expect(log.scrub("said glo-stored-0123456789")).not.toContain("glo-stored-0123456789");
+  });
+
+  /*
+   * #208: remotely, a person not judged yet has no gate, and `runStart`'s
+   * refuses rather than lending them the start's. A refusing gate skips the
+   * pass, saying nothing; a refusing context — no provider's refusal — never
+   * marks the connection failed.
+   */
+  it("skips a pass whose gate refuses, and never marks a connection failed for a context that refuses", async () => {
+    const ME = { id: "sub-alice" };
+    const store = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-refresh-")), "credentials"));
+    const soon = new Date(Date.now() + 60_000).toISOString();
+    const stored = { fields: { token: "glo-old-0123456789" }, source: "oauth" as const, connectedAt: soon, expiresAt: soon, refresh: { token: "glr-old-0123456789" } };
+    await store.put(ME.id, ME, "forge", stored);
+    const def: ConnectionDef = {
+      id: "forge", label: "Forge", kind: "credential", fields: ["token"],
+      oauth: () => ({ authorizeUrl: "https://f.invalid/a", tokenUrl: "https://f.invalid/t", clientId: "id", clientSecret: "secret-0123456789", scope: "api" }),
+    };
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" }, secrets: { forgeToken: { perPerson: true, connection: "forge.token" } } });
+    const loaded = { config, missing: [], secretValues: new Map<string, string>(), vars: new Map(), telemetry: new Map(), missingVars: [], missingGit: [], missingPerson: [] };
+    const gate = { person: ME, connections: new Map([["forge", def]]), local: { dir: "", configured: loaded, loaded, credentials: null, problems: [] } };
+    const notYet = (): never => { throw new Refusal("sub-alice's connections are not ready yet; try again in a moment"); };
+    let asked = 0;
+    const fetch = (async () => { asked++; return new Response("{}"); }) as typeof globalThis.fetch;
+    const events: LandraceEvent[] = [];
+    const log = createLogger({ sink: (e) => events.push(e) });
+    const ctx = () => ({ config, secrets: new Map(), signal: new AbortController().signal, log: () => {} });
+
+    await connectionRefresher({ store, log, reload: async () => {}, gate: notYet, ctx, live: () => null, fetch })();
+    expect([asked, events]).toEqual([0, []]);
+
+    await connectionRefresher({ store, log, reload: async () => {}, gate: () => gate, ctx: notYet, live: () => null, fetch })();
+    expect(asked).toBe(0);
+    expect((await store.read(ME.id)).connections["forge"]).toEqual(stored);
   });
 });

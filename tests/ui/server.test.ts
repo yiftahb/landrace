@@ -724,7 +724,10 @@ describeLoopback("the page's routes follow the item's workflow", () => {
       conversation: async (item) => { calls.push([`source ${source}`, "conversation", item]); return []; },
       pairing: async (item) => { calls.push([`source ${source}`, "pairing", item]); return { open: null, offers: [] }; },
     });
-    const activity: ActivityLog = { begin: () => {}, record: () => {}, read: async () => ({ stage: null, round: null, lines: [], total: 0 }) };
+    const activity: ActivityLog = {
+      begin: () => {}, record: () => {},
+      read: async (item) => { calls.push(["log", "activity", item]); return { stage: null, round: null, lines: [], total: 0 }; },
+    };
     const owner = (item: string) => board.ownerOf(item);
     const ids = ["main", "fast", "gl"];
     const tick = jest.fn((): WakeResult => "started");
@@ -788,11 +791,18 @@ describeLoopback("the page's routes follow the item's workflow", () => {
     ["the last listing never saw", "99", "#99 is not an item the last tick listed"],
   ] as const)("refuses to read an item %s with 409 and the board's sentence, reaching no reader", async (_, id, sentence) => {
     const { calls } = await serve();
-    for (const action of ["conversation", "pairing"] as const) {
+    // The activity too: the same check as the conversation, so a log is read only for an item this runtime may read.
+    for (const action of ["conversation", "pairing", "activity"] as const) {
       const res = await get(server.port, `/items/${id}/${action}`, { headers: ours(action) });
       expect([action, res.status, res.body]).toEqual([action, 409, sentence]);
     }
     expect(calls).toEqual([]);
+  });
+
+  it("reads the activity of an item one workflow owns from the log", async () => {
+    const { calls } = await serve();
+    expect((await get(server.port, "/items/1/activity", { headers: ours("activity") })).status).toBe(200);
+    expect(calls).toEqual([["log", "activity", "1"]]);
   });
 
   it.each([["two workflows claim", "4"], ["no workflow claims", "6"]] as const)(

@@ -508,7 +508,7 @@ describe("buildMcpTools", () => {
     const { dir } = await fixture({ screen: false });
     const tools = await buildMcpTools(dir);
     await tools.ask(ITEM, "carry on");
-    const page = await createActivityLog(sandboxRoot(dir), (t) => t).read(ITEM, 0);
+    const page = await createActivityLog(sandboxRoot(dir), "local", (t) => t).read(ITEM, 0);
     expect(page).toMatchObject({ stage: "spec", round: 1, lines: [{ kind: "tool", text: "Read spec.md" }] });
   });
 
@@ -758,28 +758,28 @@ stages:
 
   it("labels the child with the workflow's admit list", async () => {
     const { dir, created } = await workspace("admit: [lr:fast]\n");
-    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "main");
+    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "main", "local");
     await tool.createChild({ title: "API" });
     expect(await linesOf(created)).toEqual([["lr:fast"]]);
   });
 
   it("labels it with nothing when the workflow admits nothing", async () => {
     const { dir, created } = await workspace("");
-    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "main");
+    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "main", "local");
     await tool.createChild({ title: "API" });
     expect(await linesOf(created)).toEqual([[]]);
   });
 
   it("labels a child with the admit list of the workflow it is bound to, among several", async () => {
     const { dir, created } = await workspaceOf({ main: "admit: [lr:auto]\n", fast: "admit: [lr:fast]\n" });
-    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "fast");
+    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "fast", "local");
     await tool.createChild({ title: "API" });
     expect(await linesOf(created)).toEqual([["lr:fast"]]);
   });
 
   it("refuses a workflow the workspace does not have, naming the ones it does", async () => {
     const { dir } = await workspaceOf({ main: "", fast: "" });
-    await expect(buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "nope")).rejects.toThrow(
+    await expect(buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "nope", "local")).rejects.toThrow(
       /no workflow "nope".*fast, main|no workflow "nope".*main, fast/,
     );
   });

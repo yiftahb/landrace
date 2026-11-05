@@ -159,7 +159,9 @@ function servePanel(
     const after = new URL(req.url ?? "/", "http://x").searchParams.get("after") ?? "0";
     if (!/^\d+$/.test(after)) return send(res, 400, text, "after must be a whole number");
     // A local file, nothing that can quote a tracker; still never a stack trace.
-    panel.activity(item, Number(after)).then(json, () => send(res, 500, text, "the activity could not be read"));
+    // Declined like the conversation, for an item no one workflow's to read for.
+    panel.activity(item, Number(after)).then(json, (e: unknown) =>
+      e instanceof Refusal ? send(res, 409, text, oneLine(e.message)) : send(res, 500, text, "the activity could not be read"));
     return;
   }
   if (what === "conversation" || what === "pairing") {
