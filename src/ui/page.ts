@@ -43,6 +43,9 @@ const PRIMARY_BUTTON =
 const ICON_BUTTON =
   "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800";
 
+const MENU_ITEM =
+  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800";
+
 /**
  * The item panel: fixed to the right, the board pushed left beside it from
  * `sm` up and covered by it below. From `sm` up it is always there, so
@@ -118,7 +121,6 @@ ${MARK}
 <div class="flex flex-wrap items-center gap-2">
 <div id="schedule" class="flex flex-wrap items-center gap-2">
 <span id="next" class="rounded-full border border-neutral-200 px-3 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">No tick scheduled</span>
-<button id="tick" type="button" class="${BUTTON}">Run next tick now</button>
 </div>
 <button id="notify-toggle" type="button" aria-pressed="false" aria-label="Notify me when an item needs you" title="Notify me when an item needs you" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-50 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">🔔</button>
 <div class="flex max-w-sm items-start gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 has-[p:empty]:hidden dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"><p id="notify-note" role="status" aria-live="polite"></p><button id="notify-note-close" type="button" aria-label="Dismiss" title="Dismiss" class="shrink-0 rounded px-1 hover:bg-amber-100 dark:hover:bg-amber-900">✕</button></div>
@@ -126,6 +128,13 @@ ${MARK}
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
 </button>
+<div class="relative shrink-0">
+<button id="board-more" type="button" aria-label="Board actions" aria-haspopup="menu" aria-expanded="false" title="Board actions" data-key="board:trigger" class="${ICON_BUTTON}">⋯</button>
+<div id="board-menu" data-key="board:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+<a id="board-integrations" href="#/integrations" role="menuitem" class="${MENU_ITEM}">Integrations</a>
+<button id="board-tick" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">Run next tick now</button>
+</div>
+</div>
 </div>
 </div>
 </header>
@@ -189,6 +198,7 @@ ${collapsedLane("not-admitted", "Not admitted")}
 ${collapsedLane("discharged", "Done")}
 </div>
 <section id="integrations" hidden aria-labelledby="integrations-title" class="rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+<button id="integrations-back" type="button" class="${BUTTON} mb-3"><span aria-hidden="true">←</span> Back</button>
 <h2 id="integrations-title" class="text-sm font-semibold">Integrations</h2>
 <p id="integrations-note" class="mt-1 text-xs text-neutral-500 dark:text-neutral-400"></p>
 <ul id="integrations-list" class="mt-3 flex flex-col divide-y divide-neutral-100 dark:divide-neutral-800"></ul>
@@ -1407,47 +1417,46 @@ function navItem(entry, selected) {
   return a;
 }
 
+// Only the pages that hold items: Integrations is a settings page, reached
+// from the top bar's ⋯ menu, and the sidebar is hidden while it is open.
 function renderNav(view, page) {
   const entries = [{ id: null, name: "Needs You", needsYou: view.needsYou }, ...view.workflows];
-  const onTab = onIntegrationsRoute(location.hash);
-  const key = JSON.stringify([page, onTab, entries]);
+  const key = JSON.stringify([page, entries]);
   if (key === navKey) return;
   navKey = key;
   const items = entries.map((e) => {
     const li = el("li");
-    li.append(navItem(e, e.id === page && !onTab));
+    li.append(navItem(e, e.id === page));
     return li;
   });
   const rule = el("li", "my-1 hidden border-t border-neutral-200 dark:border-neutral-800 sm:block");
   rule.setAttribute("role", "separator");
-  const tab = el("li");
-  tab.append(integrationsLink(onTab));
   // A divider with nothing under it would only be a stray line.
-  document.getElementById("nav").replaceChildren(...(items.length > 1 ? [items[0], rule, ...items.slice(1)] : items), tab);
+  document.getElementById("nav").replaceChildren(...(items.length > 1 ? [items[0], rule, ...items.slice(1)] : items));
 }
 
 // The Integrations tab: what the person has connected, and a paste form for
 // each credential they have not. While nothing runs for want of one, it is
-// the whole page; otherwise it is one more entry in the sidebar.
+// the whole page; otherwise it opens from the ⋯ menu on its own, the sidebar
+// hidden, with Back to the board page it was opened from.
 const INTEGRATIONS = "#/integrations";
 function onIntegrationsRoute(hash) { return (hash || "").startsWith(INTEGRATIONS); }
 // False while /board.json answers { ready: false }: no runtime stands behind the board.
 let boardReady = true;
+// The board page last shown, without its item, for Back; null until one has
+// been, as when the tab is the address the page was opened or reloaded at.
+let lastBoardHash = null;
 // The /people/me last drawn, so a poll that changed nothing redraws nothing.
 let meKey = null;
+
+function backHash() { return lastBoardHash || "#/"; }
+
+// A new history entry, as following a sidebar link would be.
+function goBack() { location.hash = backHash(); }
 
 const STATE_TEXT = { connected: "Connected", missing: "Not connected", expired: "Expired", failed: "Not working" };
 const CONNECT_BUTTON = ${JSON.stringify(PRIMARY_BUTTON)};
 const DISCONNECT_BUTTON = ${JSON.stringify(BUTTON)};
-
-function integrationsLink(selected) {
-  const a = el("a", "flex min-w-0 items-center justify-between gap-2 rounded-md px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800" + (selected ? " bg-neutral-100 font-medium dark:bg-neutral-800" : ""));
-  a.href = INTEGRATIONS;
-  a.setAttribute("data-key", "nav:" + INTEGRATIONS);
-  if (selected) a.setAttribute("aria-current", "page");
-  a.append(el("span", "truncate", "Integrations"));
-  return a;
-}
 
 // One connection's row. A credential's value is never sent: the server sends
 // states, hints and field names for it. An identity is looked up, so it has
@@ -1538,28 +1547,28 @@ async function loadMe() {
   }
 }
 
-// The board or the tab, by the hash and by whether anything runs. While
-// nothing does, the tick button and the item panel have nothing to act on.
+// The board or the tab, by the hash and by whether anything runs. The tab
+// opens on its own, the sidebar hidden. While nothing runs, the tick entry
+// and the item panel have nothing to act on, and Back no board to go to.
+// Every page change passes here, so it notes the board page Back returns to.
 function showView() {
+  if (!onIntegrationsRoute(location.hash)) lastBoardHash = hashOf({ workflow: routeOf(location.hash).workflow, item: null });
   const tab = !boardReady || onIntegrationsRoute(location.hash);
   document.getElementById("board").hidden = tab;
   document.getElementById("integrations").hidden = !tab;
+  document.getElementById("sidebar").hidden = tab;
+  document.getElementById("integrations-back").hidden = !boardReady;
   document.getElementById("schedule").hidden = !boardReady;
+  document.getElementById("board-tick").hidden = !boardReady;
   document.getElementById("panel").hidden = !boardReady;
   if (tab) loadMe();
 }
 
-// /board.json said { ready: false }: the sidebar holds the tab alone.
+// /board.json said { ready: false }: the page is the tab alone.
 function showUnready() {
   boardReady = false;
   loading.done = true;
   syncLoading(null);
-  if (navKey !== "unready") {
-    navKey = "unready";
-    const li = el("li");
-    li.append(integrationsLink(true));
-    document.getElementById("nav").replaceChildren(li);
-  }
   document.getElementById("meta").textContent = "";
   showView();
 }
@@ -1746,7 +1755,9 @@ function schedulePoll(delay) {
   pollTimer = setTimeout(() => { pollOnce().then(() => schedulePoll(POLL_MS)); }, delay);
 }
 
-const tickButton = document.getElementById("tick");
+// The ⋯ menu's Run next tick now. Choosing it leaves the menu open, so the
+// answer it says — "queued", "failed" — is seen where it was asked.
+const tickButton = document.getElementById("board-tick");
 const TICK_LABEL = tickButton.textContent;
 let restoreTimer = null;
 
@@ -1783,6 +1794,13 @@ tickButton.addEventListener("click", () => {
     .then((res) => res.text().then((said) => tickAnswered(res.status, said)))
     .catch(() => tickAnswered(0, ""));
 });
+
+// The top bar's ⋯ is a menu like the panel's, under the same one-open rule,
+// and like it lives in the skeleton, so no poll redraws it. Integrations is a
+// link: choosing it leaves the menu, and the hash change shows the tab.
+document.getElementById("board-more").addEventListener("click", () => toggleMenu("board"));
+document.getElementById("board-integrations").addEventListener("click", () => closeMenu());
+document.getElementById("integrations-back").addEventListener("click", goBack);
 
 // Re-read the tracker, with no step and no agent — the icon-only twin of the
 // tick button, right down to the brief-failure-then-restore shape. Its label

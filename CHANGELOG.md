@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`serve: { host, port, publicUrl }`** in `landrace.yaml`: where the board and its MCP endpoint bind, and the URL a proxy of your own serves them at. `host` must be loopback; `validate` reports any other, `0.0.0.0` included, as `serve.unauthenticated`, and `start` refuses it. See [The front door](docs/configuration.md#the-front-door).
 - **No step reaches the front door.** An `agent.mcp` server whose URL is the door's, under any name, and an `agent.sandbox.hosts` entry matching its host names are refused at startup. The Claude executor denies every run `WebFetch` of the door's host names. See [Security](docs/security.md#the-front-door).
 
+### Changed
+
+- **The board's `⋯` menu.** A `⋯` button, last in the top bar, holds **Integrations** and **Run next tick now**. The tick button left the top bar, and Integrations left the sidebar, which now lists only Needs You and the workflows. Integrations opens on its own: the sidebar is hidden, and a **Back** button returns to the board page you came from, or to Needs You. While nothing runs for want of a connection, the menu has no **Run next tick now** and the tab has no Back. See [The board](docs/cli.md#the-board).
+
 ## [1.8.0] - 2026-11-03
 
 ### Added
