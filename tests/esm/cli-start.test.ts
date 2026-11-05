@@ -841,9 +841,10 @@ ${EXECUTOR}`);
    * with either dropped.
    */
   describe("a step's deny list, from the people beside it", () => {
-    const readDenied = async (opts: BuildOptions): Promise<{ dir: string; deny: string[] }> => {
+    const readDenied = async (opts: BuildOptions, before?: (dir: string) => Promise<void>): Promise<{ dir: string; deny: string[] }> => {
       const { dir } = await fixture();
       const rt = await buildMain(dir, opts);
+      await before?.(dir);
       const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
       await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));
       await chmod(join(bin, "claude"), 0o755);
@@ -869,10 +870,34 @@ ${EXECUTOR}`);
       expect(deny).toContain("Read(~/.landrace/credentials/**)");
     });
 
-    it("denies only the credentials to a runtime with nobody beside it", async () => {
+    it("denies only the credentials, the .env and git's stored passwords to a runtime with nobody beside it", async () => {
       const { dir, deny } = await readDenied({});
       expect(deny).toContain("Read(~/.landrace/credentials/**)");
+      expect(deny).toContain(`Read(/${join(dir, ".env")})`);
+      expect(deny).toEqual(expect.arrayContaining(["Read(~/.git-credentials)", "Read(~/.config/git/credentials)"]));
       expect(deny.join("\n")).not.toContain(join(sandboxRoot(dir), "worktrees"));
+    });
+
+    /*
+     * #207: alice is a person with a folder of her own, as everyone is
+     * remotely. Bob was on the roster when her runtime was built and a sync
+     * dropped him before her step; his folder is still there, his runs still
+     * unwinding in it, and the roster no longer names him.
+     */
+    it("denies one person's step the .env, git's stored passwords, and the folder of a person who just left the roster", async () => {
+      const roster = [{ id: "bob" }];
+      const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials"));
+      let worktrees = "";
+      const { dir, deny } = await readDenied({ person: { id: "alice" }, credentials, others: () => roster }, async (d) => {
+        worktrees = join(sandboxRoot(d), "worktrees");
+        await mkdir(join(worktrees, "bob", "7.write"), { recursive: true });
+        await mkdir(join(worktrees, "alice", "8.write"), { recursive: true });
+        roster.length = 0;
+      });
+      expect(deny).toEqual(expect.arrayContaining([
+        `Read(/${join(dir, ".env")})`, "Read(~/.git-credentials)", "Read(~/.config/git/credentials)", `Read(/${join(worktrees, "bob")}/**)`,
+      ]));
+      expect(deny.join("\n")).not.toContain(join(worktrees, "alice"));
     });
   });
 });
@@ -2790,6 +2815,17 @@ describe("runStart with people.oidc", () => {
     const { dir } = await fixture({ configExtra: REMOTE, items: [] });
     const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
     await expect(runStart(dir, { interactive: false, credentials, ui: false })).rejects.toThrow(/people\.oidc is set.*--headless/);
+  });
+
+  // #207: with isolation off, every person's agent would run in the operator's own checkout.
+  it("refuses agent.isolation: none, in validate's words", async () => {
+    const { dir } = await fixture({ configExtra: REMOTE, agentKeys: "isolation: none", items: [] });
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    const { problems } = await runValidate(dir, { credentials });
+    const refused = problems.find((p) => p.rule === "agent.isolation");
+    expect(refused?.message).toMatch(/each person's agent would run in the operator's checkout/);
+    await expect(runStart(dir, { interactive: false, credentials, serve: inProcessDoor().serve }))
+      .rejects.toThrow(`agent.isolation: ${refused?.message ?? "?"}`);
   });
 
   it("refuses people.oidc with no serve.publicUrl, in validate's words", async () => {

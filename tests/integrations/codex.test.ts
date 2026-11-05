@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Codex } from "landrace/integrations/codex";
 import { loadConfig } from "#config/load.js";
 import { hookKindOf } from "#hooks/contracts.js";
-import type { Executor, ExecutorContext } from "#namespace.js";
+import type { Executor, ExecutorContext, RunDenials } from "#namespace.js";
 import { loadShipped } from "#tests/support/shipped.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
 
@@ -387,10 +387,10 @@ describe("the Codex integration", () => {
     });
 
     // #186: with other people on the instance, a step must not read their
-    // worktrees, and codex's shell could. Alone, the list is the credentials
-    // every run was already beside, and the run goes on as it did.
+    // worktrees, and codex's shell could. Alone, the list is the credentials and
+    // the .env every run is beside, and the run goes on as it did.
     describe("beside other people's work", () => {
-      const started = async (denied: string[]) => {
+      const started = async (denied: RunDenials) => {
         const { run: go } = await new Codex({ bin, home: temp("codex-home-") }).create({
           ...ctxFor({ adapter: "codex", sandbox: { deny: [] } }), denyPaths: () => Promise.resolve(denied),
         });
@@ -398,7 +398,7 @@ describe("the Codex integration", () => {
       };
 
       it("refuses the run, naming what it could read", async () => {
-        const refused = await started(["~/.landrace/credentials", "/tmp/landrace/r/worktrees/bob"]).then(() => "", (e: Error) => e.message);
+        const refused = await started({ always: ["~/.landrace/credentials"], people: ["/tmp/landrace/r/worktrees/bob"] }).then(() => "", (e: Error) => e.message);
         expect(refused).toMatch(/refused the run: other people are on this instance[\s\S]*\/tmp\/landrace\/r\/worktrees\/bob[\s\S]*the codex executor cannot keep a command from reading a path/);
         // Not the startup text: the operator's agent.sandbox.deny named none of
         // this, and writing deny: [] does not lift this refusal.
@@ -407,7 +407,7 @@ describe("the Codex integration", () => {
       });
 
       it("runs as it always has when nobody else is there", async () => {
-        await expect(started(["~/.landrace/credentials"])).resolves.toMatchObject({ text: "ran" });
+        await expect(started({ always: ["~/.landrace/credentials", "/r/.landrace/.env"], people: [] })).resolves.toMatchObject({ text: "ran" });
       });
     });
 

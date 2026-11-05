@@ -15,7 +15,7 @@ import {
 import { createCredentialStore, credentialValues } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
 import { createRoster } from "#people/roster.js";
-import { denyForPerson, scopeOf } from "#people/isolation.js";
+import { denyForPerson, scopeOf, worktreeFolders } from "#people/isolation.js";
 import { createSlotPool } from "#runner/pool.js";
 import { send as sendPage } from "#ui/server.js";
 import { defineExecutor } from "#hooks/contracts.js";
@@ -61,6 +61,7 @@ import type {
   SeenAt,
   Registry,
   RuntimeConfig,
+  RunDenials,
   RuntimeContext,
   Schedule,
   Screener,
@@ -799,6 +800,26 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sa
 }
 
 /**
+ * What a person's runs may not read, for `ExecutorContext.denyPaths`: the
+ * credentials, the `.env` `loadConfig` reads beside landrace.yaml in `dir`,
+ * and each other person's folder of worktrees — the roster's and, for anyone
+ * with a folder of their own, every other folder there now. Asked as each run
+ * starts, since the roster changes on a sync and a person who left keeps their
+ * folder. Shared by every path that builds an executor which runs: a step, a
+ * screener, a pairing's turn.
+ */
+export function denyPathsFor(
+  dir: string, person: Pick<Person, "id">, sandbox: Sandbox | null, others: () => readonly Pick<Person, "id">[],
+): () => Promise<RunDenials> {
+  const worktrees = join(sandboxRoot(dir), "worktrees");
+  const own = sandbox?.scope;
+  return async () => denyForPerson(person, others(), {
+    worktrees, credentials: CREDENTIALS_ROOT, env: resolve(dir, ".env"), own,
+    present: own === undefined ? [] : await worktreeFolders(worktrees),
+  });
+}
+
+/**
  * The step executor of a runtime built only to read. Its id is still checked
  * against the registry through `registeredExecutor`, so `status` refuses an
  * adapter nothing answers to exactly as `start` does; it just never builds
@@ -1099,12 +1120,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // Anyone but the local person cuts their worktrees in a folder of their own.
   const unscoped = await sandboxFor(loaded.config, dir);
   const sandbox = unscoped === null || person.id === LOCAL_PERSON_ID ? unscoped : { ...unscoped, scope: scopeOf(person) };
-  // What this person's runs may not read: the credentials, and each other
-  // person's folder of worktrees, asked as each run starts, since the roster
-  // changes on a sync. Alone, the credentials every run was already denied.
-  const denyPaths = (): Promise<string[]> => Promise.resolve(denyForPerson(person, opts.others?.() ?? [], {
-    worktrees: join(sandboxRoot(dir), "worktrees"), credentials: CREDENTIALS_ROOT,
-  }));
+  const denyPaths = denyPathsFor(dir, person, sandbox, opts.others ?? (() => []));
   // What each step's agent is doing, for the page's item panel: one log for
   // the workspace, keyed by item as the locks are. Not for `landrace status`,
   // which runs no step and must write nothing.

@@ -608,8 +608,10 @@ describe("buildMcpTools and the servers a turn is handed", () => {
     expect(argv.slice(argv.indexOf("--allowedTools") + 1)).toEqual(["mcp__codebase-memory-mcp"]);
     // And, like the step, the setting that loads the CLAUDE.md of the worktree
     // it runs in, and the Read rules of every denied path, Landrace's
-    // credentials among them.
-    const denied = ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.landrace/credentials"];
+    // credentials and the workspace's .env among them (#207).
+    const denied = [
+      "~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.git-credentials", "~/.config/git/credentials", "~/.landrace/credentials", `/${join(dir, ".env")}`,
+    ];
     expect(JSON.parse(after("--settings"))).toEqual({
       enabledPlugins: { "superpowers@claude-plugins-official": true },
       permissions: { deny: denied.flatMap((p) => [`Read(${p})`, `Read(${p}/**)`]) },

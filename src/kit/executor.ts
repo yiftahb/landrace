@@ -38,6 +38,7 @@ import type {
   PairingKind,
   Problem,
   ResolvedMcp,
+  RunDenials,
   RunPlan,
   SandboxSettings,
   StepKey,
@@ -507,10 +508,12 @@ export const CREDENTIALS_DENY: string = CREDENTIALS_ROOT;
 /**
  * What a write step's commands may not read when `agent.sandbox.deny` names
  * nothing: the forge CLI's token, ssh keys, cloud keys, a package registry's
- * token, and Landrace's own credentials. A step with a shell is otherwise
- * one `cat` away from each.
+ * token, the files git's `store` helper keeps passwords in, and Landrace's own
+ * credentials. A step with a shell is otherwise one `cat` away from each.
  */
-export const DEFAULT_DENY: readonly string[] = ["~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", CREDENTIALS_DENY];
+export const DEFAULT_DENY: readonly string[] = [
+  "~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.git-credentials", "~/.config/git/credentials", CREDENTIALS_DENY,
+];
 
 /**
  * A host a sandbox matches by name, optionally with its own leading `*.`.
@@ -800,25 +803,30 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
 
   /**
    * The sandbox's list with what `denyPaths` answers now, and the
-   * transcripts the agent keeps under each absolute path on it, each once —
+   * transcripts the agent keeps under each other person's folder, each once —
    * or a refusal. Not dropped, any of them: a path left off is another
    * person's worktree left readable. So a path a rule cannot hold — a
    * parenthesis ends a rule early, and a control character names a path
    * that is not there — is refused, named; and so is an agent that cannot
-   * keep a command from a path, once the list holds more than the
-   * credentials it has always been run beside.
+   * keep a command from a path, once the list holds more than `always` — the
+   * credentials and the `.env` it has always been run beside.
    */
-  private async deniedNow(configured: readonly string[], denyPaths: () => Promise<string[]>): Promise<string[]> {
-    const listed = await denyPaths();
-    const kept = await Promise.all(listed.filter((path) => path.startsWith("/")).map((path) => this.transcriptsUnder?.(path) ?? Promise.resolve([])));
-    const computed = [...listed, ...kept.flat()];
+  private async deniedNow(configured: readonly string[], denyPaths: () => Promise<RunDenials>): Promise<string[]> {
+    const { always, people } = await denyPaths();
+    const kept = await Promise.all(people.filter((path) => path.startsWith("/")).map((path) => this.transcriptsUnder?.(path) ?? Promise.resolve([])));
+    const beyond = [...people, ...kept.flat()].filter((path) => !always.includes(path));
+    const computed = [...always, ...beyond];
     // eslint-disable-next-line no-control-regex -- excluding control chars is the point, not a leftover
-    const unwritable = computed.filter((path) => /[()\x00-\x1F\x7F]/.test(path));
-    if (unwritable.length) {
-      throw new Error(`refused the run: ${unwritable.map((p) => JSON.stringify(p)).join(", ")} cannot be written as a rule the ${this.id} executor keeps, ` +
+    const unwritable = (paths: readonly string[]): string => paths.filter((path) => /[()\x00-\x1F\x7F]/.test(path)).map((p) => JSON.stringify(p)).join(", ");
+    // Each with its own consequence: a checkout under "Projects (old)" puts
+    // the `.env` here with nobody else on the instance.
+    const own = unwritable(always);
+    if (own) throw new Error(`refused the run: ${own} cannot be written as a rule the ${this.id} executor keeps, and left off, the run could read it`);
+    const theirs = unwritable(beyond);
+    if (theirs) {
+      throw new Error(`refused the run: ${theirs} cannot be written as a rule the ${this.id} executor keeps, ` +
         "and left off, another person's work would be readable");
     }
-    const beyond = computed.filter((path) => path !== CREDENTIALS_DENY);
     // `sandboxProblems` only decides: its words are about the operator's
     // `agent.sandbox.deny`, which named none of these, and its fix — `deny: []`
     // — does not lift this refusal.

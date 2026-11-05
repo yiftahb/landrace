@@ -980,12 +980,24 @@ export type ExecutorContext = RuntimeContext & {
   personEnv?: Readonly<Record<string, string>>;
   /**
    * What the person's runs may not read beyond the sandbox's own list: the
-   * credentials and each other person's worktrees. A function, asked as each
-   * run starts: who else is here changes on a sync, and their runs keep
-   * leaving transcripts. Absent, only what the sandbox lists.
+   * credentials, the workspace's `.env`, and each other person's worktrees.
+   * A function, asked as each run starts: who else is here changes on a sync,
+   * and their runs keep leaving transcripts. Absent, only what the sandbox lists.
    */
-  denyPaths?: () => Promise<string[]>;
+  denyPaths?: () => Promise<RunDenials>;
 };
+
+/**
+ * What one run may not read beyond `agent.sandbox.deny`, in two halves an
+ * executor judges apart: an agent that cannot keep a path runs beside
+ * `always`, as it always has, and is refused once `people` names anything.
+ */
+export interface RunDenials {
+  /** Denied every run, alone or not: Landrace's credentials and the workspace's `.env`. */
+  always: string[];
+  /** Other people's worktree folders, absolute; an agent's transcripts under each join them. */
+  people: string[];
+}
 
 /**
  * Which of a person's connections an executor runs on, and how: `id` names
@@ -1083,7 +1095,7 @@ export interface KitSettings {
   /** Set on every run's environment over the kit's own; `create` sets it from `ExecutorContext.personEnv`. */
   personEnv?: Readonly<Record<string, string>> | undefined;
   /** Asked as each run starts, and merged into every tier's deny list; `create` sets it from `ExecutorContext.denyPaths`. */
-  denyPaths?: (() => Promise<string[]>) | undefined;
+  denyPaths?: (() => Promise<RunDenials>) | undefined;
 }
 
 /**

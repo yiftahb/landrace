@@ -19,7 +19,7 @@ import { pairingStages } from "#workflow/validate.js";
 import { loadWorkspace, workflowById } from "#workflow/workspace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { touchWake, wakePath } from "#wake.js";
-import { childServerCommand, sandboxFor, screenerFor, stepExecutorFor } from "#cli/start.js";
+import { childServerCommand, denyPathsFor, sandboxFor, screenerFor, stepExecutorFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.
@@ -160,6 +160,8 @@ export async function buildMcpTools(dir: string, scope?: string, store: Credenti
       // The door `landrace start` serves on this configuration: a turn asked
       // here is held from it as the loop's own steps are.
       frontDoor: frontDoorOrigins(loaded.config.serve, loaded.config.serve.port),
+      // The local person, alone, as a pairing runs only locally: denied the credentials and the `.env`, as their steps are.
+      denyPaths: denyPathsFor(dir, person, sandbox, () => []),
     };
     /*
      * The same executor the loop invokes steps with, resolved the same way and

@@ -104,6 +104,12 @@ export function configProblems(dir: string, loaded: LoadedConfig): Problem[] {
         "the log redacts by value and knows only what `secrets` declares, while a var reaches a comment " +
         "body, an agent's prompt and the events recording both — keep the value in secrets: and read it in a hook",
     })),
+    ...(loaded.config.people?.oidc !== undefined && loaded.config.agent.isolation === "none" ? [{
+      rule: "agent.isolation",
+      message:
+        "agent.isolation is \"none\" and people.oidc is set: each person's agent would run in the operator's checkout, " +
+        "beside its .env and every other person's work. Set agent.isolation: worktree",
+    }] : []),
   ];
 }
 
