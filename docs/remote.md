@@ -145,7 +145,7 @@ Each person whose connections are ready has a runtime of their own. It loads eve
 
 So with the same workflows and nothing that differs per person, two ready people claim every item, and nothing new runs. Split the items between people. One way is a per-person var, filled from each person's connection, used in a workflow's `eligible` rule, as [Several developers, one repository](configuration.md#vars) shows for one instance per developer. With one ready person, nothing is compared, and they claim every item the workflows admit.
 
-**Their own worktrees.** Each person's worktrees are cut in a folder of their own, `$TMPDIR/landrace/<repo>/worktrees/<person id>/`. A step may not read another person's folder, their Claude Code sessions, or `~/.landrace/credentials`. What this keeps apart, and what it does not, such as the shared `.git`, is in [People on one instance](security.md#people-on-one-instance).
+**Their own worktrees.** Each person's worktrees are cut in a folder of their own, `$TMPDIR/landrace/<repo>/worktrees/<person id>/`, named after their id URL-encoded. A step may not read another person's folder, their Claude Code sessions, or `~/.landrace/credentials`. What this keeps apart, and what it does not, such as the shared `.git`, is in [People on one instance](security.md#people-on-one-instance).
 
 ## Connecting an MCP client
 
@@ -181,7 +181,7 @@ Everything a person connects is under `~/.landrace/credentials/`, in the home fo
 | Path | Holds | Mode |
 |---|---|---|
 | `~/.landrace/credentials/` | The folder itself | `0700` |
-| `~/.landrace/credentials/<person id>.json` | One person: their id, email and name as they signed in, and each connection they made or Landrace looked up, with its values. The id is the provider's `sub`, URL-encoded | `0600` |
+| `~/.landrace/credentials/<person id>.json` | One person: their id, email and name as they signed in, and each connection they made or Landrace looked up, with its values. The id is the provider's `sub`; the file is named after it, URL-encoded | `0600` |
 | `~/.landrace/credentials/local.json` | The operator's own connections, from a local instance. Nobody signs in as `local` | `0600` |
 | `~/.landrace/credentials/mcp/mcp-clients.json` | Every MCP client that registered | `0600` |
 | `~/.landrace/credentials/mcp/mcp-tokens.json` | Each MCP refresh token, as a hash, with the client and the person it was issued to, and when it ends | `0600` |
@@ -206,7 +206,7 @@ No single action ends a person's access. Each of these ends one part of it:
 | Remove them at the provider, or take away what lets them sign in to this client | Every new sign-in | A session they already hold lasts its 12 hours. Signing them out at the provider alone ends nothing on Landrace, since Landrace does not ask the provider again |
 | Restart `start` | Every session and MCP access token, for everyone | Their refresh tokens, which still issue access tokens. Their file, which keeps them in the roster |
 | Remove their refresh tokens from `mcp-tokens.json`, while `start` is stopped | Their MCP clients' way back in | An edit while `start` runs is lost: `start` holds the entries in memory, and its next write of the file puts them back |
-| Delete `~/.landrace/credentials/<person id>.json`, while `start` is stopped | Their place in the roster, and every connection they stored | Their worktree folder, which Landrace does not remove |
+| Delete their file in `~/.landrace/credentials/`, named after their id URL-encoded, while `start` is stopped | Their place in the roster, and every connection they stored | Their worktree folder, which Landrace does not remove |
 
 To remove someone completely, do all four, in this order:
 
