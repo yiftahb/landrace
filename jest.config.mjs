@@ -92,7 +92,9 @@ const jestConfig = {
     ...selfReferences,
   },
   transform: {
-    "^.+\\.ts$": ["ts-jest", { useESM: true, tsconfig: { paths } }],
+    // esModuleInterop: this pass compiles to CommonJS, where Express's
+    // `export =` takes a default import only through the interop helper.
+    "^.+\\.ts$": ["ts-jest", { useESM: true, tsconfig: { paths, esModuleInterop: true } }],
     // The sign-in's OpenID Connect client and what it is built on ship ESM
     // alone, which the first pass's CommonJS runtime cannot load untranspiled.
     [`/node_modules/(${ESM_ONLY.join("|")})/.+\\.js$`]: ["ts-jest", { useESM: true, tsconfig: { allowJs: true } }],

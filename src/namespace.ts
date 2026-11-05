@@ -20,6 +20,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Request as ExpressRequest, RequestHandler as ExpressHandler } from "express";
 import type { z } from "zod";
 import type { runtimeConfigSchema } from "#config/schema.js";
 import type { stepFrontMatterSchema } from "#workflow/schema.js";
@@ -1806,7 +1807,8 @@ export type EventName =
   | "notify.sent" | "notify.failed"
   | "agent.limited" | "integration.limited"
   | "person.connected" | "person.disconnected"
-  | "connection.expiring" | "connection.failed" | "connection.refreshed";
+  | "connection.expiring" | "connection.failed" | "connection.refreshed"
+  | "signin.ok" | "signin.refused" | "request.refused";
 
 export interface LandraceEvent {
   name: EventName;
@@ -2112,6 +2114,44 @@ export interface Sessions {
   idOf(req: IncomingMessage): string | null;
   /** Ends the request's session: the `Set-Cookie` header value that clears it. */
   end(req: IncomingMessage): string;
+}
+
+/** A consent page shown and not yet answered: the browser session it was shown to, and the authorization request it answers. */
+export interface PendingConsent {
+  session: string;
+  clientId: string;
+  params: { state?: string | undefined; scopes?: string[] | undefined; codeChallenge: string; redirectUri: string; resource?: string | undefined };
+  expires: number;
+}
+
+/** An MCP access token, held in memory: whose, for which client, until when (seconds). */
+export interface IssuedAccess {
+  clientId: string;
+  person: Person;
+  scopes: string[];
+  expiresAt: number;
+}
+
+/** What `mcp-tokens.json` keeps of a refresh token, under the hash of it: never the token. */
+export interface StoredRefresh {
+  clientId: string;
+  person: Person;
+  scopes: string[];
+  /** Milliseconds since the epoch. */
+  expires: number;
+}
+
+/**
+ * Landrace's own OAuth authorization server for MCP clients: `router`
+ * answers registration, `/authorize` and its consent, `/token`, `/revoke`
+ * and the metadata; `bearer` stands before `/mcp`, answering 401 with
+ * `resource_metadata` to a request with no good token; `personOf` is whose
+ * token a request that passed it carried.
+ */
+export interface McpAuth {
+  router: ExpressHandler;
+  bearer: ExpressHandler;
+  personOf(req: ExpressRequest): Person | null;
 }
 
 /** One person in the runner: their runtime's slot, their board, and how their connections were last judged. */
@@ -3926,6 +3966,19 @@ export interface FrontDoorOptions {
   callerOf?: (req: IncomingMessage) => Person | null;
   /** The board of the caller `callerOf` named. Absent, `board`. */
   boardFor?: (caller: Person) => Omit<UiOptions, "allowedHosts" | "origins">;
+  /** Set, the door is remote: it signs people in and is its MCP clients' authorization server. `publicUrl` is then required. */
+  remote?: RemoteDoor;
+}
+
+/** What a remote door signs people in with, and where it keeps its MCP clients. */
+export interface RemoteDoor {
+  oidc: Oidc;
+  sessions: Sessions;
+  /** Someone signed in: remembered, judged and built. A `Refusal` turns them away. */
+  signIn(person: Person): Promise<void>;
+  /** The 0700 directory `mcp-clients.json` and `mcp-tokens.json` are kept in. */
+  authRoot: string;
+  log: Logger;
 }
 
 /**
