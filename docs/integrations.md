@@ -652,6 +652,7 @@ Every run passes `--ignore-user-config` and `--ignore-rules`, so your own `confi
 
 - **`agent.sandbox.hosts`.** Its sandbox has the network on or off, with no list of hosts, so list none: a write step then has no network, and cannot install or push.
 - **`agent.sandbox.deny`.** It cannot keep a command from reading a path under your home, and every step and turn — read-only ones too, whose answer is posted to the item — has a shell. The default list applies when `deny` is not written, so write `deny: []` to accept that every step and turn can read those paths, `~/.landrace/credentials` included — see [Stored credentials](security.md#stored-credentials).
+- **Any run while other people share the instance.** A step must not read another person's worktrees, and Codex cannot keep its shell from them, so each run is refused, naming the paths, whenever the [roster](security.md#people-on-one-instance) holds anyone else. This is checked when each run starts, not at startup. Alone, Codex runs as before.
 - **An effort outside `none`, `low`, `medium`, `high`, `xhigh`.** No shipped step asks for one. A step of yours that asks for Claude's `max` is refused, and `validate` names it.
 - **`agent.plugins`**, which is Claude's.
 - **A step's own `skills` or `plugins`.** Codex loads neither project skills nor plugins, so it cannot keep a step to a list of them. A step's `mcp` is kept, as `agent.mcp` is.

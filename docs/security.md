@@ -71,6 +71,24 @@ The Claude Code integration denies `~/.landrace/credentials` to every step and t
 - **A copied file git does not ignore can be committed.** It shows in the worktree as untracked, and a step that commits everything commits it, and pushes it. Ignore what you copy.
 - **Setup runs outside the sandbox.** It is your own configuration, so it runs with the network and the files your user has. It gets the same minimal environment the agent gets, never Landrace's own secrets: an install script never sees the forge token. It runs on the item's branch, which earlier steps wrote: a step can commit a package script that the next setup runs outside the sandbox. The worktree is also kept between an item's write steps, and keeping it resets tracked files and removes untracked ones but leaves ignored ones, such as `node_modules`, which the sandboxed agent can write: a setup command that runs anything from them, such as `npx`, a package's bin or `pnpm run`, runs what an earlier step left there, outside the sandbox, and `--ignore-scripts` does not prevent that. Prefer an install that runs no scripts, such as `pnpm install --frozen-lockfile --ignore-scripts`, where your project allows it.
 
+## People on one instance
+
+`start` runs a step for each person its roster holds. Each person's worktrees are in a folder of their own, `$TMPDIR/landrace/<repo>/worktrees/<person id>/`, with the id URL-encoded. Locally the roster is only you, so this section changes nothing there.
+
+When a person's step starts, Landrace lists what it may not read: `~/.landrace/credentials`, each other person's worktree folder, and the folders where Claude Code keeps the sessions of runs in those worktrees, under `~/.claude/projects/`. The list joins `agent.sandbox.deny` for that run. A write step gets it in the sandbox's `denyRead` and as `Read` rules; a read-only step gets the `Read` rules. The person's own folders are never on it.
+
+- **Asked fresh for every run.** Someone who joins on a sync, and a session another person's run started after yours was built, are on your next step's list. A session started while your step is running is not on that step's list.
+- **A session folder is matched by its name.** Claude Code names it after the run's folder, with every character but a letter or digit turned into `-`. A folder counts as another person's when its name is theirs, or starts with theirs followed by `-`, so `bob` never covers `bobby`. Two paths can encode alike; the match then denies more, never less.
+- **A path no rule can hold refuses the run.** A path holding `(`, `)` or a control character would end a rule early, or name something that is not there. Rather than leave that person readable, the run is refused, naming the path. URL encoding keeps `(` and `)`, so a person id holding either refuses every other person's steps.
+- **An agent that cannot keep the list refuses the run.** Codex cannot keep a command from a path, so while anyone else is on the roster each of its runs is refused. Alone, it runs as before.
+
+What it does not do:
+
+- **The repository's `.git` is shared.** Every worktree is cut from it, and a write step's commands can read it. Another person's commits and branches are one `git log --all` away.
+- **The rest of `$TMPDIR/landrace/<repo>/` is not listed.** The locks, and the activity log the board's item panel reads, sit beside the worktrees, and a write step's commands can read them.
+- **Every step runs as the same operating-system user.** A command can list other processes and their command lines with `ps`. No list of paths changes that.
+- **Your own worktrees, as the local person, are not in a folder of their own.** They sit in `worktrees/` itself, so a list of other people's folders cannot name them. While `start` runs only the local person, nobody else's step runs beside them.
+
 ## A step's instructions and skills
 
 Every step and turn loads the instructions and skills of the branch it runs on: under Claude Code, its worktree's root `CLAUDE.md` and `.claude/skills` (see [Integrations](integrations.md#claude-code)). The screener loads neither.
