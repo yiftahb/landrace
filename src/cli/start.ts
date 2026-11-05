@@ -15,6 +15,7 @@ import {
 import { createCredentialStore, credentialValues } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
 import { createRoster } from "#people/roster.js";
+import { admits, allowProblems } from "#people/allow.js";
 import { denyForPerson, scopeOf } from "#people/isolation.js";
 import { createSlotPool } from "#runner/pool.js";
 import { send as sendPage } from "#ui/server.js";
@@ -902,7 +903,8 @@ export async function personGate(
   const local = await loadLocalConfig(dir, store, opts.person?.id);
   const { loaded } = local;
   assertConfigUsable(dir, loaded);
-  const unserved = serveProblems(loaded.config.serve, loaded.config.people?.oidc);
+  // A remote door that lists nobody in `people.allow` would admit nobody: `validate` reports the same words.
+  const unserved = [...serveProblems(loaded.config.serve, loaded.config.people?.oidc), ...allowProblems(loaded.config.people)];
   if (unserved.length) throw new Error(unserved.map((p) => `${p.rule}: ${p.message}`).join("\n"));
   // The redaction list, as the build judges it, but for a per-person secret:
   // one nothing answers yet is the Integrations tab's to mend, and the build
@@ -982,7 +984,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   // A door nothing asks a caller about, open to the network, hands anyone who
   // reaches it every item and the loop. `validate` reports the same words.
   // Not for `landrace status`, which serves nothing.
-  const unserved = opts.readOnly ? [] : serveProblems(loaded.config.serve, loaded.config.people?.oidc);
+  const unserved = opts.readOnly ? [] : [...serveProblems(loaded.config.serve, loaded.config.people?.oidc), ...allowProblems(loaded.config.people)];
   if (unserved.length) throw new Error(unserved.map((p) => `${p.rule}: ${p.message}`).join("\n"));
 
   // Before anything else can log: redactionValues throws on a name no secret
@@ -1639,6 +1641,12 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   }
   // Remotely the local person is nobody's: their readiness stops nothing.
   if (!mode.remote && !first.resolution.ready && !serves) assertLocalUsable(first.local);
+  // Who `people.allow` admits, by the list this start loaded: the roster, the
+  // sessions, sign-in and every MCP grant ask this one rule, so taking someone
+  // off the list and restarting is the whole of removing them. Locally there
+  // is no one to admit but the operator.
+  const allow = config.people?.allow;
+  const admitted = mode.remote ? (person: Person): boolean => admits(allow, person.email) : (): boolean => true;
 
   // One logger, one telemetry sink and one stop for the process, whatever
   // runtimes are current: events and telemetry outlive a reload, and Ctrl-C
@@ -1728,7 +1736,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     // `start` always has; remotely everyone who has signed in. The build reads `schedule`, made below: no reload
     // runs before it is.
     const roster = createRoster({
-      dir, loaded: first.local.configured, registry: { connections: first.connections }, store, mode, log, local, pool,
+      dir, loaded: first.local.configured, registry: { connections: first.connections }, store, mode, admits: admitted, log, local, pool,
       ...(config.people?.overrides ? { overrides: config.people.overrides } : {}),
       // Judged afresh: the connection just made or removed is in the store
       // now, and a reload re-reads the hooks lists and `landrace.yaml`.
@@ -1881,7 +1889,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     // Each request's caller, and their board: locally always the local
     // person; remotely whoever the session cookie says signed in, or nobody.
     const secure = serves && config.serve.publicUrl !== undefined && new URL(config.serve.publicUrl).protocol === "https:";
-    const sessions = mode.remote ? createSessions({ secure }) : null;
+    const sessions = mode.remote ? createSessions({ secure, admits: admitted }) : null;
     const callerOf = (req: IncomingMessage): Person | null => (sessions ? sessions.personOf(req) : latest.person);
     const boardFor = (caller: Person): Omit<UiOptions, "allowedHosts" | "origins"> => {
       const theirs = (): ServedRuntime | null => servedOf(caller.id);
@@ -1927,7 +1935,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
           },
           // Under the store's root, which every run is denied reading: its tokens are as much a person's as their logins.
           authRoot: join(store.root, "mcp"),
-          log,
+          log, admits: admitted,
         },
       } : {}),
       // Each caller's own runtime's endpoint, its sessions theirs alone.

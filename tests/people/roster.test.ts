@@ -8,6 +8,7 @@ import { ambiguousClaims, createRoster } from "#people/roster.js";
 import { createCredentialStore } from "#people/store.js";
 import { lookupIdentities, resolvePerson } from "#people/resolve.js";
 import { createDispatcher } from "#runner/effects.js";
+import { Refusal } from "#runner/errors.js";
 import { createLogger } from "#runner/events.js";
 import { createSlotPool } from "#runner/pool.js";
 import { createExternalState } from "#testing/index.js";
@@ -178,7 +179,7 @@ async function world(o: {
 
   const store = o.store ?? await storeOf(o.people);
   const opts: RosterOptions = {
-    dir: ".", loaded: await configured(), registry: { connections }, store, mode: { remote: true }, pool, log: base, build, lock: { root: lockRoot },
+    dir: ".", loaded: await configured(), registry: { connections }, store, mode: { remote: true }, admits: () => true, pool, log: base, build, lock: { root: lockRoot },
     rows: (person, _rt, r) => rows.set(person.id, [...(rows.get(person.id) ?? []), r]),
   };
   const roster = createRoster(opts);
@@ -450,7 +451,7 @@ describe("one runner, many people", () => {
     const pool = createSlotPool(2);
     const events: LandraceEvent[] = [];
     const roster = createRoster({
-      dir: ".", loaded: await configured(), registry: { connections }, store: await storeOf(["alice", "bob"]), mode: { remote: true }, pool,
+      dir: ".", loaded: await configured(), registry: { connections }, store: await storeOf(["alice", "bob"]), mode: { remote: true }, admits: () => true, pool,
       log: createLogger({ sink: (e) => events.push(e) }),
       build: async (person) => {
         if (person.id === "alice") throw new Error("alice's hooks do not load");
@@ -466,7 +467,7 @@ describe("one runner, many people", () => {
 
   it("holds exactly the local person when not remote, whoever the store has files for", async () => {
     const roster = createRoster({
-      dir: ".", loaded: await configured(), registry: { connections: new Map() }, store: await storeOf(["alice", "bob"]), mode: { remote: false },
+      dir: ".", loaded: await configured(), registry: { connections: new Map() }, store: await storeOf(["alice", "bob"]), mode: { remote: false }, admits: () => true,
       log: createLogger({ sink: () => {} }), local: { id: "local" }, build: async () => null,
     });
     await roster.sync();
@@ -489,12 +490,12 @@ describe("signing in", () => {
   const ALICE: Person = { id: "sub-alice", email: "alice@example.invalid" };
   const BOB: Person = { id: "sub-bob", email: "bob@example.invalid" };
 
-  async function remote(o: { store?: CredentialStore; overrides?: Record<string, Record<string, Record<string, string>>> } = {}) {
+  async function remote(o: { store?: CredentialStore; overrides?: Record<string, Record<string, Record<string, string>>>; admits?: (p: Person) => boolean } = {}) {
     const loaded = await configured();
     const store = o.store ?? await storeOf([]);
     const events: LandraceEvent[] = [];
     const roster = createRoster({
-      dir: ".", loaded, registry: { connections: identities }, store, mode: { remote: true },
+      dir: ".", loaded, registry: { connections: identities }, store, mode: { remote: true }, admits: o.admits ?? (() => true),
       log: createLogger({ sink: (e) => events.push(e) }), build: async () => null,
       ...(o.overrides ? { overrides: o.overrides } : {}),
       // As `start` judges: each identity not yet stored is looked up, then the person resolved.
@@ -568,5 +569,26 @@ describe("signing in", () => {
   it("refuses to sign anyone in as the local person, whose file is the operator's", async () => {
     const { roster } = await remote();
     await expect(roster.signIn({ id: "local", email: "x@example.invalid" })).rejects.toThrow(/local/);
+  });
+
+  // #204: `people.allow`, asked before anything of the person's is written.
+  it("refuses someone people.allow does not admit, naming their email, and writes nothing", async () => {
+    const { roster, store } = await remote({ admits: (p) => p.email === ALICE.email, overrides: { [BOB.email ?? ""]: { tracker: { account: "acct-bob" } } } });
+    const refused = roster.signIn(BOB);
+    await expect(refused).rejects.toBeInstanceOf(Refusal);
+    await expect(refused).rejects.toThrow(`${BOB.email} is not admitted to this instance`);
+    expect(await store.list()).toEqual([]);
+    expect(roster.people()).toEqual([]);
+  });
+
+  it("holds no runtime for a stored person people.allow no longer admits, and keeps their file", async () => {
+    const store = await storeOf([]);
+    await store.remember(ALICE);
+    await store.remember(BOB);
+    const { roster } = await remote({ store, admits: (p) => p.email === ALICE.email });
+    await roster.sync();
+    expect(roster.people().map((p) => p.person.id)).toEqual([ALICE.id]);
+    expect(roster.get(BOB.id)).toBeUndefined();
+    expect((await store.list()).map((p) => p.id).sort()).toEqual([ALICE.id, BOB.id]);
   });
 });

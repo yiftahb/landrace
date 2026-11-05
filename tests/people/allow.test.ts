@@ -2,7 +2,11 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "#config/load.js";
+import { createMcpAuth } from "#front/mcp-auth.js";
 import { admits, allowProblems } from "#people/allow.js";
+import { createRoster } from "#people/roster.js";
+import { createSessions } from "#people/session.js";
+import type { RemoteDoor, RosterOptions } from "#namespace.js";
 
 /* #204: who a remote instance admits, by `people.allow`. */
 describe("admits", () => {
@@ -31,6 +35,25 @@ describe("admits", () => {
     expect(admits(["ann@example.com"], "ann@example.com.evil.example")).toBe(false);
   });
 });
+
+/*
+ * Each taker of `admits` requires it: one left out fails `pnpm typecheck`.
+ * Every line below lacks only `admits`, so an `@ts-expect-error` that finds
+ * no error — `admits` made optional — is itself the error tsc reports.
+ */
+export function eachTakerRequiresAdmits(
+  roster: Omit<RosterOptions, "admits">, door: Omit<RemoteDoor, "admits">, auth: Omit<Parameters<typeof createMcpAuth>[0], "admits">,
+): void {
+  // @ts-expect-error admits is required
+  createRoster(roster);
+  // @ts-expect-error admits is required
+  const remote: RemoteDoor = door;
+  // @ts-expect-error admits is required
+  createSessions({ secure: true });
+  // @ts-expect-error admits is required
+  createMcpAuth(auth);
+  void remote;
+}
 
 describe("allowProblems", () => {
   const OIDC = { issuer: "https://id.example.com", clientId: "c", clientSecret: "s" };

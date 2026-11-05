@@ -130,11 +130,12 @@ export function createRoster(opts: RosterOptions): Roster {
   /**
    * Who the roster should hold: the local person, or every person the store
    * has a file for — but the local one's, which is the operator's own and
-   * nobody signs in as.
+   * nobody signs in as, and anyone `people.allow` no longer admits. Their
+   * file is kept: a person put back on the list finds their connections.
    */
   const wanted = async (): Promise<Person[]> => {
     if (!opts.mode.remote) return [opts.local ?? localPerson(opts.loaded)];
-    return (await opts.store.list()).filter((p) => p.id !== LOCAL_PERSON_ID);
+    return (await opts.store.list()).filter((p) => p.id !== LOCAL_PERSON_ID && opts.admits(p));
   };
 
   // One clash check at a time, each reading every file afresh just before
@@ -259,6 +260,8 @@ export function createRoster(opts: RosterOptions): Roster {
     },
     signIn: async (person) => {
       if (person.id === LOCAL_PERSON_ID) throw new Refusal(`nobody signs in as "${LOCAL_PERSON_ID}": that file is the operator's own`);
+      // Before anything is written: someone turned away leaves no file behind.
+      if (!opts.admits(person)) throw new Refusal(`${person.email ?? `${person.id}, who has no email,`} is not admitted to this instance`);
       await opts.store.remember(person);
       await applyOverrides(person);
       const entry = entryFor(person);
