@@ -110,7 +110,7 @@ describe("landrace validate, over a workspace", () => {
   });
 
   it("is valid when every workflow in it is", async () => {
-    expect(await runValidate(await workspace({ main: SOUND("Main"), fastlane: SOUND("Fastlane") }))).toEqual({ ok: true, problems: [] });
+    expect(await runValidate(await workspace({ main: SOUND("Main"), fastlane: SOUND("Fastlane") }))).toEqual({ ok: true, problems: [], people: [] });
   });
 
   it("does not prefix a problem with the id when there is only one workflow to be in", async () => {
@@ -149,6 +149,7 @@ describe("landrace validate, over a workspace", () => {
     // tests/fixtures/minimal is a workflow folder: workflow.yaml at its root.
     expect(await runValidate("tests/fixtures/minimal")).toEqual({
       ok: false,
+      people: [],
       problems: [{ rule: "layout", message: expect.stringMatching(/workflow\.yaml is the layout before workspaces; move it to .*workflows\/main\/workflow\.yaml/) }],
     });
 

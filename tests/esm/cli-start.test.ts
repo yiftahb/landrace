@@ -2685,3 +2685,23 @@ describe("runStart with people.oidc", () => {
     await expect(runStart(dir, { interactive: false, credentials, serve: inProcessDoor().serve })).rejects.toThrow(/serve\.public-url: people\.oidc is set and serve\.publicUrl is not/);
   });
 });
+
+describe("landrace validate with people.oidc", () => {
+  it("says each stored person's own problem by their email, and is still ok when the instance is", async () => {
+    const { dir, credentials } = await unready("secret");
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, `${await readFile(yaml, "utf8")}serve: { host: 0.0.0.0, publicUrl: "https://landrace.example.org/" }\n` +
+      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n");
+    await credentials.put("sub-alice", { id: "sub-alice", email: "alice@example.invalid" }, "forge", {
+      fields: { token: PASTED }, source: "paste", connectedAt: new Date().toISOString(),
+    });
+    await credentials.remember({ id: "sub-bob", email: "bob@example.invalid" });
+    // The operator's own file: nobody's, remotely, so never judged.
+    await credentials.remember({ id: "local" });
+    await writeFile(join(dir, "..", ".gitignore"), ".env\n");
+    const { ok, problems, people } = await runValidate(dir, { credentials });
+    expect(problems).toEqual([]);
+    expect(ok).toBe(true);
+    expect(people).toEqual([expect.stringMatching(/^bob@example\.invalid: connection\.missing: secrets entry "forgeToken" has no value/)]);
+  });
+});
