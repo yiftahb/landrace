@@ -163,6 +163,19 @@ describe("the filter row", () => {
     expect(PAGE_HTML).not.toMatch(/id="(collapse|expand)-all"/);
   });
 
+  // #199: below 640px a w-full #search inside a wrapping row took a line of
+  // its own above the buttons.
+  it("keeps the search box on one row with Collapse all and Refresh at every width, the box taking what is left", () => {
+    const open = /<div id="filters" class="([^"]*)">/.exec(PAGE_HTML)?.[1]?.split(" ") ?? [];
+    expect(open).toContain("flex");
+    expect(open).not.toContain("flex-wrap");
+    const search = /<input id="search"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ") ?? [];
+    expect(search).toEqual(expect.arrayContaining(["min-w-0", "flex-1"]));
+    expect(search.filter((c) => /(^|:)w-/.test(c))).toEqual([]);
+    const buttons = /<input id="search"[^>]*>\n<div class="([^"]*)">\n<button id="toggle-all"/.exec(PAGE_HTML)?.[1]?.split(" ") ?? [];
+    expect(buttons).toContain("shrink-0");
+  });
+
   // A live region toggled in and out of display is not reliably announced;
   // one that stays put and changes its text is.
   it("says nothing matched through a polite status region that stays in place and changes its text", () => {
@@ -200,10 +213,11 @@ describe("the filter row", () => {
       expect(button.split(" ")).toEqual(expect.arrayContaining(["disabled:opacity-50", "disabled:cursor-not-allowed"]));
     });
 
-    it("shares the icon-button styling family the theme toggle already uses", () => {
-      const button = /<button id="refresh"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1] ?? "";
-      const themeToggle = /<button id="theme-toggle"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1] ?? "";
-      expect(button).toBe(themeToggle);
+    it("shares the icon-button styling family the top bar's ⋯ uses", () => {
+      const button = /<button id="refresh"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ") ?? [];
+      const more = /<button id="board-more"[^>]*class="([^"]*)"/.exec(PAGE_HTML)?.[1]?.split(" ") ?? [];
+      expect(more.length).toBeGreaterThan(0);
+      expect(button).toEqual(expect.arrayContaining(more));
     });
   });
 });
@@ -4017,5 +4031,17 @@ describe("the board's one breakpoint", () => {
     expect(APP_JS).toContain('panelEl.classList.toggle("max-lg:hidden", !open)');
     expect(APP_JS).toContain('panelEl.classList.toggle("lg:w-[28rem]", !wide)');
     expect(APP_JS).toContain('document.body.classList.toggle("lg:pr-[28rem]", !wide)');
+  });
+});
+
+describe("the top bar's logo", () => {
+  const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
+  const logo = /<a href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/.exec(header);
+
+  it("is one link to Needs You, with no item, holding the mark and the name and nothing else", () => {
+    expect(logo?.[1]).toBe("#/");
+    expect(logo?.[2]).toMatch(/^\n?<svg[^>]*viewBox="0 0 100 100"[\s\S]*<\/svg>\n<h1[^>]*>Landrace<\/h1>\n?$/);
+    expect(header.indexOf("<a href=\"#/\"")).toBeLessThan(header.indexOf('id="folder"'));
+    expect(logo?.[2]).not.toMatch(/id="(folder|meta)"/);
   });
 });

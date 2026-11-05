@@ -113,8 +113,10 @@ export const PAGE_HTML = `<!doctype html>
 <header class="sticky top-0 z-10 border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900" inert>
 <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 lg:px-6">
 <div class="flex min-w-0 flex-wrap items-center gap-2">
+<a href="#/" class="flex shrink-0 items-center gap-2 rounded-md focus-visible:outline-2 focus-visible:outline-blue-500 dark:focus-visible:outline-blue-400">
 ${MARK}
 <h1 class="text-sm font-semibold">Landrace</h1>
+</a>
 <span id="folder" class="min-w-0 truncate rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400"></span>
 <span id="meta" class="hidden text-xs text-neutral-400 dark:text-neutral-500 lg:inline"></span>
 </div>
@@ -142,9 +144,9 @@ ${MARK}
 <nav id="sidebar" aria-label="Pages" class="lg:sticky lg:top-[calc(var(--header-h)+1.5rem)] lg:max-h-[calc(100vh-var(--header-h)-3rem)] lg:w-48 lg:shrink-0 lg:self-start lg:overflow-y-auto"><ul id="nav" class="flex flex-wrap gap-2 lg:flex-col lg:gap-1"></ul></nav>
 <main class="min-w-0 flex-1">
 <div id="board">
-<div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
-<input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 lg:w-72">
-<div class="flex items-center gap-2">
+<div id="filters" class="mb-4 flex items-center justify-between gap-2">
+<input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="min-w-0 flex-1 rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500">
+<div class="flex shrink-0 items-center gap-2">
 <button id="toggle-all" type="button" aria-keyshortcuts="c" title="Collapse all (c)" class="${BUTTON}">Collapse all</button>
 <button id="refresh" type="button" aria-label="Refresh" title="Re-read the tracker" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><polyline points="21 3 21 9 15 9"></polyline></svg>
