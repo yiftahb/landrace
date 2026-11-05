@@ -1004,6 +1004,12 @@ export interface RunDenials {
    * is, and apart only so a refusal names the case that fired.
    */
   found?: string[] | undefined;
+  /**
+   * Where the credentials key is a file — systemd's `$CREDENTIALS_DIRECTORY`.
+   * Unlike `always`, an agent that cannot keep a command from a path is
+   * refused rather than run beside it: the key opens every person's file.
+   */
+  key?: string[] | undefined;
 }
 
 /**
@@ -1998,6 +2004,61 @@ export interface PersonCredentials {
 }
 
 /**
+ * Where the key the credentials are sealed under is kept: the macOS
+ * Keychain, the Secret Service on the session bus `bus` names, a systemd
+ * credential in `dir` (`$CREDENTIALS_DIRECTORY`), or nowhere, and the files
+ * stay plain JSON. What `start` found is pinned on each server it hands an
+ * agent, which asks that source alone.
+ */
+export type KeyLocator =
+  | { source: "keychain" }
+  | { source: "secret-service"; bus?: string }
+  | { source: "systemd"; dir: string }
+  | { source: "none" };
+
+/** The credentials key and where it came from; `key` is null when `locator` is `none`. */
+export interface CredentialKey {
+  key: Uint8Array | null;
+  locator: KeyLocator;
+}
+
+/** How a key is looked up and made: each helper's exit code and output, the secret on stdin. */
+export type KeyHelper = (
+  command: string, args: readonly string[], opts: { input?: string; env?: Record<string, string | undefined> },
+) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+export interface CredentialKeyOptions {
+  /** Whether a key nobody made yet is made now: `start` alone, and only on its source saying it is absent. */
+  create: boolean;
+  /** Ask this source alone, as `start` pinned it; never made. */
+  locator?: KeyLocator | undefined;
+  /** Where the lock a creation takes lives: the credentials root. */
+  root?: string | undefined;
+  platform?: NodeJS.Platform | undefined;
+  env?: Record<string, string | undefined> | undefined;
+  run?: KeyHelper | undefined;
+  /** Whether a process is alive, for a lock a crashed start left. */
+  alive?: ((pid: number) => boolean) | undefined;
+  /** How long a live holder's lock is waited on before refusing. */
+  lockWaitMs?: number | undefined;
+}
+
+/**
+ * The files under the credentials root, each sealed with AES-256-GCM under
+ * the key when there is one, its path under `root` the additional data, so a
+ * file copied over another's does not open. `read` answers null for a file
+ * that is not there, and throws, naming the file, for one that does not open.
+ */
+export interface SealedFiles {
+  root: string;
+  /** Whether what is written is sealed: there is a key. Asks a lazily given key's source the first time. */
+  encrypted(): Promise<boolean>;
+  read(name: string): Promise<string | null>;
+  /** Written whole to a temporary file beside it and renamed over, 0600 under 0700 directories. */
+  write(name: string, text: string): Promise<void>;
+}
+
+/**
  * Where each person's connections are kept: `<root>/<encodeURIComponent(id)>.json`,
  * the file 0600 and its directory 0700. A person with no file has connected
  * nothing. `put` and `remove` refuse a file they cannot read rather than
@@ -2005,6 +2066,8 @@ export interface PersonCredentials {
  */
 export interface CredentialStore {
   root: string;
+  /** The files under `root`, sealed or not as the key says: the MCP door's grants are kept through the same ones. */
+  files: SealedFiles;
   read(personId: string): Promise<PersonCredentials>;
   put(personId: string, person: Person, connId: string, value: ConnectionValue): Promise<void>;
   /** Writes who the person is, keeping what they connected; makes their file when there is none. */
