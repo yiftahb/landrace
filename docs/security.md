@@ -70,9 +70,11 @@ The step's commits, fetches, merges and pushes work as before: objects, refs, th
 
 **Halts.** A worktree's admin folder holding a `config.worktree` halts the item, naming the file: Landrace never makes one, and with `extensions.worktreeConfig` on it could set a filter. No admin folder naming the worktree, or two, halts it too, naming them.
 
-**A worktree is checked before it is used.** Before a step or a conversation turn runs in a worktree, and before a pairing hands one to you, Landrace reads that worktree's admin folder the way git would. Its `commondir` must name the repository's common directory, and the folder must hold no `config`, `hooks/` or `info/`. Otherwise the run is refused, or the pairing is not handed out, and the message names the file. This matters for admin folders that git makes while a write step runs, such as another item's worktree or a pairing's. They are on no list that step was given. Your own git in a pairing, and an agent's git in a run, follow `commondir`.
+**A worktree is checked before it is used.** Before a step or a conversation turn runs in a worktree, before `agent.worktree.setup` runs there, and before a pairing hands one to you, Landrace reads that worktree's admin folder the way git would. The worktree's `.git` file must point at that folder. Its `commondir` must name the repository's common directory, and the folder must hold no `config`, `hooks/` or `info/`. Otherwise the run is refused, or the pairing is not handed out, and the message names the file. This matters for admin folders that git makes while a write step runs, such as another item's worktree or a pairing's. They are on no list that step was given. Your own git in a pairing, and an agent's git in a run, follow `commondir`.
 
 **Integrations.** An integration keeps these paths only if it declares `keepsDenyWrite` ([Hooks](hooks.md#baseexecutor)). Claude Code does. Codex does not, so `start` and `validate` refuse a step that may write under Codex, naming the step.
+
+**No parentheses in the checkout's path.** The control paths sit under your checkout's git directory, and a deny rule cannot hold `(`, `)` or a control character. So if your checkout's path has one, as in `~/Projects (old)/app`, every write step is refused when it runs, naming the path. `start` and `validate` do not warn about it. Move or rename the checkout to run write steps.
 
 What these rules do not cover:
 
