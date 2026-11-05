@@ -27,8 +27,11 @@ describe("landrace validate, against the hooks the workflow loads", () => {
    * has written this checkout's gitignored `.mcp.json` — which CI never has.
    * The GitHub token is a per-person key, which `validate` stops at when
    * nothing answers it, so the store it is handed holds a `github`
-   * connection: every rule is reached on every machine, and a hook that
-   * stopped defining `github` fails here as `connection.unknown`.
+   * connection: every rule is reached on every machine. A hook that stopped
+   * defining `github` fails here as `connection.unknown` only where
+   * GITHUB_TOKEN is unset — a set variable answers the key and skips the
+   * connection — so tests/esm/shipped-github-connection.test.ts, which
+   * controls the environment, is the test that catches it everywhere.
    *
    * Only that one missing-file problem is excused, matched by the whole of
    * its own message rather than a substring: an executor's several problems
