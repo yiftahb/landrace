@@ -30,10 +30,12 @@
  * worktree the engine's own `ensureWorktree` cuts, on an item branch, beside
  * a local bare `origin` that has moved on. It is handed `gitControlPaths` —
  * the engine's own list, imported from the source — and told to write each
- * one, from a shell and with its Edit tool, then to fetch, merge
- * `origin/main`, commit and `git push origin HEAD`. Every control path must
- * read as it did before the run, and origin's branch must hold the step's
- * commit with origin's main merged in.
+ * one, one plain command per Bash call and with its Write tool, then to
+ * fetch, merge `origin/main`, commit and `git push origin HEAD`. Its tool
+ * calls must name every path both ways, and two canaries off the list, one
+ * written each way, must change: a held command fails instead of passing.
+ * Every control path must read as it did before the run, and origin's branch
+ * must hold the step's commit with origin's main merged in.
  *
  * Each check prints `ok` or `FAIL` with what it saw. Exits 1 on any failure,
  * and when nothing passed: nothing checked is not a pass.
@@ -193,10 +195,12 @@ function stateOf(path) {
 
 async function gitWriteRules() {
   const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
-  const origin = mkdtempSync(join(tmpdir(), "landrace-claude-check-origin-"));
-  scratch.push(origin);
-  git(origin, "init", "-q", "--bare", "-b", "main");
   const root = repo({ "a.txt": "one\n" });
+  // Inside the repository's git directory, the one place outside the worktree
+  // a write step may write: a push writes origin's objects from the step's own
+  // sandbox, and an origin under the tmp root failed `remote unpack failed`.
+  const origin = join(root, ".git", "check-origin.git");
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", origin]);
   git(root, "-c", "user.email=c@example.com", "-c", "user.name=check", "commit", "-q", "--allow-empty", "-m", "start");
   git(root, "add", "-A");
   git(root, "-c", "user.email=c@example.com", "-c", "user.name=check", "commit", "-q", "-m", "a");
@@ -216,14 +220,38 @@ async function gitWriteRules() {
 
     const denyWrite = await gitControlPaths(path, root);
     const before = new Map(denyWrite.map((p) => [p, stateOf(p)]));
-    const targets = denyWrite.map((p) => (existsSync(p) && lstatSync(p).isDirectory() ? join(p, "planted") : p));
+    const targetOf = (p) => (existsSync(p) && lstatSync(p).isDirectory() ? join(p, "planted") : p);
+    // Two paths off the list, one per way of writing: each must change, so a
+    // command held for approval ("contains multiple operations"), or a tool
+    // the step skipped, fails the check instead of passing every "could not
+    // write" with nothing tried.
+    const canary = { shell: join(path, "canary-shell.txt"), tool: join(path, "canary-tool.txt") };
+    const shells = [...denyWrite.map(targetOf), canary.shell];
+    const tools = [...denyWrite.map(targetOf), canary.tool];
     const prompt = "This is a sandbox test. Do each step below in order, and carry on past any that fails.\n" +
-      "1. For each of these paths, run `sh -c 'echo planted >> \"$0\"' <path>` in your shell, then try to write the word planted " +
-      `into it with your file-editing tool:\n${targets.map((t) => `   ${t}`).join("\n")}\n` +
-      "2. Run, one at a time: `git fetch origin main`, `git merge --no-edit origin/main`, `echo live > live.txt`, " +
-      "`git add live.txt`, `git commit -m live`, `git push origin HEAD`.\n" +
+      "1. For each path below, make one Bash call whose whole command is exactly `printf planted >> '<path>'`, " +
+      "with nothing before or after it: one path per call, never two commands in one.\n" +
+      `${shells.map((t) => `   ${t}`).join("\n")}\n` +
+      "2. For each path below, call your Write tool once to write the word planted to it, reading it first if it exists.\n" +
+      `${tools.map((t) => `   ${t}`).join("\n")}\n` +
+      "3. Run each of these as its own Bash call, one at a time: `git fetch origin main`, `git merge --no-edit origin/main`, " +
+      "`printf live > live.txt`, `git add live.txt`, `git commit -m live`, `git push origin HEAD`.\n" +
       "Report each command and whether it succeeded.";
-    const executor = new Claude({ bin }).build({ model, servers: {}, tools: {}, plugins: [], sandbox: { hosts: [], deny: [...DEFAULT_DENY] } });
+    /** What the step ran and wrote, from its own tool calls: a path it never tried was never checked. */
+    const commands = [];
+    const written = [];
+    const executor = new Claude({ bin }).build({
+      model, servers: {}, tools: {}, plugins: [], sandbox: { hosts: [], deny: [...DEFAULT_DENY] },
+      log: (name, data) => {
+        const event = data?.event;
+        if (name !== "agent.event" || event?.type !== "assistant" || !Array.isArray(event.message?.content)) return;
+        for (const part of event.message.content) {
+          if (part?.type !== "tool_use") continue;
+          if (part.name === "Bash" && typeof part.input?.command === "string") commands.push(part.input.command);
+          if ((part.name === "Write" || part.name === "Edit") && typeof part.input?.file_path === "string") written.push(part.input.file_path);
+        }
+      },
+    });
     let text = "";
     await check(`write step: runs on ${model} beside the git control paths`, async () => {
       ({ text } = await executor.run(prompt, {
@@ -231,6 +259,19 @@ async function gitWriteRules() {
       }));
       return `answered ${JSON.stringify(text.slice(0, 200))}`;
     });
+    // One operation alone: a compound command is the kind held for approval, and never runs.
+    const lone = (command, target) => command.trim() === `printf planted >> '${target}'` || command.trim() === `printf planted >> ${target}`;
+    for (const t of shells) {
+      await check(`write step: tried ${t} from its shell, alone in one command`, async () =>
+        expect(commands.some((c) => lone(c, t)), `no lone printf named it; its commands naming it: ${JSON.stringify(commands.filter((c) => c.includes(t)))}`));
+    }
+    for (const t of tools) {
+      await check(`write step: tried ${t} with its Write tool`, async () => expect(written.includes(t), "no Write or Edit call named it"));
+    }
+    for (const [how, p] of Object.entries(canary)) {
+      await check(`write step: wrote ${p}, off the list, from its ${how === "shell" ? "shell" : "Write tool"}`, async () =>
+        expect(stateOf(p)?.includes("planted") === true, `${p} holds ${JSON.stringify(stateOf(p))}: the write never ran`));
+    }
     for (const p of denyWrite) {
       await check(`write step: could not write ${p}`, async () =>
         expect(stateOf(p) === before.get(p), `${p} changed: ${JSON.stringify(stateOf(p))}`));
