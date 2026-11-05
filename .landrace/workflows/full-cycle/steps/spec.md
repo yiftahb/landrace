@@ -102,7 +102,9 @@ A list of what untrusted work may not touch names every file the trusted
 reader reads, in each place of that kind — every git directory, the main one
 and one the work could remake alike — taken from the reader's own reference
 (git's `gitrepository-layout`), not from the attacks reproduced, and covers
-every way the work runs, the person's own checkout included.
+every way the work runs, the person's own checkout included; it is checked
+again before each trusted reader, the first included (setup commands), for the
+places the work made while it ran.
 Examples use `example.com`, never a real domain. A page that hands out access on a person's click has
 a Done-when line for each way that click could be forged (framing, a foreign
 `Origin`, a replayed or missing one-time token) and one for each cookie's flags. A trigger or route the spec adds or
