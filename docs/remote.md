@@ -142,7 +142,7 @@ Each person whose connections are ready has a runtime of their own. It loads eve
 
 - An item one person's runtime claims is worked by that runtime alone, and shows on that person's board.
 - An item two people's runtimes claim is worked by neither. Landrace logs `item.ambiguous`, naming the item and both people. This is the same rule as two workflows claiming one item: it halts rather than picking one.
-- When one person's tracker cannot be listed, nobody can tell who else claims what. Runs already going on finish, and no new run starts for anyone on that tick. Each board's rows say why, naming only that board's own person: anyone else reads as "another person's items could not be listed". Landrace logs `source.failed` with every person whose items could not be listed.
+- When one person's tracker cannot be listed, nobody can tell who else claims what. Runs already going on finish, and no new run starts for anyone on that tick. Each board's rows say why, naming only that board's own person: anyone else reads as "another person's items could not be listed", or "other people's items could not be listed" when more than one other person's listing failed. Landrace logs `source.failed` with every person whose items could not be listed.
 
 So with the same workflows and nothing that differs per person, two ready people claim every item, and nothing new runs. Split the items between people. One way is a per-person var, filled from each person's connection, used in a workflow's `eligible` rule, as [Several developers, one repository](configuration.md#vars) shows for one instance per developer. With one ready person, nothing is compared, and they claim every item the workflows admit.
 
