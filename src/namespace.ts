@@ -2885,6 +2885,16 @@ export interface AgentSlot {
 }
 
 /**
+ * The asks made in one turn of the event loop over every runtime sharing a
+ * pool, and how many each person still has waiting in it: an ask not yet
+ * granted is its person asking, which `take`'s fair share counts.
+ */
+export interface SlotBatch {
+  asks: Array<{ runtime: WorkspaceRuntime; ask: SlotAsk }>;
+  left: Map<string, number>;
+}
+
+/**
  * What `release` hands a freed slot to: a person's queue of what their checks
  * turned away, and whether they are waiting for one — what `take` counts as
  * asking.
@@ -2949,7 +2959,11 @@ export interface WorkspaceRuntime {
    * Starts false.
    */
   checking: boolean;
-  /** Steps asking for a slot in this turn of the event loop, granted together, most urgent first. Starts empty. */
+  /**
+   * Unread: the asks of one turn of the event loop are now kept beside the
+   * pool every runtime sharing it asks of, and granted together there. Starts
+   * empty, and stays so.
+   */
   asking: SlotAsk[];
   /**
    * What the latest checks turned away for want of a slot, most urgent

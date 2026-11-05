@@ -14,6 +14,7 @@ import type {
   RuntimeContext,
   SeenAt,
   SlotAsk,
+  SlotBatch,
   SlotPool,
   Snapshot,
   Source,
@@ -385,16 +386,7 @@ function poolOf(runtime: WorkspaceRuntime): SlotPool {
 /** Whose slots a runtime takes: its person's, the local one's when it names none. */
 const personOf = (runtime: WorkspaceRuntime): string => runtime.ctx.person?.id ?? LOCAL_PERSON_ID;
 
-/**
- * The asks made in one turn of the event loop over every runtime sharing a
- * pool, and how many each person still has waiting in it: an ask not yet
- * granted is its person asking, which `take`'s fair share counts.
- */
-interface Batch {
-  asks: Array<{ runtime: WorkspaceRuntime; ask: SlotAsk }>;
-  left: Map<string, number>;
-}
-const batches = new WeakMap<SlotPool, Batch>();
+const batches = new WeakMap<SlotPool, SlotBatch>();
 
 /** The tick whose run is giving a slot back: what a run the freed slot starts belongs to. Set only for the length of one `release`. */
 let freeing: TickWait | undefined;

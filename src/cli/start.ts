@@ -1679,11 +1679,13 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       const rt = roster.get(personId)?.slot.current() ?? null;
       return rt === null ? null : served.get(rt) ?? null;
     };
+    // Remote mode — many people, signed in — does not exist yet: every start is local.
+    const mode = { remote: false };
     // The people this runner runs for: locally exactly the local person, as
     // `start` always has. The build reads `schedule`, made below: no reload
     // runs before it is.
     const roster = createRoster({
-      dir, loaded: first.local.configured, registry: { connections: first.connections }, store, mode: { remote: false }, log, local, pool,
+      dir, loaded: first.local.configured, registry: { connections: first.connections }, store, mode, log, local, pool,
       // Judged afresh: the connection just made or removed is in the store
       // now, and a reload re-reads the hooks lists and `landrace.yaml`.
       judge: async (person) => {
@@ -1711,7 +1713,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
         // runtime's build so `landrace status`, which builds one the same way,
         // never makes this write while only trying to read.
         await runPreflights(rt.preflights, { ...rt.ctx, ...declaredOf(rt.workflows.map((w) => w.deps)) });
-        served.set(rt, await servedRuntime(rt, { schedule, folder, workspace, serves, ambiguous: () => roster.ambiguous() }));
+        // Pairing is off remotely: a person there has no terminal on this machine to pair in.
+        served.set(rt, await servedRuntime(rt, { schedule, folder, workspace, serves, ambiguous: () => roster.ambiguous(), pairing: !mode.remote }));
         return rt;
       },
       boardOf: (rt) => served.get(rt)?.board,
@@ -1755,7 +1758,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       log: (event, data) => personLog(event as EventName, data),
     });
     const people = createPeoplePanel({
-      store, mode: { remote: false }, log: personLog,
+      store, mode, log: personLog,
       gate: () => ({
         registry: { connections: latest.connections },
         loaded: latest.local.configured,
@@ -1805,8 +1808,10 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
         view: () => theirs()?.board.view() ?? Promise.reject(new Error(NOT_RUNNING)),
         tick: schedule.wake,
         ready: () => theirs() !== null,
-        // Only an item on this caller's board is one their item routes reach.
-        has: (item) => roster.get(caller.id)?.board.has?.(item) ?? false,
+        // Remotely, only an item on this caller's board is one their item
+        // routes reach. Locally there is no one else's to reach, and an id no
+        // listing showed is still read through the one source, as it always was.
+        ...(mode.remote ? { has: (item: string) => roster.get(caller.id)?.board.has?.(item) ?? false, pairing: false } : {}),
         people: { panel: people, caller: () => caller },
         goto: {
           send: (item, target, o) => {

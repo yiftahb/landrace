@@ -31,6 +31,8 @@ src/kit/             `landrace/kit` — BaseExecutor for coding agents; BaseTrac
 src/agent/           prompt screening, the worktree sandbox, reading an agent's JSON output
 src/runner/          tick, converge, step, lock, effect dispatch, events
 src/config/          landrace.yaml and .env
+src/people/          people: their stored connections, how each is judged, and the roster
+                     of the people one runner runs for
 src/telemetry/       OpenTelemetry export of events, loaded only when it is on
 src/mcp/             the operator tools, and the stdio servers for a pairing and a child
 src/front/           the front door: the board and the operator tools on one port, and its host rules
@@ -73,6 +75,28 @@ observe  →  snapshot  →  [ pure decision ]  →  effects  →  act
 
 The core is pure: it does no I/O, reads no clock and draws no random numbers. Time arrives as `snapshot.now`. A lint rule and a test hold it to that. Because the decision is a pure function of the snapshot, `landrace next` can run it on a saved snapshot with no I/O at all — see [the CLI](cli.md#landrace-next).
 
+## The roster: one runner, many people
+
+`landrace start` runs a **runtime** for each person it runs for: their workflows, their connections, their logger and their runs in flight. The people are its **roster**. A local start's roster is exactly one person, `local`, named by `people.local` in `landrace.yaml`, so a local start runs as it always has. A roster of several people needs remote mode, which Landrace does not have yet.
+
+```mermaid
+flowchart LR
+  tick[roster tick] --> alice[alice's runtime]
+  tick --> bob[bob's runtime]
+  alice --> pool[(agent slots)]
+  bob --> pool
+```
+
+What each person has of their own:
+
+- **A runtime**, built only once their connections are ready. A person whose connections are missing or expired, or whose credentials file does not read, has none, and their board shows only the Integrations tab. That does not stop anyone else's runtime.
+- **A board and MCP sessions.** Each request to the front door is someone's. A person's board shows their items only. An MCP session belongs to whoever opened it. Remotely, once a person's runtime has listed, an item route for an item not on their board answers 404, and pairing is off.
+- **Events.** Every event a person's runtime logs names them, as `person`. Events of the process itself name nobody.
+
+What the people share: the stop signal, the per-item locks, the tick schedule, telemetry, and the agent slots. `tick.concurrency` is one cap over everyone's agents, and the slots are shared fairly — see [Configuration](configuration.md#landraceyaml).
+
+With more than one person ready, each tick of the roster lists every ready person's items first, then works each person's. An item more than one person's runtime claims is worked by none of them: each board it is on shows a row naming them, a run one of them has on it stops, and `item.ambiguous` is logged once per tick with the item and the people. A write from the page or an MCP tool goes by the last tick's judgment, since judging again would list everyone's items on every click. If any person's listing fails, nobody's items are worked that tick, because whether that person also claims an item is unknown. Runs already going carry on. This is the rule for a failed source, one level up.
+
 ## Derived state
 
 Landrace stores nothing about an item's progress locally. There is no database, no ledger and no cache. On every pass, it derives the item's whole state from the tracker:
@@ -87,7 +111,7 @@ So recovery is re-derivation, not repair. A crash costs nothing: delete everythi
 
 ## Ambiguity halts
 
-When the engine cannot tell what to do, it stops the item and says why. Two stages that both match an item, two triggers that both fire, two hooks claiming one effect type, two workflows claiming one item — each **halts** the item rather than picking one. There is no "first match wins" anywhere. An engine that quietly picks one is worse than one that admits it cannot tell.
+When the engine cannot tell what to do, it stops the item and says why. Two stages that both match an item, two triggers that both fire, two hooks claiming one effect type, two workflows claiming one item, two people claiming one item — each **halts** the item rather than picking one. There is no "first match wins" anywhere. An engine that quietly picks one is worse than one that admits it cannot tell.
 
 A halted item shows under Needs you on [the board](cli.md#the-board), with the reason.
 
