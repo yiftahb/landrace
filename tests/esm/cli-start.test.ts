@@ -828,6 +828,48 @@ ${EXECUTOR}`);
     expect(after(screener, "--permission-mode")).toBe("manual");
     expect(after(screener, "--model")).toBe("haiku");
   });
+
+  /*
+   * #186, through the runtime a loop runs: the deny list is what
+   * `buildWorkspaceRuntime` hands the executor, from the `others` the roster
+   * passes it. A test that builds `denyPaths` by hand passes just as well
+   * with either dropped.
+   */
+  describe("a step's deny list, from the people beside it", () => {
+    const readDenied = async (opts: BuildOptions): Promise<{ dir: string; deny: string[] }> => {
+      const { dir } = await fixture();
+      const rt = await buildMain(dir, opts);
+      const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
+      await copyFile(join(process.cwd(), "tests", "agent", "fake-agent.mjs"), join(bin, "claude"));
+      await chmod(join(bin, "claude"), 0o755);
+      const cwd = await mkdtemp(join(tmpdir(), "lr-worktree-"));
+      await writeFile(join(cwd, "fake.json"), JSON.stringify({ out: "{{ARGV_JSON}}" }));
+      const path = process.env.PATH;
+      process.env.PATH = `${bin}:${path ?? ""}`;
+      try {
+        const argv = JSON.parse((await rt.deps.executor.run("x", {
+          round: 1, cwd, capabilities: ["repo:read"], signal: new AbortController().signal,
+        })).text) as string[];
+        const settings = JSON.parse(argv[argv.indexOf("--settings") + 1] as string) as { permissions: { deny: string[] } };
+        return { dir, deny: settings.permissions.deny };
+      } finally {
+        process.env.PATH = path;
+      }
+    };
+
+    it("denies another person's worktrees, asked of the others the runtime was handed", async () => {
+      const { dir, deny } = await readDenied({ others: () => [{ id: "bob" }] });
+      const bob = join(sandboxRoot(dir), "worktrees", "bob");
+      expect(deny).toContain(`Read(/${bob}/**)`);
+      expect(deny).toContain("Read(~/.landrace/credentials/**)");
+    });
+
+    it("denies only the credentials to a runtime with nobody beside it", async () => {
+      const { dir, deny } = await readDenied({});
+      expect(deny).toContain("Read(~/.landrace/credentials/**)");
+      expect(deny.join("\n")).not.toContain(join(sandboxRoot(dir), "worktrees"));
+    });
+  });
 });
 
 /**
