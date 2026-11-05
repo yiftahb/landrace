@@ -3,6 +3,8 @@
  * copy step. Script and style are served as their own routes so the CSP can
  * forbid anything inline.
  */
+import { ownRepository } from "#cli/version.js";
+
 export { APP_CSS } from "#ui/styles.generated.js";
 
 /**
@@ -48,22 +50,22 @@ const MENU_ITEM =
 
 /**
  * The item panel: fixed to the right, the board pushed left beside it from
- * `sm` up and covered by it below. From `sm` up it is always there, so
+ * `lg` (1024px) up and covered by it below. From `lg` up it is always there, so
  * opening an item never moves the board: with none selected it shows
- * #panel-empty in place of #panel-item. Below `sm` it covers the board, so it
+ * #panel-empty in place of #panel-item. Below `lg` it covers the board, so it
  * shows only while an item is open. A static skeleton the script fills with
  * textContent — the composer lives here, outside anything a poll redraws, so
  * what someone is typing survives every poll.
  */
 const PANEL = `
-<aside id="panel" aria-label="Item" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl max-sm:hidden dark:border-neutral-800 dark:bg-neutral-900 sm:w-[28rem]" inert>
+<aside id="panel" aria-label="Item" class="fixed inset-y-0 right-0 z-20 flex w-full flex-col border-l border-neutral-200 bg-white shadow-xl max-lg:hidden dark:border-neutral-800 dark:bg-neutral-900 lg:w-[28rem]" inert>
 <p id="panel-empty" class="flex flex-1 items-center justify-center px-4 text-center text-sm text-neutral-500 dark:text-neutral-400">Select an item to see its details</p>
 <div id="panel-item" hidden class="flex min-h-0 flex-1 flex-col">
 <div class="flex items-start gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
 <h2 id="panel-title" class="min-w-0 flex-1 break-words text-sm font-semibold"></h2>
 <div class="relative shrink-0">
 <button id="panel-more" type="button" aria-label="Item actions" aria-haspopup="menu" aria-expanded="false" title="Item actions" data-key="panel:trigger" class="${ICON_BUTTON}">⋯</button>
-<div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+<div id="panel-menu" data-key="panel:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-48 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
 <div id="panel-admit" role="none"></div>
 <button id="panel-pairing-item" type="button" role="menuitem" class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-neutral-700 hover:bg-neutral-50 dark:text-neutral-200 dark:hover:bg-neutral-800">Pairing…</button>
 </div>
@@ -98,6 +100,18 @@ const MARK = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" clas
 /** The tab's icon. A tab has no page colour to inherit, so it says both. */
 export const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><style>path { fill: #111111 } @media (prefers-color-scheme: dark) { path { fill: #f5f5f5 } }</style><path d="${MARK_PATH}"/></svg>`;
 
+/**
+ * The ⋯ menu's last entry, under a divider: this package's own repository,
+ * from package.json, so the URL has one home and src/ never names its host.
+ * A copy with no repository it can open as a page has no entry, and no
+ * divider left over above nothing.
+ */
+const SOURCE_URL = ownRepository();
+const SOURCE_LINK = SOURCE_URL === null ? "" : `<hr role="separator" class="my-1 border-neutral-200 dark:border-neutral-700">
+<a id="board-source" href="${SOURCE_URL.replace(/&/g, "&amp;")}" title="${SOURCE_URL.slice("https://".length).replace(/&/g, "&amp;")}" role="menuitem" target="_blank" rel="noopener noreferrer" class="${MENU_ITEM}"><span>Source code</span>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="ml-auto h-4 w-4 shrink-0" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg></a>
+`;
+
 export const PAGE_HTML = `<!doctype html>
 <html lang="en" class="scroll-pt-[var(--header-h)]" aria-busy="true">
 <head>
@@ -109,14 +123,16 @@ export const PAGE_HTML = `<!doctype html>
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
-<body class="min-h-screen bg-neutral-50 font-sans text-sm text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100 sm:pr-[28rem]">
+<body class="min-h-screen bg-neutral-50 font-sans text-sm text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100 lg:pr-[28rem]">
 <header class="sticky top-0 z-10 border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900" inert>
-<div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+<div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 lg:px-6">
 <div class="flex min-w-0 flex-wrap items-center gap-2">
+<a href="#/" class="flex shrink-0 items-center gap-2 rounded-md focus-visible:outline-2 focus-visible:outline-blue-500 dark:focus-visible:outline-blue-400">
 ${MARK}
 <h1 class="text-sm font-semibold">Landrace</h1>
+</a>
 <span id="folder" class="min-w-0 truncate rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400"></span>
-<span id="meta" class="hidden text-xs text-neutral-400 dark:text-neutral-500 sm:inline"></span>
+<span id="meta" class="hidden text-xs text-neutral-400 dark:text-neutral-500 lg:inline"></span>
 </div>
 <div class="flex flex-wrap items-center gap-2">
 <div id="schedule" class="flex flex-wrap items-center gap-2">
@@ -124,27 +140,28 @@ ${MARK}
 </div>
 <button id="notify-toggle" type="button" aria-pressed="false" aria-label="Notify me when an item needs you" title="Notify me when an item needs you" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 opacity-50 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">🔔</button>
 <div class="flex max-w-sm items-start gap-1 rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 has-[p:empty]:hidden dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300"><p id="notify-note" role="status" aria-live="polite"></p><button id="notify-note-close" type="button" aria-label="Dismiss" title="Dismiss" class="shrink-0 rounded px-1 hover:bg-amber-100 dark:hover:bg-amber-900">✕</button></div>
-<button id="theme-toggle" type="button" aria-label="Switch to dark mode" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-</button>
 <div class="relative shrink-0">
 <button id="board-more" type="button" aria-label="Board actions" aria-haspopup="menu" aria-expanded="false" title="Board actions" data-key="board:trigger" class="${ICON_BUTTON}">⋯</button>
-<div id="board-menu" data-key="board:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+<div id="board-menu" data-key="board:menu" role="menu" hidden class="absolute right-0 z-10 mt-1 w-48 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
 <a id="board-integrations" href="#/integrations" role="menuitem" class="${MENU_ITEM}">Integrations</a>
 <button id="board-tick" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">Run next tick now</button>
-</div>
+<button id="theme-toggle" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+<span id="theme-label">Switch to dark mode</span>
+</button>
+${SOURCE_LINK}</div>
 </div>
 </div>
 </div>
 </header>
-<div id="content" class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 sm:flex-row sm:px-6" inert>
-<nav id="sidebar" aria-label="Pages" class="sm:sticky sm:top-[calc(var(--header-h)+1.5rem)] sm:max-h-[calc(100vh-var(--header-h)-3rem)] sm:w-48 sm:shrink-0 sm:self-start sm:overflow-y-auto"><ul id="nav" class="flex flex-wrap gap-2 sm:flex-col sm:gap-1"></ul></nav>
+<div id="content" class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-6 lg:flex-row lg:px-6" inert>
+<nav id="sidebar" aria-label="Pages" class="lg:sticky lg:top-[calc(var(--header-h)+1.5rem)] lg:max-h-[calc(100vh-var(--header-h)-3rem)] lg:w-48 lg:shrink-0 lg:self-start lg:overflow-y-auto"><ul id="nav" class="flex flex-wrap gap-2 lg:flex-col lg:gap-1"></ul></nav>
 <main class="min-w-0 flex-1">
 <div id="board">
-<div id="filters" class="mb-4 flex flex-wrap items-center justify-between gap-2">
-<input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="w-full rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500 sm:w-72">
-<div class="flex items-center gap-2">
+<div id="filters" class="mb-4 flex items-center justify-between gap-2">
+<input id="search" type="search" placeholder="Search items…" aria-label="Search items" autocomplete="off" spellcheck="false" class="min-w-0 flex-1 rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 placeholder:text-neutral-400 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-500">
+<div class="flex shrink-0 items-center gap-2">
 <button id="toggle-all" type="button" aria-keyshortcuts="c" title="Collapse all (c)" class="${BUTTON}">Collapse all</button>
 <button id="refresh" type="button" aria-label="Refresh" title="Re-read the tracker" class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-neutral-500 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-neutral-400 dark:hover:bg-neutral-800">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><polyline points="21 3 21 9 15 9"></polyline></svg>
@@ -696,7 +713,7 @@ function admitsOf(row, menuKey) {
 // z-10, so scrolled up it passes beneath the tick controls and stays open for
 // the items below the fold.
 function buildRowMenu(row) {
-  const menu = el("div", "absolute left-0 z-[5] mt-1 w-44 sm:left-auto sm:right-0 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
+  const menu = el("div", "absolute left-0 z-[5] mt-1 w-44 lg:left-auto lg:right-0 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-900");
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   const writes = writesOf(row);
@@ -746,8 +763,7 @@ function buildRowMenu(row) {
   copy.addEventListener("click", () => {
     if (copyRestoreTimer !== null) clearTimeout(copyRestoreTimer);
     const restore = () => { copyRestoreTimer = setTimeout(() => { copy.textContent = COPY_LABEL; copyRestoreTimer = null; }, 2000); };
-    const clipboard = navigator.clipboard;
-    (clipboard ? clipboard.writeText(row.chat.prompt) : Promise.reject(new Error("no clipboard"))).then(
+    copyText(row.chat.prompt).then(
       () => { copy.textContent = "Copied"; restore(); },
       () => { copy.textContent = "Copy failed"; restore(); },
     );
@@ -774,7 +790,7 @@ function actionFor(row) {
   button.setAttribute("data-key", triggerKeyOf(row.id));
   button.setAttribute("aria-label", "Actions");
 
-  const wrap = el("div", "relative shrink-0 self-start sm:self-auto");
+  const wrap = el("div", "relative shrink-0 self-start lg:self-auto");
   const menu = buildRowMenu(row);
   menu.setAttribute("data-key", menuKeyOf(row.id));
   button.addEventListener("click", () => toggleMenu(row.id));
@@ -1115,7 +1131,7 @@ function toggleSlot(row, open, lane) {
 }
 
 function itemRowFor(row, depth, now, open, lane) {
-  // Stacked below the sm breakpoint, side-by-side above it — a breakpoint, not a
+  // Stacked below the lg breakpoint, side-by-side above it — a breakpoint, not a
   // content-based flex-wrap. flex-wrap's own line-breaking runs on each
   // item's *hypothetical* (content) size: flex-1's 0% basis told the browser
   // this row needed no room at all and it never wrapped the action button
@@ -1123,11 +1139,11 @@ function itemRowFor(row, depth, now, open, lane) {
   // then sized the title/stage row itself off the unwrapped content width,
   // pushing the stage chip past the edge instead. Neither reliably fits
   // arbitrary item titles at 400px, so the breakpoint sidesteps both.
-  const li = treeItem(row, depth, "flex flex-col gap-1 py-3 pr-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-x-3 sm:gap-y-1", open);
+  const li = treeItem(row, depth, "flex flex-col gap-1 py-3 pr-4 lg:flex-row lg:flex-wrap lg:items-start lg:justify-between lg:gap-x-3 lg:gap-y-1", open);
   // The toggle, when there is one, is a column of its own beside the body:
   // inside the title line it pushed the number right but not the note or a
   // wrapped chip, which then started under the toggle instead of the number.
-  const main = el("div", "flex min-w-0 w-full items-baseline gap-2 sm:w-auto sm:flex-1");
+  const main = el("div", "flex min-w-0 w-full items-baseline gap-2 lg:w-auto lg:flex-1");
   main.append(toggleSlot(row, open, lane));
   const body = el("div", "min-w-0 flex-1");
 
@@ -1241,7 +1257,73 @@ function artifactRowFor(row, depth, open, now, lane) {
     line.append(arrow);
   }
   li.append(toggleSlot(row, open, lane), line);
+  if (row.link) li.append(copyLinkFor(row, lane));
   return li;
+}
+
+// The clipboard write every copy control makes. A browser with no clipboard
+// — a page served over plain http, say — refuses, as a refused write does.
+function copyText(text) {
+  const clipboard = navigator.clipboard;
+  return clipboard ? clipboard.writeText(text) : Promise.reject(new Error("no clipboard"));
+}
+
+// The header's icons' stroke style, at the size they are drawn.
+function strokeIcon(shapes) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  for (const [k, v] of [["viewBox", "0 0 24 24"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "2"],
+    ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["class", "h-4 w-4"], ["aria-hidden", "true"]]) svg.setAttribute(k, v);
+  for (const [tag, attrs] of shapes) {
+    const shape = document.createElementNS(SVG_NS, tag);
+    for (const k in attrs) shape.setAttribute(k, attrs[k]);
+    svg.append(shape);
+  }
+  return svg;
+}
+
+// Two overlapping squares, the front one rounded, and the check it turns into once copied.
+const COPY_SHAPES = [["rect", { x: "9", y: "9", width: "13", height: "13", rx: "2" }], ["path", { d: "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" }]];
+const CHECK_SHAPES = [["polyline", { points: "20 6 9 17 4 12" }]];
+
+// Per copy-link key, what its last click heard back while its 2 seconds run,
+// the timer that ends them, and the button last drawn for it. Module state
+// like writeNotes, because every poll redraws every row: an answer kept on the
+// button was gone at the next poll, and one arriving after a poll went to a
+// button no longer on the page.
+const copyNotes = new Map();
+const copyTimers = new Map();
+const copyButtons = new Map();
+
+function drawCopyLink(button, key) {
+  const note = copyNotes.get(key);
+  const label = note ? note.label : "Copy link";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.replaceChildren(strokeIcon(note && note.copied ? CHECK_SHAPES : COPY_SHAPES));
+}
+
+// Beside the row's link, never inside it, so copying never opens the tab. Its
+// key is the row's own, so a poll's redraw keeps focus on it, and never the
+// row menu's Copy prompt's.
+function copyLinkFor(row, lane) {
+  const key = rowKey(lane, row.id) + ":copy-link";
+  const button = el("button", "${ICON_BUTTON}");
+  button.type = "button";
+  button.setAttribute("data-key", key);
+  copyButtons.set(key, button);
+  drawCopyLink(button, key);
+  const redraw = () => { const live = copyButtons.get(key); if (live) drawCopyLink(live, key); };
+  button.addEventListener("click", () => {
+    const answered = (label, copied) => {
+      const previous = copyTimers.get(key);
+      if (previous !== undefined) clearTimeout(previous);
+      copyNotes.set(key, { label, copied });
+      copyTimers.set(key, setTimeout(() => { copyNotes.delete(key); copyTimers.delete(key); redraw(); }, 2000));
+      redraw();
+    };
+    copyText(row.link).then(() => answered("Copied", true), () => answered("Copy failed", false));
+  });
+  return button;
 }
 
 // Depth-first, drawing a row's children only while it is open. \`seen\` is the
@@ -1429,7 +1511,7 @@ function renderNav(view, page) {
     li.append(navItem(e, e.id === page));
     return li;
   });
-  const rule = el("li", "my-1 hidden border-t border-neutral-200 dark:border-neutral-800 sm:block");
+  const rule = el("li", "my-1 hidden border-t border-neutral-200 dark:border-neutral-800 lg:block");
   rule.setAttribute("role", "separator");
   // A divider with nothing under it would only be a stray line.
   document.getElementById("nav").replaceChildren(...(items.length > 1 ? [items[0], rule, ...items.slice(1)] : items));
@@ -1798,8 +1880,12 @@ tickButton.addEventListener("click", () => {
 // The top bar's ⋯ is a menu like the panel's, under the same one-open rule,
 // and like it lives in the skeleton, so no poll redraws it. Integrations is a
 // link: choosing it leaves the menu, and the hash change shows the tab.
+// Source code opens a new tab, so the menu goes as well; a copy with no
+// repository has no such entry.
 document.getElementById("board-more").addEventListener("click", () => toggleMenu("board"));
 document.getElementById("board-integrations").addEventListener("click", () => closeMenu());
+const sourceLink = document.getElementById("board-source");
+if (sourceLink) sourceLink.addEventListener("click", () => closeMenu());
 document.getElementById("integrations-back").addEventListener("click", goBack);
 
 // Re-read the tracker, with no step and no agent — the icon-only twin of the
@@ -2464,8 +2550,7 @@ function openPairing(id) {
 // Copied, it is dropped: once run, the seeded line refuses its own session
 // id, and only Get command again answers with the line that resumes it.
 function copyCommand() {
-  const clipboard = navigator.clipboard;
-  (clipboard ? clipboard.writeText(pairing.command) : Promise.reject(new Error("no clipboard"))).then(
+  copyText(pairing.command).then(
     () => { pairing.command = null; pairing.note = "Copied: run it in your terminal. Get command again to rejoin later."; renderPanel(); },
     () => { pairing.note = "Could not copy: select the command above and copy it."; renderPanel(); },
   );
@@ -2549,14 +2634,14 @@ function showPanel(id) {
   panelMode = null;
   markSelected();
   const open = id !== null;
-  // From sm up the panel stays, its empty state in place of an item; below
-  // sm it covers the board, so it goes. Full width is an open item's alone.
+  // From lg up the panel stays, its empty state in place of an item; below
+  // lg it covers the board, so it goes. Full width is an open item's alone.
   panelItem.hidden = !open;
   panelEmpty.hidden = open;
-  panelEl.classList.toggle("max-sm:hidden", !open);
+  panelEl.classList.toggle("max-lg:hidden", !open);
   const wide = open && panelWide;
-  panelEl.classList.toggle("sm:w-[28rem]", !wide);
-  document.body.classList.toggle("sm:pr-[28rem]", !wide);
+  panelEl.classList.toggle("lg:w-[28rem]", !wide);
+  document.body.classList.toggle("lg:pr-[28rem]", !wide);
   if (!open) { stopPanelPoll(); return; }
   renderPanel();
 }
@@ -2790,7 +2875,10 @@ followPermission();
 
 pollOnce().then(() => schedulePoll(POLL_MS));
 
+// An entry in the top bar's ⋯ menu, so its words are on screen, not in an
+// aria-label: a menu lists what each entry does.
 const themeToggle = document.getElementById("theme-toggle");
+const themeLabel = document.getElementById("theme-label");
 
 function isDark() {
   return document.documentElement.classList.contains("dark");
@@ -2800,15 +2888,19 @@ function isDark() {
 // first, with no defer, for exactly that reason) — this only ever syncs the
 // label to whatever that decided, never the other way round.
 function syncThemeLabel() {
-  themeToggle.setAttribute("aria-label", isDark() ? "Switch to light mode" : "Switch to dark mode");
+  themeLabel.textContent = isDark() ? "Switch to light mode" : "Switch to dark mode";
 }
 
-themeToggle.addEventListener("click", () => {
+// The choice is made, so the menu goes, as it does for Integrations.
+function toggleTheme() {
   const dark = !isDark();
   document.documentElement.classList.toggle("dark", dark);
   try { localStorage.setItem(THEME_KEY, dark ? "dark" : "light"); } catch (e) {}
   syncThemeLabel();
-});
+  closeMenu();
+}
+
+themeToggle.addEventListener("click", toggleTheme);
 
 syncThemeLabel();
 

@@ -1,5 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { defineConfig } from "tsup";
+
+const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { version: string; repository?: unknown };
 export default defineConfig({
   // `hooks` is what a hook module imports: package.json has declared
   //  "./hooks" since before anything built it, so it resolved to nothing.
@@ -33,6 +35,10 @@ export default defineConfig({
   dts: true,
   banner: { js: "#!/usr/bin/env node" },
   // `landrace --version` and the update check read this, so an installed copy
-  // never has to find its own package.json at run time.
-  define: { __LANDRACE_VERSION__: JSON.stringify((JSON.parse(readFileSync("package.json", "utf8")) as { version: string }).version) },
+  // never has to find its own package.json at run time; the board's Source
+  // code link reads the repository the same way.
+  define: {
+    __LANDRACE_VERSION__: JSON.stringify(pkg.version),
+    __LANDRACE_REPOSITORY__: JSON.stringify(pkg.repository ?? null),
+  },
 });
