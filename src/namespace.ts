@@ -3992,7 +3992,7 @@ export interface FrontDoorOptions {
 /**
  * What `landrace validate` found. `problems` decide `ok`; `people` are each
  * stored person's own, remotely, theirs to mend; `warnings` are what a remote
- * instance shares that it may not mean to. Neither of the last two fails it.
+ * instance's configuration says that it may not mean. Neither of the last two fails it.
  */
 export interface ValidateResult {
   ok: boolean;

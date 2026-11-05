@@ -3062,7 +3062,7 @@ describe("landrace validate with people.oidc", () => {
     expect(people).toEqual([expect.stringMatching(/^bob@example\.invalid: connection\.missing: secrets entry "forgeToken" has no value/)]);
   });
 
-  // #204: what a remote instance shares that it may not mean to is said, and never fails it.
+  // #204: what a remote instance's configuration says that it may not mean is said, and never fails it.
   it("warns of a string secret and of a per-person key with env set, naming each, and exits 0", async () => {
     const { dir, credentials } = await unready("secret");
     const yaml = join(dir, "landrace.yaml");
@@ -3076,7 +3076,7 @@ describe("landrace validate with people.oidc", () => {
     expect(result.problems).toEqual([]);
     expect(result.warnings).toEqual([
       expect.stringMatching(/^secrets\.githubToken is one value for everyone/),
-      expect.stringMatching(/^secrets\.forgeToken reads \$LR_TEST_FORGE_UNSET first/),
+      expect.stringMatching(/^secrets\.forgeToken names env LR_TEST_FORGE_UNSET, which a remote instance never reads: .*"forge" connection/),
     ]);
     const printed: string[] = [];
     expect(reportValidate(dir, result, { out: (l) => printed.push(l), err: (l) => printed.push(l) })).toBe(0);

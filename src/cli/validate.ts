@@ -140,11 +140,12 @@ async function executorProblems(dir: string, loaded: LoadedConfig, registry: Reg
 }
 
 /**
- * What a remote instance shares that it may not mean to: a `secrets` string is
- * one value every person's steps run with, so each of them acts as whoever it
- * belongs to; and a per-person key's `env`, once set on this machine, answers
- * for every person ahead of their own connection. Neither is wrong for every
- * instance, so each is said, never refused.
+ * What a remote instance's configuration says that it may not mean: a
+ * `secrets` string is one value every person's runtime gets, so each of them
+ * acts as whoever it belongs to; and a per-person key's `env` is never read
+ * there (`resolvePerson`'s `people.env-ignored`), so an operator relying on
+ * it is relying on nothing. Neither is wrong for every instance — a bot's
+ * token may be meant for all — so each is said, never refused.
  */
 export function remoteWarnings(config: RuntimeConfig): string[] {
   if (config.people?.oidc === undefined) return [];
@@ -154,8 +155,8 @@ export function remoteWarnings(config: RuntimeConfig): string[] {
       `secrets.${name} is one value for everyone: on a remote instance every person's steps run with it, as whoever it belongs to. ` +
       "Make it { perPerson: true, connection: <id>.<field> } to give each person their own"),
     ...perPersonKeys(config).flatMap((k) => k.env === undefined ? [] : [
-      `${k.kind === "secret" ? "secrets" : "vars"}.${k.name} reads $${k.env} first: on a remote instance, once that is set on this machine, ` +
-      "it answers for every person instead of their own connection. Drop its env",
+      `${k.kind === "secret" ? "secrets" : "vars"}.${k.name} names env ${k.env}, which a remote instance never reads: ` +
+      `each person's value comes from their own "${k.connection.id}" connection. Drop its env`,
     ]),
   ];
 }
