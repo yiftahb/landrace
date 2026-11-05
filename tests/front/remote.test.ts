@@ -38,15 +38,14 @@ const SECRET = "frontdoorsecret0123456789";
 
 /**
  * `files`, when given, are written into the MCP credential folder before the
- * door is built. `providerSays`, when given, is what every request to the
- * provider fails with. `secretFolder` puts SECRET in the folder's own path.
+ * door is built. `signInSays`, when given, is what remembering a person who
+ * signed in fails with. `secretFolder` puts SECRET in the folder's own path.
  */
-async function door(files: Record<string, string> = {}, o: { providerSays?: string; secretFolder?: boolean } = {}) {
+async function door(files: Record<string, string> = {}, o: { signInSays?: string; secretFolder?: boolean } = {}) {
   const idp = fakeOidc();
   const sessions = createSessions({ secure: true });
   const events: LandraceEvent[] = [];
   const log = createLogger({ redactValues: [SECRET], sink: (e) => { events.push(e); } });
-  const providerFetch: typeof globalThis.fetch = o.providerSays === undefined ? idp.fetch : () => Promise.reject(new Error(o.providerSays));
   const signedIn: Person[] = [];
   const trackers = { alice: createFakeTracker([{ number: 1 }]), bob: createFakeTracker([{ number: 2 }]) };
   const mcp = createMcpEndpoint({
@@ -68,10 +67,11 @@ async function door(files: Record<string, string> = {}, o: { providerSays?: stri
     board: { view: async () => view("nobody's") },
     boardFor: (caller) => ({ view: async () => view(caller.id), has: (item) => item === String(ITEMS[caller.id]) }),
     remote: {
-      oidc: createOidc({ oidc: { issuer: idp.issuer, clientId: idp.clientId, clientSecret: "client-secret-value" }, redirectUri: `${PUBLIC}/login/callback`, fetch: providerFetch }),
+      oidc: createOidc({ oidc: { issuer: idp.issuer, clientId: idp.clientId, clientSecret: "client-secret-value" }, redirectUri: `${PUBLIC}/login/callback`, fetch: idp.fetch }),
       sessions, authRoot, log,
       signIn: async (person) => {
         if (person.id === "local") throw new Refusal('nobody signs in as "local"');
+        if (o.signInSays !== undefined) throw new Error(o.signInSays);
         signedIn.push(person);
       },
     },
@@ -240,11 +240,11 @@ describe("the door's error lines", () => {
   it("prints a failed sign-in through the start log's redaction", async () => {
     let status = 0;
     const printed = await printedDuring(async () => {
-      const d = await door({}, { providerSays: `the provider echoed ${SECRET}` });
-      status = (await d.fetch(`${PUBLIC}/login`)).status;
+      const d = await door({}, { signInSays: `the tracker echoed ${SECRET}` });
+      status = (await signIn(d, ALICE)).status;
     });
     expect(status).toBe(502);
-    expect(printed).toContain("starting the sign-in failed");
+    expect(printed).toContain("signing in failed: the tracker echoed");
     expect(printed).not.toContain(SECRET);
   });
 
