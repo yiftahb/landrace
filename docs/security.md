@@ -11,7 +11,7 @@ Landrace runs coding agents on your machine, over text that strangers can write,
 - **What an agent does.** An agent reads that text, so it may be steered. A step that may write runs shell commands.
 - **The repository's own files.** A workflow file, a step prompt or a hook is a file a pull request can edit, and a write step can commit one.
 - **Other websites in your browser.** Your browser can reach the board and its MCP endpoint on `127.0.0.1`.
-- **Anyone else on the network.** The board asks no one who they are, so it binds loopback only.
+- **Anyone else on the network.** Without [`people.oidc`](remote.md) the board asks no one who they are, so it binds loopback only. With it, everyone signs in and the door may listen wider; see [Remote mode](#remote-mode).
 
 **What Landrace trusts:** you, the operator, and your own configuration — `landrace.yaml`, `.env`, `.mcp.json`, your user-level agent settings. A reply on an item is read as a person's decision, but no reply can clear a security check.
 
