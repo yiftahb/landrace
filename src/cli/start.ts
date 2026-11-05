@@ -824,18 +824,29 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sa
  * The `.env` by both its spellings: the `dir` the start was given, and its
  * real path. Started through a symlink, a worktree's `.git` file names the
  * real repository, so a step can read the `.env` by a path the given one's
- * rule never matches. Read per run, as the folders are; a `dir` that will not
- * resolve refuses the run rather than leave the real spelling open.
+ * rule never matches. And the file itself by its real path: a `.env` that is
+ * a symlink is read from its target, which a step can `cat` by that path.
+ * Read per run, as the folders are; a `dir` or a `.env` that will not resolve
+ * refuses the run rather than leave the real spelling open — except a `.env`
+ * that is not there, which has no other spelling to deny.
  */
 export function denyPathsFor(
   dir: string, person: Pick<Person, "id">, sandbox: Sandbox | null, others: () => readonly Pick<Person, "id">[],
 ): () => Promise<RunDenials> {
   const worktrees = join(sandboxRoot(dir), "worktrees");
   const own = sandbox?.scope;
-  return async () => denyForPerson(person, others(), {
-    worktrees, credentials: CREDENTIALS_ROOT, env: [resolve(dir, ".env"), join(await realpath(dir), ".env")], own,
-    present: own === undefined ? [] : await worktreeFolders(worktrees),
-  });
+  return async () => {
+    const given = resolve(dir, ".env");
+    const target = await realpath(given).catch((e: unknown) => {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw e;
+    });
+    const env = [given, join(await realpath(dir), ".env"), ...(target === undefined ? [] : [target])];
+    return denyForPerson(person, others(), {
+      worktrees, credentials: CREDENTIALS_ROOT, env, own,
+      present: own === undefined ? [] : await worktreeFolders(worktrees),
+    });
+  };
 }
 
 /**

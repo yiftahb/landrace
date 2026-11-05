@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, chmod, copyFile, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -897,6 +897,39 @@ ${EXECUTOR}`);
       });
       expect(dir).not.toBe(real);
       expect(deny).toEqual(expect.arrayContaining([`Read(/${join(dir, ".env")})`, `Read(/${join(real, ".env")})`]));
+    });
+
+    /*
+     * A `.env` that is itself a symlink — a dotfiles manager, a secrets
+     * mount — is read by `loadConfig` from its target, and a step can `cat`
+     * that target by its own path, which neither spelling of `dir` matches.
+     */
+    it("denies the file a symlinked .env points at, by its real path", async () => {
+      let target = "";
+      const { dir, deny } = await readDenied({}, undefined, async (made) => {
+        target = join(await realpath(await mkdtemp(join(tmpdir(), "lr-secrets-"))), "workspace.env");
+        await writeFile(target, `LR_TEST_TOKEN=${TOKEN}\n`);
+        await rm(join(made, ".env"));
+        await symlink(target, join(made, ".env"));
+        return made;
+      });
+      expect(deny).toEqual(expect.arrayContaining([`Read(/${join(dir, ".env")})`, `Read(/${target})`]));
+    });
+
+    // A `.env` that is there but will not resolve leaves its real path unknown: refused, never skipped.
+    it("refuses the run when the .env is a symlink that will not resolve, other than not being there", async () => {
+      await expect(readDenied({}, async (d) => {
+        await rm(join(d, ".env"));
+        await symlink(join(d, ".env"), join(d, ".env"));
+      })).rejects.toThrow(/ELOOP/);
+    });
+
+    // Gone by the time a step starts is nothing more to deny, never a refused run.
+    it("runs with no .env, denying the path it would have", async () => {
+      const { dir, deny } = await readDenied({}, async (d) => {
+        await rm(join(d, ".env"));
+      });
+      expect(deny).toContain(`Read(/${join(dir, ".env")})`);
     });
 
     /*
