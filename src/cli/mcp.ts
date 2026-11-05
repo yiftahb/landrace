@@ -206,6 +206,7 @@ export async function buildMcpTools(dir: string, scope?: string, store: Credenti
 
   return createTools(workflows, ctx, {
     ...(sandbox === null ? {} : { sandbox }),
+    workspace: dir,
     // A turn asked here runs in this process, and the loop's page reads its
     // progress from the same directory the loop's own steps write to.
     activity: createActivityLog(sandboxRoot(dir), person.id, scrubberOf(ctx.secrets, events.scrub)),

@@ -4,6 +4,8 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
+import { GIT_GUARD_ARGS } from "#conventions.js";
+
 /**
  * What identifies the repository a piece of local scratch state belongs to.
  *
@@ -22,7 +24,7 @@ import { basename, dirname, join, resolve } from "node:path";
  */
 function repoIdentity(dir: string): string {
   try {
-    const out = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+    const out = execFileSync("git", [...GIT_GUARD_ARGS, "rev-parse", "--git-common-dir"], {
       cwd: dir,
       encoding: "utf8",
       // git prints its own diagnosis to stderr when this is not a repository,

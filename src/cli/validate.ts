@@ -9,7 +9,7 @@ import { perPersonKeys } from "#people/keys.js";
 import { createCredentialStore } from "#people/store.js";
 import { connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
 import { frontDoorOrigins, serveProblems } from "#front/hosts.js";
-import { ITEM_BRANCH, LOCAL_PERSON_ID } from "#conventions.js";
+import { GIT_GUARD_ARGS, ITEM_BRANCH, LOCAL_PERSON_ID } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
@@ -43,7 +43,7 @@ const execFileAsync = promisify(execFile);
  */
 async function isEnvExposed(dir: string): Promise<boolean> {
   try {
-    await execFileAsync("git", ["check-ignore", "-q", ".env"], { cwd: dir });
+    await execFileAsync("git", [...GIT_GUARD_ARGS, "check-ignore", "-q", ".env"], { cwd: dir });
     return false;
   } catch (e) {
     const code = (e as { code?: number | string }).code;

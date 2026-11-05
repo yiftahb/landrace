@@ -155,25 +155,25 @@ describe("worktree", () => {
     it("sees nothing changed in a fresh worktree", async () => {
       const root = await repo();
       const path = await ensureWorktree("10", root);
-      expect(changedSince(await worktreeState(path), await worktreeState(path))).toEqual([]);
+      expect(changedSince(await worktreeState(path, root), await worktreeState(path, root))).toEqual([]);
       await removeWorktree("10", root);
     });
 
     it("names a file the agent edited", async () => {
       const root = await repo();
       const path = await ensureWorktree("11", root);
-      const before = await worktreeState(path);
+      const before = await worktreeState(path, root);
       await writeFile(join(path, "src", "a.ts"), "export const a = 2;\n");
-      expect(changedSince(before, await worktreeState(path)).join(" ")).toMatch(/src\/a\.ts/);
+      expect(changedSince(before, await worktreeState(path, root)).join(" ")).toMatch(/src\/a\.ts/);
       await removeWorktree("11", root);
     });
 
     it("names a file the agent created, not just one it edited", async () => {
       const root = await repo();
       const path = await ensureWorktree("12", root);
-      const before = await worktreeState(path);
+      const before = await worktreeState(path, root);
       await writeFile(join(path, "planted.ts"), "export const planted = true;\n");
-      expect(changedSince(before, await worktreeState(path)).join(" ")).toMatch(/planted\.ts/);
+      expect(changedSince(before, await worktreeState(path, root)).join(" ")).toMatch(/planted\.ts/);
       await removeWorktree("12", root);
     });
 
@@ -185,12 +185,12 @@ describe("worktree", () => {
     it("sees a commit, which leaves the status clean", async () => {
       const root = await repo();
       const path = await ensureWorktree("13", root);
-      const before = await worktreeState(path);
+      const before = await worktreeState(path, root);
       await writeFile(join(path, "src", "a.ts"), "export const a = 3;\n");
       await run("git", ["add", "-A"], { cwd: path });
       await run("git", ["commit", "-qm", "sneaky"], { cwd: path });
 
-      const after = await worktreeState(path);
+      const after = await worktreeState(path, root);
       expect(after.changes).toEqual([]);
       expect(changedSince(before, after).join(" ")).toMatch(/commit/i);
       await removeWorktree("13", root);
@@ -205,8 +205,8 @@ describe("worktree", () => {
       const root = await repo();
       const path = await ensureWorktree("14", root);
       await writeFile(join(path, "leftover.ts"), "export const leftover = 1;\n");
-      const before = await worktreeState(path);
-      expect(changedSince(before, await worktreeState(path))).toEqual([]);
+      const before = await worktreeState(path, root);
+      expect(changedSince(before, await worktreeState(path, root))).toEqual([]);
       await removeWorktree("14", root);
     });
   });

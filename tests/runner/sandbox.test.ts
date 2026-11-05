@@ -72,7 +72,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });
@@ -105,7 +105,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: committer,
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });
@@ -122,7 +122,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
     expect(r.ok).toBe(false);
     expect(r).not.toHaveProperty("effects");
@@ -138,7 +138,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
 
     expect(r).toMatchObject({ ok: true });
@@ -155,7 +155,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: wellBehaved(),
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
     expect(r).toMatchObject({ ok: true });
     await removeWorktree("105", root);
@@ -179,7 +179,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
       signal: new AbortController().signal,
-      sandbox: { path: join(tmpdir(), "lr-not-a-worktree-at-all") },
+      sandbox: { path: join(tmpdir(), "lr-not-a-worktree-at-all"), root: await repo() },
     });
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });
@@ -203,7 +203,7 @@ describe("a step that exceeds what it declared", () => {
       stageId: "spec", round: 1, snapshot: {},
       executor: vanishing,
       signal: new AbortController().signal,
-      sandbox: { path },
+      sandbox: { path, root },
     });
 
     expect(r).toMatchObject({ ok: false, kind: "refused" });

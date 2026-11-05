@@ -3,7 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { parse } from "yaml";
-import { isEngineLabel } from "#conventions.js";
+import { GIT_GUARD_ARGS, isEngineLabel } from "#conventions.js";
 import { WORKFLOW_ID, WORKFLOW_ID_RULE } from "#workflow/workspace.js";
 
 const execFileAsync = promisify(execFile);
@@ -104,7 +104,7 @@ stages:
 async function ignored(cwd: string, text: string | null): Promise<boolean> {
   try {
     // The excludes file off too, since one may itself be named ~/.gitignore.
-    const { stdout } = await execFileAsync("git", ["-c", "core.excludesFile=/dev/null", "check-ignore", "-v", ENV_ENTRY], { cwd });
+    const { stdout } = await execFileAsync("git", [...GIT_GUARD_ARGS, "-c", "core.excludesFile=/dev/null", "check-ignore", "-v", ENV_ENTRY], { cwd });
     // `<source>:<line>:<pattern>\t<path>` for the deciding pattern; a "!" one un-ignores.
     return /^"?(?:.*\/)?\.gitignore"?:\d+:(?!!)/.test(stdout);
   } catch (e) {

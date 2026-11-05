@@ -1,10 +1,10 @@
 import {
-  ensureWorktree, keptSlot, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead,
+  checkoutControlPaths, ensureWorktree, gitControlPaths, keptSlot, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead,
 } from "#agent/worktree.js";
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
 import { ENTRY_KIND, GOTO_TRIGGER, isEffectRefused, MALFORMED_KIND, mayWriteRepo, OUTPUT_KIND, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
-  AgentActivity, ConvergeDeps, ConvergeResult, Decision, Dispatcher, Effect, Snapshot, StepResult, WorktreeBranch,
+  AgentActivity, ConvergeDeps, ConvergeResult, Decision, Dispatcher, Effect, Snapshot, StepResult, StepSandbox, WorktreeBranch,
 } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { scrubberOf } from "#runner/events.js";
@@ -82,14 +82,14 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
   let kept = false;
   const enter = root === undefined
     ? null
-    : async (on: WorktreeBranch | undefined, write: boolean): Promise<string> => {
+    : async (on: WorktreeBranch | undefined, write: boolean): Promise<StepSandbox> => {
         const keep = on?.write === true;
         if (keep) kept = true;
         else entered = true;
         const path = await ensureWorktree(item, root, on, keep ? keptSlot(item) : item, { signal: deps.ctx.signal, scope });
         const setup = deps.sandbox?.worktree;
         if (write && setup) await prepareWorktree({ item, path, root, setup, log: deps.log, signal: deps.ctx.signal });
-        return path;
+        return { path, root };
       };
 
   // An agent slot, taken at the first step this call runs and held until it
@@ -119,7 +119,7 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
 async function converging(
   item: string,
   deps: ConvergeDeps,
-  enterSandbox: ((on: WorktreeBranch | undefined, write: boolean) => Promise<string>) | null,
+  enterSandbox: ((on: WorktreeBranch | undefined, write: boolean) => Promise<StepSandbox>) | null,
   takeSlot: () => Promise<string | null>,
 ): Promise<ConvergeResult> {
   const maxPasses = deps.maxPasses ?? DEFAULT_MAX_PASSES;
@@ -383,7 +383,7 @@ async function converging(
       // (re-review N2). A fetch that fails is an outage, said here like a
       // worktree that could not be made: nothing is recorded, and the step
       // waits for the next tick.
-      let sandbox: { path: string } | null = null;
+      let sandbox: StepSandbox | null = null;
       let head: string | undefined;
       if (enterSandbox || (deps.startedAt && stage.branch !== undefined)) {
         const branch = stageBranch(stage, item, round);
@@ -395,9 +395,8 @@ async function converging(
           if (branch.branch !== null) await deps.source.remoteHead?.(branch.branch, deps.ctx);
           if (enterSandbox) {
             const write = mayWriteRepo(step.capabilities);
-            const path = await enterSandbox(branch.branch === null ? undefined : { branch: branch.branch, write }, write);
-            sandbox = { path };
-            if (branch.branch !== null) head = await worktreeHead(path);
+            sandbox = await enterSandbox(branch.branch === null ? undefined : { branch: branch.branch, write }, write);
+            if (branch.branch !== null) head = await worktreeHead(sandbox.path, sandbox.root);
           } else if (branch.branch !== null) {
             head = (await deps.startedAt?.(branch.branch)) ?? undefined;
           }
@@ -408,6 +407,25 @@ async function converging(
         }
       }
       const started = head === undefined ? {} : { head };
+
+      // For a step that may write, the git paths its agent may not write: in
+      // its worktree, that repository's; with no worktree, those of where it
+      // runs and of the workspace. Computed by the engine, never read from what
+      // the step can write, and a failure halts as a worktree that could not
+      // be made does: a write run without them is one the agent could use to
+      // plant a hook the engine's git runs.
+      let denyWrite: string[] | undefined;
+      if (mayWriteRepo(step.capabilities)) {
+        try {
+          denyWrite = sandbox
+            ? await gitControlPaths(sandbox.path, sandbox.root)
+            : await checkoutControlPaths([process.cwd(), ...(deps.workspace === undefined ? [] : [deps.workspace])]);
+        } catch (e) {
+          const reason = messageOf(e);
+          deps.log("step.rejected", { item, stage: stage.id, round, reason });
+          return { passes: pass, settled: "halt", why: reason };
+        }
+      }
 
       // The engine's own record that an agent is in the room, bracketing the
       // one call that runs it. Not left to the executor: `step.completed`
@@ -428,6 +446,7 @@ async function converging(
           readGraph: () => deps.source.read(item, deps.ctx),
           ...(deps.screen ? { screen: deps.screen } : {}),
           ...(sandbox ? { sandbox } : {}),
+          ...(denyWrite === undefined ? {} : { denyWrite }),
           ...(deps.stepTimeoutMs === undefined ? {} : { defaultTimeoutMs: deps.stepTimeoutMs }),
           ...(deps.childServer ? { childServer: deps.childServer } : {}),
           ...(deps.activity ? { onActivity: (e: AgentActivity) => deps.activity?.record(item, stage.id, round, e) } : {}),

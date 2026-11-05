@@ -207,12 +207,14 @@ export function mcpEndpointFor(
 ): McpEndpoint {
   const workflows = rt.toolWorkflows ?? [];
   const sandbox = rt.workflows.find((w) => w.deps.sandbox)?.deps.sandbox;
+  const workspace = rt.workflows.find((w) => w.deps.workspace !== undefined)?.deps.workspace;
   return createMcpEndpoint({
     workflows: workflows.map((w) => w.id),
     ...(opts.pairing === undefined ? {} : { pairing: opts.pairing }),
     scrub: (text) => rt.log.scrub(text),
     toolsFor: (_caller, scope) => createTools(workflows, rt.ctx, {
       ...(sandbox ? { sandbox } : {}),
+      ...(workspace === undefined ? {} : { workspace }),
       ...(rt.activity ? { activity: rt.activity } : {}),
       wake: () => {
         schedule.wake();
@@ -1210,6 +1212,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
         executor,
         childServer,
         ...(sandbox === null ? {} : { sandbox }),
+        workspace: dir,
         ...(screener ? { screen: screener } : {}),
         ...(connectionFailed ? { connectionFailed } : {}),
         ctx,
@@ -1582,6 +1585,7 @@ export async function servedRuntime(
       source: w.source, pre: w.deps.pre, dispatcher: w.deps.dispatcher, ctx: w.deps.ctx,
       executor: w.deps.executor, workflow: w.deps.workflow, steps: w.deps.steps,
       ...(w.deps.sandbox ? { sandbox: w.deps.sandbox } : {}),
+      ...(w.deps.workspace === undefined ? {} : { workspace: w.deps.workspace }),
       ...(w.deps.screen ? { screen: w.deps.screen } : {}),
       scrub: w.deps.scrub,
       ...(w.deps.childServer ? { server: w.deps.childServer } : {}),

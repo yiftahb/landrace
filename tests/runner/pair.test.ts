@@ -197,7 +197,7 @@ describe("starting a pairing", () => {
     const seed = a.handoffs[0]?.promptFile ?? "";
     expect(await readFile(seed, "utf8")).toContain(body);
     // Nothing the person's session could commit, and nothing a hand-in lists as discarded.
-    expect(await worktreeState(started.cwd)).toMatchObject({ changes: [] });
+    expect(await worktreeState(started.cwd, repo)).toMatchObject({ changes: [] });
     // Nowhere a step's sandbox may write — its checkout, or the repository's
     // git directory — so no step can swap it after screening.
     expect(seed.startsWith(`${started.cwd}/`)).toBe(false);
