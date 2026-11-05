@@ -1,53 +1,56 @@
-Using superpowers:brainstorming to settle the design. No person is in this session, so the item and the code settle every choice. Writing the spec now.
-
 ## Problem
-No sign-in exists. `serveProblems` refuses any non-loopback `serve.host`. `mode.remote` is hard-coded `false` in `src/cli/start.ts`, `callerOf` always answers the local person, and `/mcp` is open. So one host cannot serve a team.
+No sign-in. `serveProblems` refuses non-loopback `serve.host`; `mode.remote` hard-coded `false` (`src/cli/start.ts`); `callerOf` always local person; `/mcp` open. One host cannot serve team.
 
 ## Decisions
 Flow:
-1. Admin sets `people.oidc`, a wide `serve.host`, an `https` `serve.publicUrl` and a TLS proxy.
-2. Person opens `/` → 302 `/login` → IdP → `/login/callback` → `landrace_session` cookie → back to the page they asked for. Integrations tab until connected, then their own board.
-3. `claude mcp add --transport http lr <publicUrl>/mcp` → 401 → register → `/authorize` → sign-in if needed → consent → token → that person's tools.
+1. Admin sets `people.oidc`, wide `serve.host`, `https` `serve.publicUrl`, TLS proxy.
+2. Person opens `/` → `/login` → IdP → `/login/callback` → `landrace_session` cookie → asked page. Integrations tab until connected, then own board.
+3. `claude mcp add --transport http lr <publicUrl>/mcp` → 401 → register → `/authorize` → sign-in if needed → consent → token → own tools.
 
 Choices:
-- Remote means `people.oidc` is set. Absent, nothing changes: no Express, no cookie.
-- Landrace is its own authorization server (SDK `mcpAuthRouter`) over the browser session, so MCP clients need no IdP app.
-- Consent page on `/authorize`: registration is open, and one link must not hand a stranger's client a token.
-- PKCE, with `state` bound to a `landrace_login` cookie, so no login CSRF.
-- `return` accepts a same-origin path only, so no open redirect.
-- `http` issuer allowed on loopback only, for a local Keycloak.
-- Refresh tokens rotate on use. Codes and access tokens stay in memory.
-- Identity value already held by another person → the signer's connection is `failed`, "already belongs to another person". An override does not bypass this.
-- Remote roster skips the `local` file, so an old local setup on the host runs for nobody.
-- `foreignWrite` needs no code: `frontDoorOrigins` already holds the `publicUrl` origin. A test pins it.
+- Remote = `people.oidc` set. Absent: no Express, no cookie, nothing changes.
+- Landrace own authorization server (SDK `mcpAuthRouter`) over browser session: MCP clients need no IdP app.
+- Consent page: registration open, one link must not hand stranger's client a token.
+- **Changed, round 2 (review):** consent unforgeable. Response sends `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options: DENY`: no overlay takes click. Approve POST refused on foreign `Origin` (`foreignOrigin`) or without one-time token bound to session id and that authorization request: cross-site form cannot approve even if SameSite relaxed.
+- PKCE; `state` bound to `landrace_login` cookie: no login CSRF.
+- `return` same-origin path only: no open redirect.
+- `http` issuer loopback only (local Keycloak).
+- Refresh tokens rotate, stored hashed. Codes, access and consent tokens in memory.
+- Identity value held by another person → signer `failed`, "already belongs to another person". Override no bypass.
+- Remote roster skips `local` file.
+- `foreignWrite` unchanged: `frontDoorOrigins` holds `publicUrl` origin; test pins.
 
 ## Technical design
 - `package.json` — `openid-client@^6`, `express@^5`.
 - `src/config/schema.ts` — `people.oidc`, `people.overrides`.
-- `src/front/hosts.ts` — `serveProblems(serve, oidc?)`: with oidc, no `serve.unauthenticated`. `serve.public-url` when `publicUrl` is absent, or is not `https` on a non-loopback host.
-- `src/people/oidc.ts` — `createOidc`, pending states kept 10 min.
-- `src/people/session.ts` — `createSessions`.
-- `src/front/mcp-auth.ts` — `createMcpAuth`: provider, clients and refresh-token hashes in files (0600), consent, `requireBearerAuth`.
-- `src/front/server.ts` — after the Host check: Express paths; `/login`, `/login/callback`, `/logout`; 302 or 401; `request.refused`.
-- `src/people/store.ts` — `CredentialStore.remember(person)`: writes the person record with no connection.
-- `src/people/roster.ts` — `Roster.signIn(person)`: remember, overrides stored as `source: "override"`, `lookupIdentities`, clash check, reload. `wanted` drops `LOCAL_PERSON_ID`.
-- `src/people/panel.ts` — `gate(personId)`: each caller is judged by their own gate.
-- `src/cli/start.ts` — `mode.remote` from `people.oidc`. `personGate` gets `remote`. `roster.sync()` at start. `callerOf` reads sessions. `onChange` reloads the caller.
-- `src/cli/validate.ts` — remote: per-person keys are left blank, as `personGate` does. Prints `<email>: rule: message` for each stored person; these never change `ok`.
+- `src/front/hosts.ts` — `serveProblems(serve, oidc?)`: oidc lifts `serve.unauthenticated`; `serve.public-url` when `publicUrl` absent, or not `https` off loopback.
+- `src/people/oidc.ts` — `createOidc`; pending states 10 min.
+- `src/people/session.ts` — `createSessions`; `idOf(req)` beside `personOf`.
+- `src/front/mcp-auth.ts` — `createMcpAuth`: provider; clients, refresh hashes in 0600 files; consent page, `POST /authorize/consent` (headers, Origin, single-use 10-min token); `requireBearerAuth`.
+- `src/front/server.ts` — after Host check: Express paths, `/login`, `/login/callback`, `/logout`; 302 or 401; `request.refused`.
+- `src/people/store.ts` — `CredentialStore.remember(person)`.
+- `src/people/roster.ts` — `Roster.signIn(person)`: remember, overrides `source: "override"`, `lookupIdentities`, clash check, reload; `wanted` drops `LOCAL_PERSON_ID`.
+- `src/people/panel.ts` — `gate(personId)` per caller.
+- `src/cli/start.ts` — `mode.remote` from `people.oidc`; `roster.sync()` at start; `callerOf` reads sessions.
+- `src/cli/validate.ts` — remote: prints `<email>: rule: message` per stored person; never changes `ok`.
 - `src/namespace.ts` — `signin.ok`, `signin.refused`, `request.refused`; `Oidc`, `Sessions`, `McpAuth`.
 - `docs/remote.md` (new), `docs/configuration.md`, `docs/security.md`, `docs/README.md`.
 
 ## Done when
-- The tests the task names pass; `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build` pass.
-- No `people.oidc`: existing front-door tests pass unchanged; `0.0.0.0` still gives `serve.unauthenticated`.
-- Remote, no session: `GET /` → 302 `/login?return=%2F`; `/board.json` → 401; `request.refused` with `person: "anonymous"`.
+- Named tests, `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build` pass.
+- No `people.oidc`: front-door tests unchanged; `0.0.0.0` → `serve.unauthenticated`.
+- Remote, no session: `GET /` → 302 `/login?return=%2F`; `/board.json` → 401; `request.refused`, `person: "anonymous"`.
+- Session cookie `HttpOnly`, `SameSite=Lax`; `Secure` when `publicUrl` https.
 - `email_verified: false` → 403, `signin.refused`, no cookie.
-- `return=//evil.example` → redirect to `/`.
-- `/authorize` with no session → 302 `/login?return=…`.
-- Bearer of person A: `/mcp` lists A's items only. No bearer → 401 with `resource_metadata`.
-- `mcp-tokens.json` is mode 0600 and holds no issued token.
-- Bob resolving to Alice's account id → Bob `failed`; Alice stays connected.
-- Remote `validate` prints Bob's problem and exits 0 when the instance is clean.
-- Live: Keycloak behind TLS; browser sign-in and `claude mcp add` OAuth both work.
+- `return=//evil.example` → `/`.
+- `/authorize`, no session → 302 `/login?return=…`.
+- Consent response carries `frame-ancestors 'none'` and `X-Frame-Options: DENY`.
+- Approve POST, foreign `Origin` → no code.
+- Approve POST without token, reused token, or other session's token → no code.
+- A's bearer: `/mcp` lists A's items only. No bearer → 401 with `resource_metadata`.
+- `mcp-tokens.json` 0600, no issued token.
+- Bob resolving to Alice's account id → Bob `failed`; Alice connected.
+- Remote `validate` prints Bob's problem, exits 0 when instance clean.
+- Live: Keycloak behind TLS; browser sign-in and `claude mcp add` OAuth work.
 
 // Generated by AI (claude-opus-5-5:high)
