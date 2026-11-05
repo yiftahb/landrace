@@ -39,9 +39,11 @@ describe("denyForPerson", () => {
 
   it("lists, for a person with a folder of their own, every other folder there, whoever the roster names", () => {
     const present = ["alice", "bob", "dave%40x.io", "12.write"];
-    expect(denyForPerson({ id: "alice" }, [{ id: "bob" }], { ...where, own: "alice", present }).people).toEqual([
-      "/tmp/landrace/repo-1/worktrees/bob", "/tmp/landrace/repo-1/worktrees/dave%40x.io", "/tmp/landrace/repo-1/worktrees/12.write",
-    ]);
+    expect(denyForPerson({ id: "alice" }, [{ id: "bob" }], { ...where, own: "alice", present })).toEqual({
+      always: [CREDENTIALS_ROOT, ENV],
+      people: ["/tmp/landrace/repo-1/worktrees/bob"],
+      found: ["/tmp/landrace/repo-1/worktrees/dave%40x.io", "/tmp/landrace/repo-1/worktrees/12.write"],
+    });
   });
 
   // The local person's worktrees are the folder's own entries: denying what is there would deny them their own.

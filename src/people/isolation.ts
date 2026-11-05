@@ -30,10 +30,11 @@ export function denyForPerson(
     worktrees: string; credentials: string; env: readonly string[]; own?: string | undefined; present?: readonly string[];
   },
 ): RunDenials {
-  const listed = others.filter((other) => other.id !== self.id).map((other) => scopeOf(other));
-  const found = own === undefined ? [] : present;
-  const folders = [...listed, ...found].filter((name) => name !== own && name !== scopeOf(self)).map((name) => join(worktrees, name));
-  return { always: [...new Set([credentials, ...env])], people: [...new Set(folders)] };
+  const theirs = (names: readonly string[]): string[] =>
+    [...new Set(names.filter((name) => name !== own && name !== scopeOf(self)).map((name) => join(worktrees, name)))];
+  const people = theirs(others.filter((other) => other.id !== self.id).map((other) => scopeOf(other)));
+  const found = theirs(own === undefined ? [] : present).filter((path) => !people.includes(path));
+  return { always: [...new Set([credentials, ...env])], people, ...(found.length ? { found } : {}) };
 }
 
 /**

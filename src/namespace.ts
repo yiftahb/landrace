@@ -995,8 +995,14 @@ export type ExecutorContext = RuntimeContext & {
 export interface RunDenials {
   /** Denied every run, alone or not: Landrace's credentials and the workspace's `.env`. */
   always: string[];
-  /** Other people's worktree folders, absolute; an agent's transcripts under each join them. */
+  /** The roster's other people's worktree folders, absolute; an agent's transcripts under each join them. */
   people: string[];
+  /**
+   * Every other folder under the sandbox's worktrees the roster does not name
+   * — a person a sync just dropped, or the operator's own — denied as `people`
+   * is, and apart only so a refusal names the case that fired.
+   */
+  found?: string[] | undefined;
 }
 
 /**

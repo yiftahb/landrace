@@ -604,7 +604,7 @@ describe("a run's deny list, computed when it starts", () => {
     const leaky = new Leaky(markingBin());
     const refused = await run(leaky, () => Promise.resolve({ always: ["/w/Projects (old)/.landrace/.env"], people: ["/w/bo)b"] }), ["repo:read"])
       .then(() => "", (e: Error) => e.message);
-    expect(refused).toMatch(/other people are on this instance[\s\S]*\/w\/bo\)b[\s\S]*cannot keep a command from reading a path/);
+    expect(refused).toMatch(/another person is on the roster[\s\S]*\/w\/bo\)b[\s\S]*cannot keep a command from reading a path/);
     expect(refused).not.toContain("cannot be written as a rule");
     expect(leaky.plans).toEqual([]);
   });
@@ -619,10 +619,43 @@ describe("a run's deny list, computed when it starts", () => {
   it("refuses an agent that cannot keep the list when it names more than the credentials", async () => {
     const leaky = new Leaky(markingBin());
     const refused = await run(leaky, () => Promise.resolve({ always: [CREDS], people: ["/w/bob"] }), ["repo:read"]).then(() => "", (e: Error) => e.message);
-    expect(refused).toMatch(/other people are on this instance[\s\S]*\/w\/bob[\s\S]*the tiny executor cannot keep a command from reading a path/);
+    expect(refused).toMatch(/another person is on the roster[\s\S]*\/w\/bob[\s\S]*the tiny executor cannot keep a command from reading a path/);
     // Its startup text is about the operator's agent.sandbox.deny, which named none of this.
     expect(refused).not.toContain("from a command");
     expect(leaky.plans).toEqual([]);
+  });
+
+  it.each([
+    ["only a folder found under the worktrees", { people: [], found: ["/w/dave"] }, /another folder is under the sandbox's worktrees, whoever's it is/, /on the roster/],
+    ["only a person on the roster", { people: ["/w/bob"], found: [] }, /another person is on the roster/, /another folder/],
+  ])("says which case refused an agent that cannot keep the list: %s", async (_case, more, says, not) => {
+    const leaky = new Leaky(markingBin());
+    const refused = await run(leaky, () => Promise.resolve({ always: [CREDS], ...more }), ["repo:read"]).then(() => "", (e: Error) => e.message);
+    expect(refused).toMatch(says);
+    expect(refused).not.toMatch(not);
+    expect(refused).not.toContain("other people are on this instance");
+    expect(leaky.plans).toEqual([]);
+  });
+
+  it("names both cases when both hold, and every path", async () => {
+    const leaky = new Leaky(markingBin());
+    const refused = await run(leaky, () => Promise.resolve({ always: [CREDS], people: ["/w/bob"], found: ["/w/dave"] }), ["repo:read"])
+      .then(() => "", (e: Error) => e.message);
+    expect(refused).toMatch(/another person is on the roster[\s\S]*another folder is under the sandbox's worktrees[\s\S]*\/w\/bob, \/w\/dave/);
+  });
+
+  it("denies a found folder and the runs kept under it, as a person's", async () => {
+    const tiny = new Kept(markingBin());
+    tiny.kept = { "/w/dave": ["/home/.agent/-w-dave-3"] };
+    await run(tiny, () => Promise.resolve({ always: [CREDS], people: [], found: ["/w/dave"] }), ["repo:read"]);
+    expect(tiny.plans[0]?.sandbox.deny).toEqual(["~/.ssh", CREDS, "/w/dave", "/home/.agent/-w-dave-3"]);
+  });
+
+  it("refuses a found folder no rule can hold without calling it a person's", async () => {
+    const tiny = new Tiny(markingBin());
+    const refused = await run(tiny, () => Promise.resolve({ always: [CREDS], people: [], found: ["/w/da)ve"] }), ["repo:read"]).then(() => "", (e: Error) => e.message);
+    expect(refused).toMatch(/"\/w\/da\)ve" cannot be written as a rule the tiny executor keeps, and left off, another folder under the sandbox's worktrees would be readable/);
+    expect(refused).not.toContain("another person");
   });
 
   it("runs that agent as before when the list is only what every run is denied: the credentials and the .env", async () => {

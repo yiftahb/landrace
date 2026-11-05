@@ -399,7 +399,7 @@ describe("the Codex integration", () => {
 
       it("refuses the run, naming what it could read", async () => {
         const refused = await started({ always: ["~/.landrace/credentials"], people: ["/tmp/landrace/r/worktrees/bob"] }).then(() => "", (e: Error) => e.message);
-        expect(refused).toMatch(/refused the run: other people are on this instance[\s\S]*\/tmp\/landrace\/r\/worktrees\/bob[\s\S]*the codex executor cannot keep a command from reading a path/);
+        expect(refused).toMatch(/refused the run: another person is on the roster[\s\S]*\/tmp\/landrace\/r\/worktrees\/bob[\s\S]*the codex executor cannot keep a command from reading a path/);
         // Not the startup text: the operator's agent.sandbox.deny named none of
         // this, and writing deny: [] does not lift this refusal.
         expect(refused).not.toContain("agent.sandbox.deny");
@@ -420,7 +420,7 @@ describe("the Codex integration", () => {
       it("still refuses, naming the person's folder, when others are there and the checkout's path holds a parenthesis", async () => {
         const refused = await started({ always: ["/r/Projects (old)/.landrace/.env"], people: ["/tmp/landrace/r/worktrees/bob"] })
           .then(() => "", (e: Error) => e.message);
-        expect(refused).toMatch(/refused the run: other people are on this instance[\s\S]*\/tmp\/landrace\/r\/worktrees\/bob/);
+        expect(refused).toMatch(/refused the run: another person is on the roster[\s\S]*\/tmp\/landrace\/r\/worktrees\/bob/);
       });
     });
 

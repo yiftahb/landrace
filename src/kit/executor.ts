@@ -812,9 +812,19 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    * credentials and the `.env` it has always been run beside.
    */
   private async deniedNow(configured: readonly string[], denyPaths: () => Promise<RunDenials>): Promise<string[]> {
-    const { always, people } = await denyPaths();
-    const kept = await Promise.all(people.filter((path) => path.startsWith("/")).map((path) => this.transcriptsUnder?.(path) ?? Promise.resolve([])));
-    const beyond = [...people, ...kept.flat()].filter((path) => !always.includes(path));
+    const { always, people, found = [] } = await denyPaths();
+    // Each list with the transcripts kept under its folders, apart, so a
+    // refusal names the case that fired: a folder found under the worktrees
+    // may be a person who just left, or the operator's own, and calling it
+    // "other people" names a cause that did not apply.
+    const withKept = async (folders: readonly string[]): Promise<string[]> => {
+      const kept = await Promise.all(folders.filter((path) => path.startsWith("/")).map((path) => this.transcriptsUnder?.(path) ?? Promise.resolve([])));
+      return [...folders, ...kept.flat()].filter((path) => !always.includes(path));
+    };
+    const [listed, elsewhere] = await Promise.all([withKept(people), withKept(found)]);
+    const beyond = [...new Set([...listed, ...elsewhere])];
+    const cases = (roster: boolean, folder: boolean, person: string, other: string): string =>
+      [...(roster ? [person] : []), ...(folder ? [other] : [])].join(", and ");
     const computed = [...always, ...beyond];
     // eslint-disable-next-line no-control-regex -- excluding control chars is the point, not a leftover
     const unwritable = (paths: readonly string[]): string => paths.filter((path) => /[()\x00-\x1F\x7F]/.test(path)).map((p) => JSON.stringify(p)).join(", ");
@@ -834,11 +844,13 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     const unkept = unkeptBy(beyond);
     const theirs = unkept ? "" : unwritable(beyond);
     if (theirs) {
+      const whose = cases(unwritable(listed) !== "", unwritable(elsewhere) !== "", "another person's work", "another folder under the sandbox's worktrees");
       throw new Error(`refused the run: ${theirs} cannot be written as a rule the ${this.id} executor keeps, ` +
-        "and left off, another person's work would be readable");
+        `and left off, ${whose} would be readable`);
     }
     if (unkept) {
-      throw new Error(`refused the run: other people are on this instance, and it must not read their work, ${beyond.join(", ")}, ` +
+      const why = cases(listed.length > 0, elsewhere.length > 0, "another person is on the roster", "another folder is under the sandbox's worktrees, whoever's it is");
+      throw new Error(`refused the run: ${why}, and it must not read them, ${beyond.join(", ")}, ` +
         `but the ${this.id} executor cannot keep a command from reading a path`);
     }
     return [...new Set([...configured, ...computed])];
