@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { screenerFor, stepExecutorFor } from "#cli/start.js";
 import { configProblems } from "#config/load.js";
 import { localPerson } from "#people/person.js";
+import { admits, allowProblems } from "#people/allow.js";
 import { perPersonKeys } from "#people/keys.js";
 import { createCredentialStore } from "#people/store.js";
 import { connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
@@ -17,7 +18,10 @@ import { snapshotProvides } from "#runner/snapshot.js";
 import { WorkflowLoadError } from "#workflow/load.js";
 import { admitProblems, branchIsolationProblems, claimProblems, createProblems, pairingIsolationProblems, pairingStages, validate } from "#workflow/validate.js";
 import { readWorkspace } from "#workflow/workspace.js";
-import type { CredentialStore, ExecutorContext, LoadedConfig, LocalConfig, LoadedWorkflow, Problem, Registry, Source, Step, Workflow, Workspace, WorkspaceRead } from "#namespace.js";
+import type {
+  CredentialStore, ExecutorContext, LoadedConfig, LocalConfig, LoadedWorkflow, Problem, Registry, RuntimeConfig, Source, Step, ValidateResult, Workflow,
+  Workspace, WorkspaceRead,
+} from "#namespace.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -135,9 +139,47 @@ async function executorProblems(dir: string, loaded: LoadedConfig, registry: Reg
   }
 }
 
+/**
+ * What a remote instance shares that it may not mean to: a `secrets` string is
+ * one value every person's steps run with, so each of them acts as whoever it
+ * belongs to; and a per-person key's `env`, once set on this machine, answers
+ * for every person ahead of their own connection. Neither is wrong for every
+ * instance, so each is said, never refused.
+ */
+export function remoteWarnings(config: RuntimeConfig): string[] {
+  if (config.people?.oidc === undefined) return [];
+  const shared = Object.entries(config.secrets).filter(([, v]) => typeof v === "string").map(([name]) => name).sort();
+  return [
+    ...shared.map((name) =>
+      `secrets.${name} is one value for everyone: on a remote instance every person's steps run with it, as whoever it belongs to. ` +
+      "Make it { perPerson: true, connection: <id>.<field> } to give each person their own"),
+    ...perPersonKeys(config).flatMap((k) => k.env === undefined ? [] : [
+      `${k.kind === "secret" ? "secrets" : "vars"}.${k.name} reads $${k.env} first: on a remote instance, once that is set on this machine, ` +
+      "it answers for every person instead of their own connection. Drop its env",
+    ]),
+  ];
+}
+
+/**
+ * What `landrace validate` prints, and the exit code it ends with: each
+ * warning, each person's own problem, then valid or the problems. Warnings
+ * and people's problems never fail it.
+ */
+export function reportValidate(dir: string, result: ValidateResult, print: { out: (line: string) => void; err: (line: string) => void }): number {
+  for (const line of result.warnings) print.err(`warning: ${line}`);
+  for (const line of result.people) print.out(`  ${line}`);
+  if (result.ok) {
+    print.out(`${dir}: valid${result.people.length ? `; ${result.people.length} problem(s) above are people's own, for them to mend in the Integrations tab` : ""}`);
+    return 0;
+  }
+  for (const p of result.problems) print.err(`  ${p.rule}: ${p.message}`);
+  print.err(`\n${result.problems.length} problem(s)`);
+  return 1;
+}
+
 export async function runValidate(
   dir: string, opts: { credentials?: CredentialStore } = {},
-): Promise<{ ok: boolean; problems: Problem[]; people: string[] }> {
+): Promise<ValidateResult> {
   const problems: Problem[] = [];
   // Remotely, each stored person's own problems, `<email>: rule: message`:
   // theirs to mend in the Integrations tab, never the instance's, so never `ok`'s.
@@ -162,9 +204,13 @@ export async function runValidate(
     return null;
   });
   const loaded = local?.loaded ?? null;
-  // `start` refuses a door it would serve to anyone; `mcp --pairing` and the
-  // child server serve none, so the rule lives here and in `start`.
-  if (loaded) problems.push(...configProblems(dir, loaded), ...serveProblems(loaded.config.serve, loaded.config.people?.oidc));
+  // `start` refuses a door it would serve to anyone, or one that admits no
+  // one; `mcp --pairing` and the child server serve none, so the rules live
+  // here and in `start`.
+  if (loaded) {
+    problems.push(...configProblems(dir, loaded), ...serveProblems(loaded.config.serve, loaded.config.people?.oidc), ...allowProblems(loaded.config.people));
+  }
+  const warnings = loaded ? remoteWarnings(loaded.config) : [];
 
   /*
    * A var that did not resolve stops here, and the early return is the point.
@@ -180,7 +226,7 @@ export async function runValidate(
   const personal = remote && loaded ? perPersonKeys(loaded.config).filter((k) => k.kind === "var" && !loaded.vars.has(k.name)).map((k) => k.name) : [];
   const unanswered = remote ? [] : local?.problems ?? [];
   problems.push(...unanswered);
-  if (loaded?.missingVars.length || unanswered.length) return { ok: false, problems: [...problems, ...(await exposedEnv(dir))], people };
+  if (loaded?.missingVars.length || unanswered.length) return { ok: false, problems: [...problems, ...(await exposedEnv(dir))], people, warnings };
 
   // A workspace whose layout cannot be read is itself the thing `validate`
   // exists to report — §11.1-§11.2 — so a load failure must become a Problem
@@ -190,7 +236,7 @@ export async function runValidate(
     ws = await readWorkspace(dir, loaded ? new Map([...loaded.vars, ...personal.map((n): [string, string] => [n, ""])]) : undefined, loaded?.config.workflows);
   } catch (e) {
     const rule = e instanceof WorkflowLoadError ? e.rule : "schema";
-    return { ok: false, problems: [...problems, { rule, message: messageOf(e) }, ...(await exposedEnv(dir))], people };
+    return { ok: false, problems: [...problems, { rule, message: messageOf(e) }, ...(await exposedEnv(dir))], people, warnings };
   }
   // A workflow that would not load is reported in its folder's name, and the
   // others are still checked: one broken file does not hide the rest.
@@ -244,7 +290,9 @@ export async function runValidate(
       problems.push(...resolvePerson(local.configured, defined, nobody, { person: nobody, connections: {} }, { remote: true })
         .problems.filter((p) => p.rule === "connection.unknown"));
       const store = opts.credentials ?? createCredentialStore();
-      for (const person of (await store.list()).filter((p) => p.id !== LOCAL_PERSON_ID)) {
+      // Only those `people.allow` admits: the roster runs nothing for anyone else.
+      const allow = local.loaded.config.people?.allow;
+      for (const person of (await store.list()).filter((p) => p.id !== LOCAL_PERSON_ID && admits(allow, p.email))) {
         const judged = resolvePerson(local.configured, defined, person, await store.read(person.id), { remote: true });
         for (const p of judged.problems.filter((x) => x.rule.startsWith("connection.") && x.rule !== "connection.unknown")) {
           people.push(`${person.email ?? person.id}: ${p.rule}: ${p.message}`);
@@ -261,7 +309,7 @@ export async function runValidate(
   }
 
   problems.push(...(await exposedEnv(dir)));
-  return { ok: problems.length === 0, problems, people };
+  return { ok: problems.length === 0, problems, people, warnings };
 }
 
 /**

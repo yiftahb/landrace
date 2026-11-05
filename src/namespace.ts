@@ -3989,6 +3989,18 @@ export interface FrontDoorOptions {
   scrub?: (text: string) => string;
 }
 
+/**
+ * What `landrace validate` found. `problems` decide `ok`; `people` are each
+ * stored person's own, remotely, theirs to mend; `warnings` are what a remote
+ * instance shares that it may not mean to. Neither of the last two fails it.
+ */
+export interface ValidateResult {
+  ok: boolean;
+  problems: Problem[];
+  people: string[];
+  warnings: string[];
+}
+
 /** What a remote door signs people in with, and where it keeps its MCP clients. */
 export interface RemoteDoor {
   oidc: Oidc;

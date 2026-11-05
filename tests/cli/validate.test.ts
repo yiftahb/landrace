@@ -1,4 +1,5 @@
-import { runValidate } from "#cli/validate.js";
+import { reportValidate, runValidate } from "#cli/validate.js";
+import { createCredentialStore } from "#people/store.js";
 import { runNext } from "#cli/next.js";
 import { loadShipped } from "#tests/support/shipped.js";
 import { workflowIn, workspaceOf } from "#tests/support/workspace.js";
@@ -110,7 +111,7 @@ describe("landrace validate, over a workspace", () => {
   });
 
   it("is valid when every workflow in it is", async () => {
-    expect(await runValidate(await workspace({ main: SOUND("Main"), fastlane: SOUND("Fastlane") }))).toEqual({ ok: true, problems: [], people: [] });
+    expect(await runValidate(await workspace({ main: SOUND("Main"), fastlane: SOUND("Fastlane") }))).toEqual({ ok: true, problems: [], people: [], warnings: [] });
   });
 
   it("does not prefix a problem with the id when there is only one workflow to be in", async () => {
@@ -150,6 +151,7 @@ describe("landrace validate, over a workspace", () => {
     expect(await runValidate("tests/fixtures/minimal")).toEqual({
       ok: false,
       people: [],
+      warnings: [],
       problems: [{ rule: "layout", message: expect.stringMatching(/workflow\.yaml is the layout before workspaces; move it to .*workflows\/main\/workflow\.yaml/) }],
     });
 
@@ -329,6 +331,40 @@ describe("landrace validate, and the notify block", () => {
     expect(wide.problems.filter((p) => p.rule.startsWith("serve"))).toEqual([]);
     const unnamed = await runValidate(await dirFor(`serve: { host: "0.0.0.0" }\n${OIDC}`));
     expect(unnamed.problems.filter((p) => p.rule.startsWith("serve")).map((p) => p.rule)).toEqual(["serve.public-url"]);
+  });
+
+  // #204: a remote instance lists who it admits, or it admits nobody.
+  const SERVED = 'serve: { host: "0.0.0.0", publicUrl: "https://landrace.example.com/" }\n';
+  const nobodyStored = { credentials: createCredentialStore(join(tmpdir(), "landrace-validate-nobody", "credentials")) };
+  it.each([
+    ["absent", OIDC],
+    ["empty", OIDC.replace("} }\n", "}, allow: [] }\n")],
+  ])("fails a remote instance whose people.allow is %s, naming it, and exits 1", async (_, people) => {
+    const r = await runValidate(await dirFor(`${SERVED}${people}`), nobodyStored);
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContainEqual({ rule: "people.allow", message: expect.stringContaining("people.allow lists no one") });
+    const printed: string[] = [];
+    expect(reportValidate("dir", r, { out: (l) => printed.push(l), err: (l) => printed.push(l) })).toBe(1);
+    expect(printed).toContainEqual(expect.stringMatching(/^ {2}people\.allow: /));
+  });
+
+  it("draws no people.allow problem for a remote instance that lists someone, or a local one", async () => {
+    const listed = await runValidate(await dirFor(`${SERVED}${OIDC.replace("} }\n", '}, allow: ["@example.com"] }\n')}`), nobodyStored);
+    expect(listed.problems.filter((p) => p.rule === "people.allow")).toEqual([]);
+    const local = await runValidate(await dirFor(""));
+    expect(local.problems.filter((p) => p.rule === "people.allow")).toEqual([]);
+    expect(local.warnings).toEqual([]);
+  });
+});
+
+describe("what landrace validate prints", () => {
+  it("prints each warning as warning:, and exits 0 when the instance is valid", () => {
+    const printed: string[] = [];
+    const code = reportValidate(".landrace", { ok: true, problems: [], people: [], warnings: ["secrets.githubToken is one value for everyone"] }, {
+      out: (l) => printed.push(`out ${l}`), err: (l) => printed.push(`err ${l}`),
+    });
+    expect(code).toBe(0);
+    expect(printed).toEqual(["err warning: secrets.githubToken is one value for everyone", "out .landrace: valid"]);
   });
 });
 
