@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
-  ensureWorktree, gitControlPaths, gitDirsOf, keptSlot, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead, worktreeState,
+  ensureWorktree, gitControlPaths, gitDirsOf, keptSlot, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead, worktreeIntact,
+  worktreeState,
 } from "#agent/worktree.js";
 import { GIT_GUARD_ARGS } from "#conventions.js";
 import { branchHeads, fetchBranch, gitIn, pushBranch } from "#kit/git.js";
@@ -277,6 +278,82 @@ describe("the admin folder the engine's git uses", () => {
     const { root, path, admin } = await setup();
     await writeFile(join(admin, "gitdir"), "/somewhere/else/.git\n");
     await expect(gitDirsOf(path, root)).rejects.toThrow(/no admin folder under .* names it/);
+  });
+});
+
+// A step's sandbox reaches every admin folder under the git directory, those
+// git makes while it runs too — another item's worktree, a turn's, a
+// pairing's — and those are on no list it was handed. Landrace's git never
+// reads their `commondir`; the person pairing in one, or an agent run there,
+// runs git that does. So each worktree is checked before it is handed out or
+// run in, the way git itself would read it.
+describe("a worktree handed out or run in", () => {
+  async function setup(): Promise<{ root: string; path: string; common: string; admin: string }> {
+    const { root } = await gitRepoWithOrigin();
+    const path = await ensureWorktree("8", root);
+    return { root, path, ...(await dirsOf(root, path)) };
+  }
+
+  it("passes as git made it", async () => {
+    const { root, path } = await setup();
+    await expect(worktreeIntact(path, root)).resolves.toBeUndefined();
+  });
+
+  it("passes for a checkout whose .git is a directory", async () => {
+    const { root } = await gitRepoWithOrigin();
+    await expect(worktreeIntact(realpathSync(root), root)).resolves.toBeUndefined();
+  });
+
+  it("is armed: a person's own git there follows a commondir a step rewrote, and runs its code", async () => {
+    const t = await trap();
+    const { root, path, common, admin } = await setup();
+    const evilCommon = await evilCopy(common, join(t.dir, "common"), t);
+    await writeFile(join(admin, "commondir"), `${evilCommon}\n`);
+    await exec("git", ["status"], { cwd: path }).catch(() => undefined);
+    expect(ran(t.marker)).toBe(true);
+    await expect(worktreeIntact(path, root)).rejects.toThrow(join(admin, "commondir"));
+  });
+
+  it("halts on a commondir naming another git directory, naming it and where it points", async () => {
+    const { root, path, admin } = await setup();
+    const elsewhere = await mkdtemp(join(tmpdir(), "lr-elsewhere-"));
+    made.push(elsewhere);
+    await writeFile(join(admin, "commondir"), `${elsewhere}\n`);
+    const refused = worktreeIntact(path, root);
+    await expect(refused).rejects.toThrow(join(admin, "commondir"));
+    await expect(worktreeIntact(path, root)).rejects.toThrow(realpathSync(elsewhere));
+  });
+
+  it("halts on a commondir that names nothing", async () => {
+    const { root, path, admin } = await setup();
+    await writeFile(join(admin, "commondir"), "/no/such/dir\n");
+    await expect(worktreeIntact(path, root)).rejects.toThrow(/commondir.*\/no\/such\/dir/);
+  });
+
+  it("halts on an admin folder with no commondir, which git would read as a repository of its own", async () => {
+    const { root, path, admin } = await setup();
+    await rm(join(admin, "commondir"));
+    await expect(worktreeIntact(path, root)).rejects.toThrow(`${join(admin, "commondir")} is missing`);
+  });
+
+  it.each(["config", "hooks", "info"])("halts on an admin folder holding %s, naming it", async (file) => {
+    const { root, path, admin } = await setup();
+    if (file === "config") await writeFile(join(admin, file), "[core]\n\tfsmonitor = /bin/true\n");
+    else await mkdir(join(admin, file));
+    await expect(worktreeIntact(path, root)).rejects.toThrow(`${join(admin, file)} exists`);
+  });
+
+  it("keeps the admin folder lookup's config.worktree halt", async () => {
+    const { root, path, admin } = await setup();
+    await writeFile(join(admin, "config.worktree"), "");
+    await expect(worktreeIntact(path, root)).rejects.toThrow(join(admin, "config.worktree"));
+  });
+
+  it("accepts the relative commondir git writes, and an absolute one naming the same directory", async () => {
+    const { root, path, common, admin } = await setup();
+    expect((await readFile(join(admin, "commondir"), "utf8")).trim()).toBe("../..");
+    await writeFile(join(admin, "commondir"), `${common}\n`);
+    await expect(worktreeIntact(path, root)).resolves.toBeUndefined();
   });
 });
 

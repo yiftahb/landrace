@@ -228,6 +228,21 @@ describe("starting a pairing", () => {
     expect(records(tracker, "pair")).toHaveLength(1);
   });
 
+  // A write step of another item may rewrite the pairing slot's admin folder
+  // (see worktreeIntact): the person's own git there would follow it.
+  it("refuses to hand out a worktree whose admin folder a step rewrote, naming the file", async () => {
+    const a = agent();
+    const { deps } = owed(a.executor);
+    const first = await startPair(deps, "29", "spec");
+    const common = realpathSync(join(repo, ".git"));
+    const admin = join(common, "worktrees", "29.pair");
+    expect((await readFile(join(admin, "gitdir"), "utf8")).trim()).toBe(join(first.cwd, ".git"));
+    await writeFile(join(admin, "commondir"), `${tmpdir()}\n`);
+
+    await expect(startPair(deps, "29", "spec")).rejects.toThrow(join(admin, "commondir"));
+    expect(a.handoffs).toHaveLength(1);
+  });
+
   it("on a goto target, enters the stage after the pair record and continues the agent's session", async () => {
     const a = agent();
     const { deps, tracker, run } = reviewed(a.executor);

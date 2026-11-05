@@ -129,6 +129,32 @@ describe("a step that exceeds what it declared", () => {
     await removeWorktree("103", root);
   });
 
+  // A write step elsewhere may have rewritten this worktree's admin folder
+  // while it ran (see worktreeIntact): the agent's own git there would follow it.
+  it.each([["read", ["repo:read"]], ["write", ["repo:read", "repo:write"]]])(
+    "refuses a %s step in a worktree whose commondir names another git directory, and never runs it",
+    async (_tier, capabilities) => {
+      const root = await repo();
+      const path = await ensureWorktree("105", root);
+      const common = realpathSync(join(root, ".git"));
+      const admin = join(common, "worktrees", basename(path));
+      await writeFile(join(admin, "commondir"), `${tmpdir()}\n`);
+      let ran = false;
+      const r = await runStep({
+        item: "1", step: step(capabilities),
+        stageId: "spec", round: 1, snapshot: {},
+        executor: { id: "never", run: async () => { ran = true; return { text: "", sessionId: null }; } },
+        signal: new AbortController().signal,
+        sandbox: { path, root },
+      });
+      expect(r).toMatchObject({ ok: false, kind: "refused" });
+      expect((r as Fail).reason).toContain(join(admin, "commondir"));
+      expect(ran).toBe(false);
+      await writeFile(join(admin, "commondir"), "../..\n");
+      await removeWorktree("105", root);
+    },
+  );
+
   it("lets the same write through for a step that declared repo:write", async () => {
     const root = await repo();
     const path = await ensureWorktree("104", root);

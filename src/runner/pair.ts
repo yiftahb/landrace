@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 
 import { screenPrompt } from "#agent/screen.js";
-import { ensureWorktree, gitControlPaths, pathFor, removeWorktree, worktreeOf, worktreeState } from "#agent/worktree.js";
+import { ensureWorktree, gitControlPaths, pathFor, removeWorktree, worktreeIntact, worktreeOf, worktreeState } from "#agent/worktree.js";
 import {
   CHILD_SERVER_NAME,
   durationMs,
@@ -256,6 +256,9 @@ export function startPair(deps: PairDeps, item: string, stageId: string): Promis
     // Found before it is cut: the person may already be working in it, and
     // cutting again would rebuild a checkout that has fallen behind.
     const cwd = (await worktreeOf(slotOf(item), root)) ?? (await ensureWorktree(item, root, on, slotOf(item), { signal: deps.ctx.signal }));
+    // The person runs git of their own here, outside any sandbox, and it
+    // follows an admin folder a write step elsewhere could have rewritten.
+    await worktreeIntact(cwd, root);
 
     // The seed holds item text anyone can write, and the command is pasted
     // into a terminal, which acts on control characters before any shell

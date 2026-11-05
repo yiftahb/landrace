@@ -24,7 +24,7 @@ import {
 } from "#conventions.js";
 import type { Executor, Screener, StepSandbox } from "#namespace.js";
 import { screenPrompt } from "#agent/screen.js";
-import { changedSince, worktreeState } from "#agent/worktree.js";
+import { changedSince, worktreeIntact, worktreeState } from "#agent/worktree.js";
 import { extractJsonBlock } from "#agent/json-block.js";
 import { messageOf } from "#runner/errors.js";
 import { childServerFor } from "#runner/children.js";
@@ -120,6 +120,9 @@ const MAX_NAMED_CHANGES = 10;
  * than a skip, and it is a refusal *before* anything is paid for — a skipped
  * capability check is the capability not existing.
  *
+ * First, at either tier, the worktree must read as git made it
+ * (`worktreeIntact`), or the run is refused before it starts.
+ *
  * `null` whenever there is nothing to judge — no sandbox, or a declaration
  * that includes `repo:write` and is entitled to change things — so "did we
  * read a before state" and "should we compare" cannot become two conditions
@@ -133,7 +136,15 @@ export async function sandboxBefore(
   sandbox: StepSandbox | undefined,
   capabilities: readonly string[] | undefined,
 ): Promise<{ ok: true; before: WorktreeState | null } | { ok: false; reason: string }> {
-  if (!sandbox || mayWriteRepo(capabilities)) return { ok: true, before: null };
+  if (!sandbox) return { ok: true, before: null };
+  // At either tier: the agent's own git follows the admin folder's
+  // `commondir`, which a write step elsewhere may have rewritten.
+  try {
+    await worktreeIntact(sandbox.path, sandbox.root);
+  } catch (e) {
+    return { ok: false, reason: messageOf(e) };
+  }
+  if (mayWriteRepo(capabilities)) return { ok: true, before: null };
   try {
     return { ok: true, before: await worktreeState(sandbox.path, sandbox.root) };
   } catch (e) {

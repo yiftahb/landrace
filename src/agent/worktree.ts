@@ -180,6 +180,51 @@ export async function gitDirsOf(path: string, repoRoot: string): Promise<GitDirs
   return { GIT_DIR: await adminDirOf(path, common, what), GIT_COMMON_DIR: common, GIT_WORK_TREE: path };
 }
 
+/**
+ * That a worktree reads as git made it, before it is handed to a person or
+ * an agent is run in it: its admin folder, found by lookup, has a `commondir`
+ * naming this repository's common directory, and no `config`, `hooks` or
+ * `info` of its own. A checkout whose `.git` is a directory has no admin
+ * folder, and passes.
+ *
+ * The engine's own git never reads `commondir` (`gitDirsOf`). But a write
+ * step's sandbox reaches every admin folder, and one git made while the step
+ * ran — another item's worktree, a turn's, a pairing's — was on no list it
+ * was handed. The person pairing there runs git of their own, and so does an
+ * agent run there: both follow `commondir` to whatever the step built, and
+ * run its hooks or fsmonitor. Asked again at each hand-out, never once: a
+ * step still running can write after it, which `docs/security.md` states.
+ */
+export async function worktreeIntact(path: string, repoRoot: string): Promise<void> {
+  const dotGit = join(path, ".git");
+  if (await lstat(dotGit).then((s) => s.isDirectory(), () => false)) return;
+  const what = `refusing to hand out or run in ${path}`;
+  const common = await commonDirOf(repoRoot, what);
+  const admin = await adminDirOf(path, common, what);
+  const file = join(admin, "commondir");
+  const named = await readFile(file, "utf8").catch((e: unknown) => {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`${what}: ${messageOf(e)}`);
+  });
+  if (named === null) {
+    throw new Error(`${what}: ${file} is missing, so git there would read ${admin} as a repository of its own`);
+  }
+  const target = resolve(admin, named.trim());
+  const resolved = await realpath(target).catch(() => null);
+  if (resolved !== common) {
+    throw new Error(
+      `${what}: ${file} names ${resolved ?? `${target}, which does not exist`}, not ${common}; ` +
+      "a step that may write could have pointed it at a git directory of its own",
+    );
+  }
+  for (const own of ["config", "hooks", "info"]) {
+    const at = join(admin, own);
+    if (await lstat(at).then(() => true, () => false)) {
+      throw new Error(`${what}: ${at} exists, and git never makes one in an admin folder; a step that may write could have put it there`);
+    }
+  }
+}
+
 // `commondir` in the common directory too: git reads it in any git directory,
 // the main one included, so written there it would hand every git in the
 // checkout — the operator's, and the engine's fetch, push and `worktree add`,

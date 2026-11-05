@@ -61,7 +61,7 @@ Two rules stop that:
 
 - **A write step may not write the git control paths.** Landrace lists them for each write run, and the agent integration keeps the run from writing them, whatever `agent.sandbox.deny` says. A path that does not exist yet is listed too, so the step cannot create it.
   - In the repository's common git directory: `config`, `config.worktree`, `commondir`, `hooks/` and `info/`. git reads `commondir` there too: written, it points every git in your checkout at a directory and config the step made.
-  - In each worktree's admin folder under `worktrees/`: `config`, `config.worktree`, `hooks/`, `info/`, `commondir` and `gitdir`. git never reads an admin folder's own `config` or `hooks/`, unless a step remade the folder without `commondir`. Then your git, in a checkout that is a linked worktree, would read them as a repository's.
+  - In each worktree's admin folder under `worktrees/` that exists when the run starts: `config`, `config.worktree`, `hooks/`, `info/`, `commondir` and `gitdir`. git never reads an admin folder's own `config` or `hooks/`, unless a step remade the folder without `commondir`. Then your git, in a checkout that is a linked worktree, would read them as a repository's.
   - The worktree's own `.git` file.
   - With `agent.isolation: none`, the same paths of the checkout the step runs in and of the workspace's checkout.
 - **Landrace's git runs no hook and no fsmonitor, and does not trust a worktree's pointers.** Every git command it starts carries `-c core.hooksPath=/dev/null -c core.fsmonitor=false`. In a step's worktree it finds the admin folder itself — the one folder whose `gitdir` names the worktree — and takes the common directory from your checkout, never from the admin folder's `commondir`.
@@ -69,6 +69,8 @@ Two rules stop that:
 The step's commits, fetches, merges and pushes work as before: objects, refs, the index and `HEAD` stay writable.
 
 **Halts.** A worktree's admin folder holding a `config.worktree` halts the item, naming the file: Landrace never makes one, and with `extensions.worktreeConfig` on it could set a filter. No admin folder naming the worktree, or two, halts it too, naming them.
+
+**A worktree is checked before it is used.** Before a step or a conversation turn runs in a worktree, and before a pairing hands one to you, Landrace reads that worktree's admin folder the way git would. Its `commondir` must name the repository's common directory, and the folder must hold no `config`, `hooks/` or `info/`. Otherwise the run is refused, or the pairing is not handed out, and the message names the file. This matters for admin folders that git makes while a write step runs, such as another item's worktree or a pairing's. They are on no list that step was given. Your own git in a pairing, and an agent's git in a run, follow `commondir`.
 
 **Integrations.** An integration keeps these paths only if it declares `keepsDenyWrite` ([Hooks](hooks.md#baseexecutor)). Claude Code does. Codex does not, so `start` and `validate` refuse a step that may write under Codex, naming the step.
 
@@ -78,6 +80,7 @@ What these rules do not cover:
 - **A filter you already configured.** A step can commit a `.gitattributes` that routes files through a filter driver your own config defines, such as Git LFS. Landrace overrides no `filter.*`, since that breaks `git lfs install --local`.
 - **Hooks your config points into the repository.** If your `core.hooksPath` names a tracked folder, as `husky` sets it, a step can commit a hook there. It runs when you check the branch out and commit.
 - **Submodules.** A submodule's git directory under `modules/` is not listed.
+- **A worktree made while a write step runs, after it is checked.** A write step can still write such a worktree's admin folder after the check, while you pair there or a run uses it. If a pairing starts while another item's write step runs, check its `commondir` with the commands below before you run git there.
 - **Your hooks in Landrace's own git.** Landrace's git runs none of your hooks either, Git LFS's included. LFS filters still run, since they are configuration, not hooks.
 
 To check a repository a step has written to, run these in your checkout. Each lists what git would run, and where it is set:
