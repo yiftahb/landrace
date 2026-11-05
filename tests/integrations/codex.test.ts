@@ -398,8 +398,12 @@ describe("the Codex integration", () => {
       };
 
       it("refuses the run, naming what it could read", async () => {
-        await expect(started(["~/.landrace/credentials", "/tmp/landrace/r/worktrees/bob"]))
-          .rejects.toThrow(/refused the run[\s\S]*\/tmp\/landrace\/r\/worktrees\/bob[\s\S]*codex cannot keep a command from reading/);
+        const refused = await started(["~/.landrace/credentials", "/tmp/landrace/r/worktrees/bob"]).then(() => "", (e: Error) => e.message);
+        expect(refused).toMatch(/refused the run: other people are on this instance[\s\S]*\/tmp\/landrace\/r\/worktrees\/bob[\s\S]*the codex executor cannot keep a command from reading a path/);
+        // Not the startup text: the operator's agent.sandbox.deny named none of
+        // this, and writing deny: [] does not lift this refusal.
+        expect(refused).not.toContain("agent.sandbox.deny");
+        expect(refused).not.toContain("deny: []");
       });
 
       it("runs as it always has when nobody else is there", async () => {

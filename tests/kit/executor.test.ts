@@ -593,7 +593,10 @@ describe("a run's deny list, computed when it starts", () => {
 
   it("refuses an agent that cannot keep the list when it names more than the credentials", async () => {
     const leaky = new Leaky(markingBin());
-    await expect(run(leaky, () => Promise.resolve([CREDS, "/w/bob"]), ["repo:read"])).rejects.toThrow(/\/w\/bob[\s\S]*leaky cannot keep/);
+    const refused = await run(leaky, () => Promise.resolve([CREDS, "/w/bob"]), ["repo:read"]).then(() => "", (e: Error) => e.message);
+    expect(refused).toMatch(/other people are on this instance[\s\S]*\/w\/bob[\s\S]*the tiny executor cannot keep a command from reading a path/);
+    // Its startup text is about the operator's agent.sandbox.deny, which named none of this.
+    expect(refused).not.toContain("from a command");
     expect(leaky.plans).toEqual([]);
   });
 

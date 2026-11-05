@@ -819,10 +819,13 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
         "and left off, another person's work would be readable");
     }
     const beyond = computed.filter((path) => path !== CREDENTIALS_DENY);
+    // `sandboxProblems` only decides: its words are about the operator's
+    // `agent.sandbox.deny`, which named none of these, and its fix — `deny: []`
+    // — does not lift this refusal.
     const unkept = beyond.length ? this.sandboxProblems?.({ hosts: [], deny: beyond }) ?? [] : [];
     if (unkept.length) {
-      throw new Error(`refused the run: it must not read ${beyond.join(", ")} — other people's work on this instance — ` +
-        `and the ${this.id} executor cannot keep it from them: ${unkept.join("; ")}`);
+      throw new Error(`refused the run: other people are on this instance, and it must not read their work, ${beyond.join(", ")}, ` +
+        `but the ${this.id} executor cannot keep a command from reading a path`);
     }
     return [...new Set([...configured, ...computed])];
   }
