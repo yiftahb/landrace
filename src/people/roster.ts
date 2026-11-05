@@ -177,6 +177,10 @@ export function createRoster(opts: RosterOptions): Roster {
       // itself, exactly as a runner of one always did.
       const [only, ...more] = running;
       if (only !== undefined && more.length === 0) {
+        // Nobody to share with, so nothing is claimed twice: a set judged while
+        // someone else was here would keep holding items from page writes,
+        // Refresh and the MCP tools that this tick works.
+        lastAmbiguous = new Map();
         const rows = await tickWorkspace({
           runtime: only.rt, ...(opts.lock ? { lock: opts.lock } : {}),
           onList: (listing) => {

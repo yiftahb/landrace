@@ -350,6 +350,27 @@ describe("one runner, many people", () => {
     },
   );
 
+  /*
+   * Page writes, Refresh and the MCP tools read the last tick's set: one
+   * judged while bob was here must not hold 7 from alice once she ticks alone.
+   */
+  it.each([
+    ["one person ticks alone", ["bob"], ["alice:7"]],
+    ["nobody is ready", ["alice", "bob"], []],
+  ] as const)("forgets what two people claimed once %s", async (_, leaving, ran) => {
+    const store = await storeOf(["alice", "bob"]);
+    const w = await world({ people: ["alice", "bob"], store, items: [{ id: "7", labels: ["for:alice", "for:bob"] }] });
+    await w.roster.tick();
+    expect(w.roster.ambiguous()).toEqual(new Map([["7", ["alice", "bob"]]]));
+
+    for (const id of leaving) await store.remove(id, "claude");
+    await w.roster.sync();
+    await w.roster.tick();
+
+    expect(w.roster.ambiguous()).toEqual(new Map());
+    expect(w.runs.map((r) => `${r.person}:${r.item}`)).toEqual(ran);
+  });
+
   it("ticks alice while bob has no Claude connection, and bob's board is not ready", async () => {
     const w = await world({
       people: ["alice", "bob"], store: await storeOf(["alice", "bob"], { without: ["bob"] }),
