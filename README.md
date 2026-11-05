@@ -69,6 +69,8 @@ stateDiagram-v2
     merge --> [*]
 ```
 
+- **One instance for a team.** A team can share one Landrace instance. Each person signs in with their own account at your identity provider and runs steps on their own keys: see [Remote mode](docs/remote.md).
+
 ## Quick start
 
 You need Node 22 or newer, a GitHub repository and a classic token with the `repo` scope, and Claude Code or Codex installed.
@@ -158,7 +160,7 @@ Landrace's operator server is an MCP endpoint that `landrace start` serves besid
 - *"Send #65 back to build with this note."*
 - *"Make #59 wait for #56."*
 
-The agent answers them with tools such as `landrace_waiting`, `landrace_create_item`, `landrace_reply`, `landrace_goto`, and `landrace_update_item`, whose `relate` field links one item to another. Every tool is in [the operator tools](docs/cli.md#the-operator-tools). To connect Claude Code, run `claude mcp add --transport http landrace http://127.0.0.1:4545/mcp` while `landrace start` runs; the rest is in [Connecting an editor](docs/cli.md#connecting-an-editor).
+The agent answers them with tools such as `landrace_waiting`, `landrace_create_item`, `landrace_reply`, `landrace_goto`, and `landrace_update_item`, whose `relate` field links one item to another. Every tool is in [the operator tools](docs/cli.md#the-operator-tools). To connect Claude Code, run `claude mcp add --transport http landrace http://127.0.0.1:4545/mcp` while `landrace start` runs; the rest is in [Connecting an editor](docs/cli.md#connecting-an-editor). On a remote instance, each person connects to `<publicUrl>/mcp` instead and signs in through OAuth ([Connecting an MCP client](docs/remote.md#connecting-an-mcp-client)).
 
 The Chat entries in an item's ⋯ menu on the board open a chat about it over this server, with the prompt filled in. A step allowed to create sub-items gets the engine's own server instead, a separate one bound to its item, with exactly one tool, `landrace_create_child`: see [Workflows](docs/workflows.md#splitting-work-into-sub-items).
 
