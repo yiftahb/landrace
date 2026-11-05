@@ -2,7 +2,6 @@ import { join } from "node:path";
 import { configProblems, loadConfig } from "#config/load.js";
 import { LOCAL_PERSON_ID } from "#conventions.js";
 import { perPersonKeys } from "#people/keys.js";
-import { createCredentialStore } from "#people/store.js";
 import { messageOf } from "#runner/errors.js";
 import type {
   ConnectionDef, ConnectionStatus, ConnectionValue, CredentialStore, ExecutorConnection, LoadedConfig, LocalConfig, PerPersonKey, Person, PersonCredentials,
@@ -64,7 +63,7 @@ export function personValues(
  * configuration per person.
  */
 export async function loadLocalConfig(
-  dir: string, store: CredentialStore = createCredentialStore(), personId: string = LOCAL_PERSON_ID,
+  dir: string, store: CredentialStore, personId: string = LOCAL_PERSON_ID,
 ): Promise<LocalConfig> {
   const configured = await loadConfig(dir);
   if (perPersonKeys(configured.config).length === 0) return { dir, configured, loaded: configured, credentials: null, problems: [] };
@@ -128,7 +127,7 @@ export function connectionsOf(registries: ReadonlyArray<{ id: string; registry: 
  * and the store stays unopened.
  */
 export async function localCredentials(
-  local: LocalConfig, person: Person, connections: ReadonlyMap<string, ConnectionDef>, store: CredentialStore = createCredentialStore(),
+  local: LocalConfig, person: Person, connections: ReadonlyMap<string, ConnectionDef>, store: CredentialStore,
 ): Promise<PersonCredentials> {
   if (local.credentials !== null) return local.credentials;
   return connections.size > 0 ? store.read(person.id) : { person, connections: {} };

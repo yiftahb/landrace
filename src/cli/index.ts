@@ -7,6 +7,7 @@ import { runInit } from "#cli/init.js";
 import { reportValidate, runValidate } from "#cli/validate.js";
 import { runNext } from "#cli/next.js";
 import { runChildMcp, runMcp } from "#cli/mcp.js";
+import { keyLocatorOf } from "#people/key.js";
 import { runStart, startCommand } from "#cli/start.js";
 import { runStatus } from "#cli/status.js";
 import { portCommand } from "#cli/port.js";
@@ -134,7 +135,14 @@ program
   .option("--stage <stage>", "with --child: the stage creating the children")
   .option("--round <round>", "with --child: the round creating the children")
   .option("--person <id>", "whose step the server serves; with --child, whose connections the children are created with")
-  .action(async (opts: { workspace: string; workflow?: string; pairing?: boolean; child?: string; stage?: string; round?: string; person?: string }) => {
+  // Where `landrace start` found the credentials key, pinned by it: never the key.
+  .addOption(new Option("--key-source <source>", "the secret store holding the credentials key: keychain, secret-service, systemd or none").hideHelp())
+  .addOption(new Option("--key-dir <dir>", "with --key-source=systemd: the directory holding the key").hideHelp())
+  .addOption(new Option("--key-bus <address>", "with --key-source=secret-service: the session bus to ask it on").hideHelp())
+  .action(async (opts: {
+    workspace: string; workflow?: string; pairing?: boolean; child?: string; stage?: string; round?: string; person?: string;
+    keySource?: string; keyDir?: string; keyBus?: string;
+  }) => {
     // The MCP client that spawned us shows stderr, so what loadingHooks prints
     // there is the only diagnostic a user gets.
     await loadingHooks("mcp", () => {
@@ -145,9 +153,9 @@ program
         if (opts.workflow === undefined) throw new Error("--child needs --workflow");
         // Never defaulted: a child server that guessed would file one person's sub-items with another's keys.
         if (opts.person === undefined) throw new Error("--child needs --person");
-        return runChildMcp(opts.workspace, { parent: opts.child, stage: opts.stage, round: Number(opts.round) }, opts.workflow, opts.person);
+        return runChildMcp(opts.workspace, { parent: opts.child, stage: opts.stage, round: Number(opts.round) }, opts.workflow, opts.person, keyLocatorOf(opts));
       }
-      return runMcp(opts.workspace, { scope: opts.workflow, pairing: opts.pairing === true, person: opts.person });
+      return runMcp(opts.workspace, { scope: opts.workflow, pairing: opts.pairing === true, person: opts.person, key: () => keyLocatorOf(opts) });
     });
   });
 

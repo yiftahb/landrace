@@ -7,14 +7,14 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { buildWorkspaceRuntime, childServerCommand, localGate, runStart } from "#cli/start.js";
+import { buildWorkspaceRuntime, childServerCommand, denyPathsFor, keyDirOf, localGate, runStart } from "#cli/start.js";
 import { buildChildTool } from "#cli/mcp.js";
 import { createLogger } from "#runner/events.js";
 import { runStatus } from "#cli/status.js";
 import { portCommand, readInstance, writeInstance } from "#cli/port.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
-import type { BoardView, BuildOptions, CredentialStore, FrontDoorOptions, LandraceEvent, RunningItem, StartOptions, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
+import type { BoardView, BuildOptions, CredentialStore, FrontDoorOptions, KeyHelper, LandraceEvent, RunningItem, StartOptions, WorkflowRuntime, WorkspaceRuntime } from "#namespace.js";
 import { frontDoorListener } from "#front/server.js";
 import { reportValidate, runValidate } from "#cli/validate.js";
 import { createCredentialStore } from "#people/store.js";
@@ -30,6 +30,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { workflowIn } from "#tests/support/workspace.js";
+import { fakeKeychain, keyless } from "#tests/support/fake-key.js";
 
 /**
  * `buildWorkspaceRuntime` over a hook module that is a real file on disk, imported the
@@ -278,7 +279,10 @@ describe("buildWorkspaceRuntime", () => {
   it("hands converge how to start its own item server, as this process on this workflow directory", async () => {
     const { dir } = await fixture();
     const rt = await buildMain(dir, {});
-    expect(rt.deps.childServer).toEqual(childServerCommand(dir, "main", "local"));
+    expect(rt.deps.childServer).toEqual(childServerCommand(dir, "main", "local", { source: "none" }));
+    // #205: pinned to where the start found the key, the source alone.
+    const systemd = { source: "systemd", dir: "/run/credentials/landrace.service" } as const;
+    expect((await buildMain(dir, { key: systemd })).deps.childServer).toEqual(childServerCommand(dir, "main", "local", systemd));
   });
 
   /**
@@ -347,7 +351,7 @@ describe("buildWorkspaceRuntime", () => {
     const log = console.log;
     console.log = (line: unknown): void => { printed.push(String(line)); };
     try {
-      await runStart(dir, { once: true, ui: false });
+      await runStart(dir, { ...keyless(), once: true, ui: false });
     } finally {
       console.log = log;
     }
@@ -755,7 +759,7 @@ ${EXECUTOR}`);
     expect(rt.workflows.map((w) => w.id)).toEqual(["main", "fast"]);
     expect(rt.workflows[0]?.source).toBe(rt.workflows[1]?.source);
     expect(rt.preflights).toHaveLength(1);
-    expect(rt.workflows.map((w) => w.deps.childServer)).toEqual([childServerCommand(dir, "main", "local"), childServerCommand(dir, "fast", "local")]);
+    expect(rt.workflows.map((w) => w.deps.childServer)).toEqual([childServerCommand(dir, "main", "local", { source: "none" }), childServerCommand(dir, "fast", "local", { source: "none" })]);
 
     await mkdir(join(workflowIn(dir, "fast"), "steps"), { recursive: true });
     await writeFile(join(workflowIn(dir, "fast"), "steps", "build.md"), [
@@ -987,7 +991,7 @@ describe("the startup preflight", () => {
 
   it("runs through runStart, before the tick it gates", async () => {
     const { dir, record } = await fixture({ preflight: "pass" });
-    await runStart(dir, { once: true });
+    await runStart(dir, { ...keyless(), once: true });
     expect(await applied(record)).toEqual([
       { preflight: true },
       { item: ITEM, type: "tracker.comment" },
@@ -1006,7 +1010,7 @@ describe("the startup preflight", () => {
       const { dir, record } = await fixture({ items: [], workflow: stepped(declared.includes("items:create")), hookExtra: CAPABILITIES });
       await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
       await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), breakdownStep(declared));
-      await runStart(dir, { once: true });
+      await runStart(dir, { ...keyless(), once: true });
       return await applied(record);
     };
     expect(await capabilities("repo:read, items:create")).toEqual([{ capabilities: ["items:create", "repo:read"] }]);
@@ -1022,7 +1026,7 @@ describe("the startup preflight", () => {
     const { dir, record } = await fixture({ items: [], workflow: stepped(false), hookExtra: CREATE_FIELDS });
     await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
     await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), FILING_STEP);
-    await runStart(dir, { once: true });
+    await runStart(dir, { ...keyless(), once: true });
     expect(await applied(record)).toEqual([{ createFields: { ENG: ["customfield_10050"] } }]);
   });
 
@@ -1037,7 +1041,7 @@ describe("the startup preflight", () => {
     const { dir, record } = await fixture({ items: [], workflow: FIELDS_WORKFLOW, hookExtra: FIELD_VALUES });
     await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
     await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), FIELD_STEP);
-    await runStart(dir, { once: true });
+    await runStart(dir, { ...keyless(), once: true });
     expect(await applied(record)).toEqual([{
       trackerFields: ["customfield_10123", "customfield_10124"],
       fieldValues: { customfield_10123: [["R&D"]], customfield_10124: [3] },
@@ -1061,7 +1065,7 @@ describe("the startup preflight", () => {
       .replace('customfield_10123: ["R&D"]', 'customfield_10125: ["Ops"]'));
     await writeFile(join(workflowIn(dir, "ops"), "steps", "breakdown.md"), FIELD_STEP.replace("customfield_10124: 3", "customfield_10126: 4"));
     await writeFile(join(dir, "hooks", "ops.ts"), OPS_FIELD_VALUES);
-    await runStart(dir, { once: true });
+    await runStart(dir, { ...keyless(), once: true });
     expect(await applied(record)).toEqual([
       {
         trackerFields: ["customfield_10123", "customfield_10124", "customfield_10125", "customfield_10126"],
@@ -1264,7 +1268,7 @@ describe("runStart --once over two workflows", () => {
     const { dir, record } = await fixture({ preflight: "pass", items: [{ id: ITEM, labels: ["lr:auto"] }, { id: "4343", labels: ["lr:fast"] }] });
     await withFast(dir);
 
-    const printed = await stdoutOf(() => runStart(dir, { once: true }));
+    const printed = await stdoutOf(() => runStart(dir, { ...keyless(), once: true }));
 
     expect(printed.filter((l) => l.startsWith("#"))).toEqual([
       `#${ITEM} [main] terminal after 1 pass(es)`,
@@ -1281,7 +1285,7 @@ describe("runStart --once over two workflows", () => {
     const { dir, record } = await fixture({ items: [{ id: ITEM, labels: ["lr:auto", "lr:fast"] }] });
     await withFast(dir);
 
-    const printed = await stdoutOf(() => runStart(dir, { once: true }));
+    const printed = await stdoutOf(() => runStart(dir, { ...keyless(), once: true }));
 
     expect(printed.filter((l) => l.startsWith("#"))).toEqual([`#${ITEM} claimed by fast and main`]);
     expect(await applied(record)).toEqual([]);
@@ -1294,7 +1298,7 @@ describe("runStart --once over two workflows", () => {
   it("fails, naming the workflows, when a source cannot list", async () => {
     const { dir } = await fixture({ listFails: "GET /issues → 401" });
     await withFast(dir);
-    await expect(stdoutOf(() => runStart(dir, { once: true }))).rejects.toThrow("could not list the source of fast and main: GET /issues → 401");
+    await expect(stdoutOf(() => runStart(dir, { ...keyless(), once: true }))).rejects.toThrow("could not list the source of fast and main: GET /issues → 401");
   });
 });
 
@@ -1311,7 +1315,7 @@ describe("runStart --once", () => {
     };
 
     try {
-      await runStart(dir, { once: true });
+      await runStart(dir, { ...keyless(), once: true });
     } finally {
       console.log = wrote;
     }
@@ -1342,7 +1346,7 @@ describe("runStart --once", () => {
     };
 
     try {
-      await runStart(dir, { once: true });
+      await runStart(dir, { ...keyless(), once: true });
     } finally {
       console.log = wrote;
     }
@@ -1369,7 +1373,7 @@ describe("runStart --once", () => {
     };
 
     try {
-      await runStart(dir, { once: true, otel: ["OTEL_LOGS_EXPORTER=console", "OTEL_SERVICE_NAME=lr-e2e", "LANDRACE_ENABLE_TELEMETRY=1"] });
+      await runStart(dir, { ...keyless(), once: true, otel: ["OTEL_LOGS_EXPORTER=console", "OTEL_SERVICE_NAME=lr-e2e", "LANDRACE_ENABLE_TELEMETRY=1"] });
     } finally {
       [console.log, console.dir] = [log, dir_];
     }
@@ -1412,7 +1416,7 @@ describe("runStart --once", () => {
     };
 
     try {
-      await expect(runStart(dir, { once: true })).rejects.toThrow(
+      await expect(runStart(dir, { ...keyless(), once: true })).rejects.toThrow(
         /preflight "fake" failed: token needs "Contents: Read and write" on acme\/widgets/,
       );
     } finally {
@@ -1555,7 +1559,7 @@ describe("runStart and the wake file", () => {
     const said = console.error;
     console.log = (): void => {};
     console.error = (): void => {};
-    const running = runStart(dir, { ui: false });
+    const running = runStart(dir, { ...keyless(), ui: false });
     try {
       await until(async () => (await applied(record)).length === 1, 10_000);
       touchWake(wakePath(dir));
@@ -1597,7 +1601,7 @@ describeLoopback("runStart's page while a source cannot list", () => {
     };
     // A terminal, so the board is opened, by a stub: no test spawns a browser.
     const opened: string[] = [];
-    const running = runStart(dir, { uiPort: 0, interactive: true, open: async (u) => { opened.push(u); } });
+    const running = runStart(dir, { ...keyless(), uiPort: 0, interactive: true, open: async (u) => { opened.push(u); } });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
@@ -1648,7 +1652,7 @@ describeLoopback("runStart's browser, with interactive unset", () => {
     const was = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
     Object.defineProperty(process.stdout, "isTTY", { value: tty, configurable: true, writable: true });
     const opened: string[] = [];
-    const running = runStart(dir, { uiPort: 0, open: async (u) => { opened.push(u); } });
+    const running = runStart(dir, { ...keyless(), uiPort: 0, open: async (u) => { opened.push(u); } });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       expect(opened).toHaveLength(times);
@@ -1670,9 +1674,9 @@ describeLoopback("runStart's browser, with interactive unset", () => {
     const open = async (u: string): Promise<void> => { opened.push(u); };
     let headless: Promise<void> | undefined;
     try {
-      await runStart(dir, { once: true, interactive: true, open });
+      await runStart(dir, { ...keyless(), once: true, interactive: true, open });
       const ran = (await applied(record)).length;
-      headless = runStart(dir, { ui: false, interactive: true, open });
+      headless = runStart(dir, { ...keyless(), ui: false, interactive: true, open });
       await until(async () => (await applied(record)).length > ran, "the headless start to tick");
       expect(opened).toEqual([]);
     } finally {
@@ -1693,7 +1697,7 @@ describeLoopback("runStart's browser, with interactive unset", () => {
     console.error = (line: unknown): void => {
       said.push(String(line));
     };
-    const running = runStart(dir, { uiPort: 0, interactive: true, open });
+    const running = runStart(dir, { ...keyless(), uiPort: 0, interactive: true, open });
     try {
       await until(() => said.some((l) => l.includes("could not open a browser")), "the opener's failure");
       const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
@@ -1729,7 +1733,7 @@ describeLoopback("runStart's page over two workflows", () => {
     console.error = (line: unknown): void => {
       said.push(String(line));
     };
-    const running = runStart(dir, { uiPort: 0, interactive: false, open: async () => { throw new Error("opened a browser"); } });
+    const running = runStart(dir, { ...keyless(), uiPort: 0, interactive: false, open: async () => { throw new Error("opened a browser"); } });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       const url = said.find((l) => l.includes("triage page at "))?.split("triage page at ")[1] ?? "";
@@ -1786,7 +1790,7 @@ describe("runStart's instance record, with no board", () => {
     console.log = (): void => {};
     console.error = (): void => {};
     try {
-      await runStart(dir, { once: true });
+      await runStart(dir, { ...keyless(), once: true });
       expect(await readInstance(dir)).toEqual({ missing: true });
     } finally {
       [console.log, console.error] = [log, error];
@@ -1817,7 +1821,7 @@ describeLoopback("runStart's instance record", () => {
   it("is written once the board listens, answered by landrace port, and removed on a clean stop", async () => {
     const { dir } = await fixture();
     const { said, restore } = quiet();
-    const running = runStart(dir, { uiPort: 0, interactive: false });
+    const running = runStart(dir, { ...keyless(), uiPort: 0, interactive: false });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       const url = pageOf(said);
@@ -1836,12 +1840,12 @@ describeLoopback("runStart's instance record", () => {
   it("refuses a second board-serving start on the workspace, naming the running URL and pid, before its first tick", async () => {
     const { dir, record } = await fixture();
     const { said, restore } = quiet();
-    const running = runStart(dir, { uiPort: 0, interactive: false });
+    const running = runStart(dir, { ...keyless(), uiPort: 0, interactive: false });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       await until(async () => (await applied(record)).length === 1, "the first tick");
       const url = pageOf(said).replace(/\/$/, "");
-      await expect(runStart(dir, { uiPort: 0, interactive: false })).rejects.toThrow(
+      await expect(runStart(dir, { ...keyless(), uiPort: 0, interactive: false })).rejects.toThrow(
         `a landrace start already serves this workspace's board at ${url} (pid ${process.pid}); stop it first, or start this one with --headless`,
       );
       // Refused before it ticked: the first start's one write is still the only one.
@@ -1863,14 +1867,14 @@ describeLoopback("runStart's instance record", () => {
   it("does not refuse --once or --headless while a board serves the workspace, and neither touches its record", async () => {
     const { dir, record } = await fixture();
     const { said, restore } = quiet();
-    const running = runStart(dir, { uiPort: 0, interactive: false });
+    const running = runStart(dir, { ...keyless(), uiPort: 0, interactive: false });
     let headless: Promise<void> | undefined;
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       const url = pageOf(said).replace(/\/$/, "");
       const before = await readInstance(dir);
-      await runStart(dir, { once: true });
-      headless = runStart(dir, { ui: false });
+      await runStart(dir, { ...keyless(), once: true });
+      headless = runStart(dir, { ...keyless(), ui: false });
       // It ran: a refused start would have rejected before any tick wrote.
       const ran = (await applied(record)).length;
       await until(async () => (await applied(record)).length > ran, "the headless start to tick");
@@ -1909,12 +1913,12 @@ export const preflight = brand("preflight", {
     const { said, restore } = quiet();
     // A terminal, so a start that passed would open its board: refused, it opens none.
     const opened: string[] = [];
-    const first = runStart(dir, { uiPort: 0, interactive: true, open: async (u) => { opened.push(u); } });
+    const first = runStart(dir, { ...keyless(), uiPort: 0, interactive: true, open: async (u) => { opened.push(u); } });
     const refused = first.then(() => null, (e: unknown) => e as Error);
     let second: Promise<void> | undefined;
     try {
       await until(() => existsSync(held), "the first start to reach its preflight");
-      second = runStart(dir, { uiPort: 0, interactive: false });
+      second = runStart(dir, { ...keyless(), uiPort: 0, interactive: false });
       await until(() => said.some((l) => l.includes("triage page at ")), "the second start's page");
       const url = pageOf(said).replace(/\/$/, "");
       await writeFile(release, "");
@@ -1938,7 +1942,7 @@ export const preflight = brand("preflight", {
     const { dir } = await fixture();
     await writeInstance(dir, { pid: 999_999_999, port: 1, workspace: "/gone", startedAt: "2026-10-10T00:00:00.000Z" });
     const { said, restore } = quiet();
-    const running = runStart(dir, { uiPort: 0, interactive: false });
+    const running = runStart(dir, { ...keyless(), uiPort: 0, interactive: false });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       expect(await readInstance(dir)).toEqual({ instance: expect.objectContaining({ pid: process.pid, port: Number(new URL(pageOf(said)).port) }) });
@@ -1964,7 +1968,7 @@ export const preflight = brand("preflight", {
     const workspace = await repositoryRoot(dir).catch(() => process.cwd());
     await writeInstance(dir, { pid: process.ppid, port, workspace, startedAt: "2026-10-10T00:00:00.000Z" });
     const { said, restore } = quiet();
-    const running = runStart(dir, { uiPort: port, interactive: false });
+    const running = runStart(dir, { ...keyless(), uiPort: port, interactive: false });
     const failed = running.then(() => null, (e: unknown) => e as Error);
     try {
       await Promise.race([
@@ -2134,7 +2138,7 @@ async function unready(perPerson: "secret" | "var"): Promise<Fixture & { credent
 describe("runStart --once while the local person is not ready", () => {
   it("refuses with connection.missing, since there is no door to connect through", async () => {
     const { dir, credentials } = await unready("secret");
-    await expect(runStart(dir, { once: true, credentials })).rejects.toThrow(/connection\.missing: secrets entry "forgeToken" has no value/);
+    await expect(runStart(dir, { ...keyless(), once: true, credentials })).rejects.toThrow(/connection\.missing: secrets entry "forgeToken" has no value/);
   });
 });
 
@@ -2185,7 +2189,7 @@ describe("runStart while the local person is not ready", () => {
     const [log, error] = [console.log, console.error];
     console.log = (line: unknown): void => { printed.push(String(line)); };
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     const ticks = (): number => printed.filter((l) => l.includes('"name":"tick.started"')).length;
     const post = (path: string, action: string, body?: unknown) =>
       drive(path, { method: "POST", headers: { "x-landrace-action": action }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
@@ -2234,7 +2238,7 @@ describe("runStart while the local person is not ready", () => {
     const [log, error] = [console.log, console.error];
     console.log = (): void => {};
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     const post = (path: string, action: string, body?: unknown) =>
       drive(path, { method: "POST", headers: { "x-landrace-action": action }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     try {
@@ -2276,7 +2280,7 @@ describe("runStart while the local person is not ready", () => {
     const [log, error] = [console.log, console.error];
     console.log = (line: unknown): void => { printed.push(String(line)); };
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     const finished = (): number => printed.filter((l) => l.includes('"name":"tick.finished"')).length;
     const connect = (token: string) =>
       drive("/connect/forge", { method: "POST", headers: { "x-landrace-action": "connect" }, body: JSON.stringify({ fields: { token } }) });
@@ -2311,7 +2315,7 @@ describe("runStart while the local person is not ready", () => {
     await writeFile(yaml, edit(await readFile(yaml, "utf8")));
     await writeFile(join(dir, ".env"), `LR_TEST_TOKEN=${TOKEN}\nLR_TEST_SHORT=abc\n`);
     const { serve } = inProcessDoor();
-    await expect(runStart(dir, { interactive: false, credentials, serve })).rejects.toThrow(refusal);
+    await expect(runStart(dir, { ...keyless(), interactive: false, credentials, serve })).rejects.toThrow(refusal);
   });
 
   it("serves an unready start whose log.redact names the per-person secret not yet connected", async () => {
@@ -2323,7 +2327,7 @@ describe("runStart while the local person is not ready", () => {
     const [log, error] = [console.log, console.error];
     console.log = (): void => {};
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     const failed = running.then(() => null, (e: unknown) => e as Error);
     try {
       await Promise.race([
@@ -2345,7 +2349,7 @@ describe("runStart while the local person is not ready", () => {
     const [log, error] = [console.log, console.error];
     console.log = (): void => {};
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, serve });
     try {
       await until(async () => (await applied(record)).length === 1, "the first tick");
       expect(said.join("\n")).not.toMatch(/Integrations tab/);
@@ -2486,7 +2490,7 @@ export const chatIdentity = brand("connection", {
     const [log, error] = [console.log, console.error];
     console.log = (line: unknown): void => { printed.push(String(line)); };
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     const expiring = (): LandraceEvent[] =>
       eventsIn(printed).filter((e) => e.name === "connection.expiring");
     try {
@@ -2563,7 +2567,7 @@ export const spy = brand("preflight", {
     console.log = (line: unknown): void => { printed.push(String(line)); };
     console.error = (line: unknown): void => { said.push(String(line)); };
     const fetch = (async () => answer()) as typeof globalThis.fetch;
-    const running = runStart(dir, { interactive: false, credentials, serve: door.serve, oauth: { everyMs: 20, fetch } });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve: door.serve, oauth: { everyMs: 20, fetch } });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       return await body(door, printed);
@@ -2652,7 +2656,7 @@ export const spy = brand("preflight", {
     console.log = (line: unknown): void => { printed.push(String(line)); };
     const fetch = (async () => answer()) as typeof globalThis.fetch;
     try {
-      await runStart(dir, { interactive: false, credentials, ui: false, once: true, oauth: { fetch } });
+      await runStart(dir, { ...keyless(), interactive: false, credentials, ui: false, once: true, oauth: { fetch } });
       return { printed, refused: null };
     } catch (e) {
       return { printed, refused: e };
@@ -2694,7 +2698,7 @@ export const spy = brand("preflight", {
     console.log = (): void => {};
     console.error = (line: unknown): void => { said.push(String(line)); };
     const fetch = (async () => new Response(JSON.stringify({ access_token: NEW, refresh_token: NEXT_REFRESH, expires_in: 7200 }), { status: 200 })) as typeof globalThis.fetch;
-    const running = runStart(dir, { interactive: false, credentials, serve: door.serve, oauth: { everyMs: 60_000, fetch } });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve: door.serve, oauth: { everyMs: 60_000, fetch } });
     try {
       await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
       // The runtime's preflight ran before the page opened, on the renewed token.
@@ -2749,7 +2753,7 @@ describe("runStart with people.oidc", () => {
     const [log, error] = [console.log, console.error];
     console.log = (): void => {};
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     try {
       await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
       expect(said.join("\n")).toContain("people sign in at http://127.0.0.1:4545/; 1 have before");
@@ -2802,7 +2806,7 @@ describe("runStart with people.oidc", () => {
     const [log, error] = [console.log, console.error];
     console.log = (): void => {};
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     try {
       await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
       const sessions = options().remote?.sessions;
@@ -2933,7 +2937,7 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
     const [log, error] = [console.log, console.error];
     console.log = (): void => {};
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     try {
       const children = async (): Promise<string[][]> =>
         (await applied(record)).flatMap((r) => ((r as { child?: string[] }).child ? [(r as { child: string[] }).child] : []));
@@ -2996,7 +3000,7 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
     const [log, error] = [console.log, console.error];
     console.log = (): void => {};
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     try {
       await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
       const sessions = options().remote?.sessions;
@@ -3031,7 +3035,7 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
     const [log, error] = [console.log, console.error];
     console.log = (line: unknown): void => { said.push(String(line)); };
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     try {
       await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
       await until(() => said.some((l) => l.includes("could not build their runtime")), `carol's judging to fail: ${said.join("\n")}`);
@@ -3054,7 +3058,7 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
   it("refuses --headless, which leaves nobody a door to sign in through", async () => {
     const { dir } = await fixture({ configExtra: REMOTE, items: [] });
     const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
-    await expect(runStart(dir, { interactive: false, credentials, ui: false })).rejects.toThrow(/people\.oidc is set.*--headless/);
+    await expect(runStart(dir, { ...keyless(), interactive: false, credentials, ui: false })).rejects.toThrow(/people\.oidc is set.*--headless/);
   });
 
   // #207: with isolation off, every person's agent would run in the operator's own checkout.
@@ -3064,7 +3068,7 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
     const { problems } = await runValidate(dir, { credentials });
     const refused = problems.find((p) => p.rule === "agent.isolation");
     expect(refused?.message).toMatch(/each person's agent would run in the operator's checkout/);
-    await expect(runStart(dir, { interactive: false, credentials, serve: inProcessDoor().serve }))
+    await expect(runStart(dir, { ...keyless(), interactive: false, credentials, serve: inProcessDoor().serve }))
       .rejects.toThrow(`agent.isolation: ${refused?.message ?? "?"}`);
   });
 
@@ -3073,7 +3077,7 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
       configExtra: "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n", items: [],
     });
     const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
-    await expect(runStart(dir, { interactive: false, credentials, serve: inProcessDoor().serve })).rejects.toThrow(/serve\.public-url: people\.oidc is set and serve\.publicUrl is not/);
+    await expect(runStart(dir, { ...keyless(), interactive: false, credentials, serve: inProcessDoor().serve })).rejects.toThrow(/serve\.public-url: people\.oidc is set and serve\.publicUrl is not/);
   });
 
   // #204: a remote instance that lists nobody would admit nobody.
@@ -3084,7 +3088,7 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
     expect(config).not.toContain("@example.invalid");
     const { dir } = await fixture({ configExtra: config, items: [] });
     const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
-    await expect(runStart(dir, { interactive: false, credentials, serve: inProcessDoor().serve })).rejects.toThrow(/people\.allow: people\.oidc is set and people\.allow lists no one/);
+    await expect(runStart(dir, { ...keyless(), interactive: false, credentials, serve: inProcessDoor().serve })).rejects.toThrow(/people\.allow: people\.oidc is set and people\.allow lists no one/);
   });
 
   /*
@@ -3110,7 +3114,7 @@ export const closer = brand("post", { id: "closer", handles: ["nodes.close"], sa
     const [log, error] = [console.log, console.error];
     console.log = (): void => {};
     console.error = (line: unknown): void => { said.push(String(line)); };
-    const running = runStart(dir, { interactive: false, credentials, serve });
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
     try {
       await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
       expect(said.join("\n")).toContain("; 1 have before");
@@ -3193,4 +3197,138 @@ describe("landrace validate with people.oidc", () => {
     expect(stored.problems).toEqual(unknown);
     expect(stored.ok).toBe(false);
   });
+});
+
+/*
+ * #205: `start` finds or makes the credentials key, and seals what the store
+ * holds in place, before anything is built. Each source here is a fake: a
+ * test never reaches this machine's own store, nor ~/.landrace/credentials.
+ */
+describe("runStart and the credentials key", () => {
+  const TOKEN = "ghp_plain_before_this_start_long_enough";
+  const plainRoot = async (): Promise<string> => {
+    const root = join(await mkdtemp(join(tmpdir(), "lr-start-key-")), "credentials");
+    await mkdir(join(root, "mcp"), { recursive: true });
+    await writeFile(join(root, "local.json"), JSON.stringify({ person: { id: "local" }, connections: {} }));
+    await writeFile(join(root, "mcp", "mcp-tokens.json"), JSON.stringify({ hash: { token: TOKEN } }));
+    await writeFile(join(root, "local.json.999999.1.tmp"), TOKEN);
+    return root;
+  };
+  const quietly = async <T>(fn: () => Promise<T>): Promise<{ result: T; said: string[] }> => {
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (line: unknown): void => { said.push(String(line)); };
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    try {
+      return { result: await fn(), said };
+    } finally {
+      [console.log, console.error] = [log, error];
+    }
+  };
+
+  it("makes a key in the Keychain, seals every plain file in place, and logs none of it", async () => {
+    const { dir } = await fixture();
+    const root = await plainRoot();
+    const keychain = fakeKeychain();
+    const { said } = await quietly(() => runStart(dir, { once: true, credentialsRoot: root, keyLookup: { platform: "darwin", env: {}, run: keychain.run, alive: () => false } }));
+    const key = keychain.held() ?? "";
+    expect(key).toMatch(/^[0-9a-f]{64}$/);
+    for (const name of ["local.json", "mcp/mcp-tokens.json"]) {
+      const disk = await readFile(join(root, name), "utf8");
+      expect((JSON.parse(disk) as { landrace: string }).landrace).toBe("sealed");
+      expect(disk).not.toContain(TOKEN);
+    }
+    // A temporary file a dead process left is gone; so is the lock.
+    expect(existsSync(join(root, "local.json.999999.1.tmp"))).toBe(false);
+    expect(existsSync(join(root, ".key.lock"))).toBe(false);
+    // Never on a helper's argv, never in what the start printed.
+    for (const c of keychain.calls) expect(c.args.join(" ")).not.toContain(key);
+    expect(said.join("\n")).not.toContain(key);
+    // A second start reads the key it made, and makes none.
+    const adds = keychain.calls.filter((c) => c.args[0] === "-i").length;
+    await quietly(() => runStart(dir, { once: true, credentialsRoot: root, keyLookup: { platform: "darwin", env: {}, run: keychain.run } }));
+    expect(keychain.calls.filter((c) => c.args[0] === "-i").length).toBe(adds);
+  });
+
+  it("locally, with no secret store, says so once and keeps the files plain", async () => {
+    const { dir } = await fixture();
+    const root = await plainRoot();
+    const { said } = await quietly(() => runStart(dir, { once: true, credentialsRoot: root, keyLookup: { platform: "linux", env: {} } }));
+    expect(said.filter((l) => l.includes("no secret store"))).toHaveLength(1);
+    expect(said.find((l) => l.includes("no secret store"))).toContain("docs/security.md#stored-credentials");
+    expect(await readFile(join(root, "mcp", "mcp-tokens.json"), "utf8")).toContain(TOKEN);
+  });
+
+  it("remotely, with no secret store, refuses the start and writes nothing", async () => {
+    const REMOTE = "serve: { host: 0.0.0.0, publicUrl: \"https://landrace.example.org/\" }\n" +
+      "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value }, allow: [\"@example.invalid\"] }\n";
+    const { dir } = await fixture({ configExtra: REMOTE, items: [] });
+    const root = join(await mkdtemp(join(tmpdir(), "lr-start-key-")), "credentials");
+    const { serve } = inProcessDoor();
+    await expect(runStart(dir, { interactive: false, serve, credentialsRoot: root, keyLookup: { platform: "linux", env: {} } }))
+      .rejects.toThrow(/people\.oidc is set, and no secret store holds a key[\s\S]*LoadCredentialEncrypted=landrace-credentials-key[\s\S]*docs\/security\.md#stored-credentials/);
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it("refuses a start whose Keychain lookup fails for any reason but absence, and makes no key", async () => {
+    const { dir } = await fixture();
+    const root = await plainRoot();
+    const calls: string[] = [];
+    const run: KeyHelper = async (_c, args) => {
+      calls.push(args[0] ?? "");
+      return { code: 51, stdout: "", stderr: "security: User interaction is not allowed.\n" };
+    };
+    await expect(runStart(dir, { once: true, credentialsRoot: root, keyLookup: { platform: "darwin", env: {}, run } })).rejects.toThrow(/exited 51/);
+    expect(calls).not.toContain("-i");
+    expect(await readFile(join(root, "mcp", "mcp-tokens.json"), "utf8")).toContain(TOKEN);
+  });
+
+  it("denies every step the key's directory when it is a systemd credential", async () => {
+    const { dir } = await fixture();
+    const denied = await denyPathsFor(dir, { id: "local" }, null, () => [], keyDirOf({ source: "systemd", dir: "/run/credentials/landrace.service" }))();
+    expect(denied.key).toEqual(["/run/credentials/landrace.service"]);
+    expect((await denyPathsFor(dir, { id: "local" }, null, () => [], keyDirOf({ source: "keychain" }))()).key).toBeUndefined();
+  });
+
+  /*
+   * The same, through the runtime a start builds: `runStart` hands the build
+   * where it found the key. Dropped, the runtime falls back to no source, so
+   * every child server is pinned to none and refuses the sealed store, and
+   * no step is denied `$CREDENTIALS_DIRECTORY` — while the test above, with
+   * its locator built by hand, still passes.
+   */
+  it("pins a start's child server to the systemd key it found, and denies its step that folder", async () => {
+    const { dir, record } = await fixture({ agent: "fake", workflow: stepped(true), items: [{ id: ITEM, labels: ["lr:auto", "lr:stage:breakdown"] }] });
+    await exec("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: dirname(dir) });
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), breakdownStep("repo:read, items:create"));
+    // The factory writes down what its context denies; each run, the child server it was handed.
+    await appendFile(join(dir, "hooks", "fake.ts"), `
+export const executor = brand("executor", {
+  id: "fake",
+  create: async (ctx: { denyPaths?: () => Promise<unknown> }): Promise<unknown> => ({
+    run: async (_prompt: string, o: { child?: { server?: { args: string[] } } }): Promise<{ text: string; sessionId: string | null }> => {
+      await appendFile(${JSON.stringify(record)}, JSON.stringify({ denied: await ctx.denyPaths?.(), child: o.child?.server?.args ?? [] }) + "\\n");
+      return { text: "", sessionId: null };
+    },
+  }),
+});
+
+// No child was ever made before the first round, so none is left to close.
+export const closer = brand("post", { id: "closer", handles: ["nodes.close"], satisfied: (): boolean => true, apply: async (): Promise<void> => {} });
+`);
+    const keyDir = await mkdtemp(join(tmpdir(), "lr-systemd-creds-"));
+    await writeFile(join(keyDir, "landrace-credentials-key"), randomBytes(32).toString("hex"));
+    const root = await plainRoot();
+    await quietly(() => runStart(dir, { once: true, credentialsRoot: root, keyLookup: { platform: "linux", env: { CREDENTIALS_DIRECTORY: keyDir }, alive: () => false } }));
+
+    const runs = (await applied(record)).filter((r): r is { denied: { key?: string[] }; child: string[] } => (r as { child?: unknown }).child !== undefined);
+    expect(runs).toHaveLength(1);
+    const run = runs[0];
+    if (!run) throw new Error("the start ran no step");
+    expect(run.child).toEqual(expect.arrayContaining(["--key-source=systemd", `--key-dir=${keyDir}`]));
+    expect(run.denied.key).toEqual([keyDir]);
+    // Sealed under that key, which the child server is pinned to.
+    expect((JSON.parse(await readFile(join(root, "local.json"), "utf8")) as { landrace: string }).landrace).toBe("sealed");
+  }, 30_000);
 });

@@ -23,18 +23,24 @@ export const scopeOf = (person: Pick<Person, "id">): string => encodeURIComponen
  * their folder stays theirs for as long as it is there. The local person has
  * no folder of their own — their worktrees are the folder's own entries — so
  * only the roster's people are denied them.
+ *
+ * And where the credentials key is a file (`keyDir`, systemd's
+ * `$CREDENTIALS_DIRECTORY`), that directory: the key opens every person's
+ * file, wherever a copy of it went.
  */
 export function denyForPerson(
   self: Pick<Person, "id">, others: readonly Pick<Person, "id">[],
-  { worktrees, credentials, env, own, present = [] }: {
-    worktrees: string; credentials: string; env: readonly string[]; own?: string | undefined; present?: readonly string[];
+  { worktrees, credentials, env, own, present = [], keyDir }: {
+    worktrees: string; credentials: string; env: readonly string[]; own?: string | undefined; present?: readonly string[]; keyDir?: string | undefined;
   },
 ): RunDenials {
   const theirs = (names: readonly string[]): string[] =>
     [...new Set(names.filter((name) => name !== own && name !== scopeOf(self)).map((name) => join(worktrees, name)))];
   const people = theirs(others.filter((other) => other.id !== self.id).map((other) => scopeOf(other)));
   const found = theirs(own === undefined ? [] : present).filter((path) => !people.includes(path));
-  return { always: [...new Set([credentials, ...env])], people, ...(found.length ? { found } : {}) };
+  return {
+    always: [...new Set([credentials, ...env])], people, ...(found.length ? { found } : {}), ...(keyDir === undefined ? {} : { key: [keyDir] }),
+  };
 }
 
 /**

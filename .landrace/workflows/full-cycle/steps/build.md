@@ -109,7 +109,9 @@ names, not only the function that command calls; a configuration the spec shows
 runs as written, with only the hooks this repository ships.
 A refusal because another holds something — a lock, a record, a port —
 checks again just before taking it: slow work between the check and the
-write lets two both pass, and the later write wins.
+write lets two both pass, and the later write wins. A wait for it sleeps and
+checks its deadline on every branch, the one where the holder cannot be read
+included, and gives up naming what it waited on.
 Commit as you go: this worktree is removed when the step ends, and anything you did not
 commit is lost with it. Before the first commit, find this repository's commit
 conventions — a commitlint configuration, a `commit-msg` hook, a contributing
@@ -141,7 +143,7 @@ only field is `kind`, set to `done`.
 
 ## Rules
 
-- A change a user sees — a command, flag, configuration key, `validate` or `start` refusal, workflow stage, effect, integration or default, added or changed — updates the `docs/` page that is that fact's one home, in the same change, whichever pages the spec lists: a new key that `validate` can refuse is two facts, on two pages. Change `README.md` only where the change alters what it states: the quick start, the workflows table, the integrations table. Both follow the "README and docs" standards in the agent instructions. Never add reference material to the README. Each sentence saying what happens — in a page, a comment, a check script's header, a confirm, a tool description, a record's body, a refusal's reason — is one you traced through the code on every path, the engine's around your change included, and for each form its input takes — or, for a platform outside this repository, one a test against it shows; a spec's wording is what to build, not proof the sentence is true, and a script "checks" only what it calls.
+- A change a user sees — a command, flag, configuration key, `validate` or `start` refusal, workflow stage, effect, integration, default, or field of what a hook or kit integration is handed, added or changed — updates the `docs/` page that is that fact's one home, in the same change, whichever pages the spec lists: a new key that `validate` can refuse is two facts, on two pages. Change `README.md` only where the change alters what it states: the quick start, the workflows table, the integrations table. Both follow the "README and docs" standards in the agent instructions. Never add reference material to the README. Each sentence saying what happens — in a page, a comment, a check script's header, a confirm, a tool description, a record's body, a refusal's reason — is one you traced through the code on every path, the engine's around your change included, and for each form its input takes — or, for a platform outside this repository, one a test against it shows; a spec's wording is what to build, not proof the sentence is true, and a script "checks" only what it calls.
 - A step prompt is read alone, so it restates its promises — what is checked, who reads a commit, what merges with no person. A change to one keeps every check the spec does not drop, and changes every sentence that states it: in that prompt, in the prompts it extends or that extend it, and in the tests that pin their wording.
 - Work on the branch you are on — do not create, switch or rename branches.
 - Your commands run in a sandbox: they can write only inside this worktree and the repository's git directory, and reach only the hosts the operator allowed.

@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { createSealedFiles } from "#people/sealed.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -50,7 +51,7 @@ const SECRET = "frontdoorsecret0123456789";
  * signed in fails with. `secretFolder` puts SECRET in the folder's own path.
  */
 async function door(
-  files: Record<string, string> = {}, o: { signInSays?: string; secretFolder?: boolean; allow?: string[]; publicUrl?: string } = {},
+  files: Record<string, string> = {}, o: { signInSays?: string; secretFolder?: boolean; allow?: string[]; publicUrl?: string; key?: Uint8Array } = {},
 ) {
   const idp = fakeOidc();
   // `people.allow`, as `start` hands it to the door: a test that empties it is a restart without them.
@@ -91,7 +92,7 @@ async function door(
     boardFor: (caller) => ({ view: async () => view(caller.id), has: (item) => item === String(ITEMS[caller.id]) }),
     remote: {
       oidc: createOidc({ oidc: { issuer: idp.issuer, clientId: idp.clientId, clientSecret: "client-secret-value" }, redirectUri: new URL("login/callback", publicUrl).href, fetch: idp.fetch }),
-      sessions, authRoot, log, admits: admitted,
+      sessions, authFiles: createSealedFiles(dirname(authRoot), o.key ?? null), log, admits: admitted,
       signIn: async (person) => {
         if (o.signInSays !== undefined) throw new Error(o.signInSays);
         await roster.signIn(person);
@@ -543,6 +544,22 @@ describe("registering MCP clients", () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error_description: string }).error_description).toMatch(/holds too many registered clients/);
     expect(Object.keys(JSON.parse(await readFile(join(d.authRoot, MCP_CLIENTS_FILE), "utf8")) as object)).toHaveLength(1000);
+  });
+
+  // #205: the door's grants are sealed as each person's file is, and a plain file under a key is refused.
+  it("keeps its registrations sealed under the credentials key, and refuses a plain file", async () => {
+    const key = new Uint8Array(randomBytes(32));
+    const d = await door({}, { key });
+    expect((await registration(d)).status).toBe(201);
+    const disk = await readFile(join(d.authRoot, MCP_CLIENTS_FILE), "utf8");
+    expect((JSON.parse(disk) as { landrace: string }).landrace).toBe("sealed");
+    expect(disk).not.toContain(CLIENT_REDIRECT);
+    const opened = await createSealedFiles(dirname(d.authRoot), key).read(`mcp/${MCP_CLIENTS_FILE}`);
+    expect(Object.keys(JSON.parse(opened ?? "") as object)).toHaveLength(1);
+    const plain = await door({ [MCP_CLIENTS_FILE]: JSON.stringify(clientsOf(1, nowS())) }, { key });
+    const res = await registration(plain);
+    expect(res.status).toBe(503);
+    expect(await res.text()).toMatch(/mcp-clients\.json is not sealed/);
   });
 
   it("registers the 1,000th", async () => {

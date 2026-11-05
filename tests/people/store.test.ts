@@ -2,7 +2,9 @@ import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/prom
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CREDENTIALS_DENY } from "#kit/executor.js";
+import { randomBytes } from "node:crypto";
 import { createCredentialStore, credentialValues } from "#people/store.js";
+import { createSealedFiles } from "#people/sealed.js";
 import type { ConnectionValue, Person } from "#namespace.js";
 
 const root = async (): Promise<string> => join(await mkdtemp(join(tmpdir(), "landrace-creds-")), "credentials");
@@ -114,6 +116,47 @@ describe("the credential store", () => {
     expect((await store.list()).map((p) => p.id)).toEqual(["..", "../x", "a/b", "dev@example.com"]);
     expect(await store.read("a/b")).toEqual({ person: { id: "a/b" }, connections: { github } });
     await expect(store.read("")).rejects.toThrow(/person id/);
+  });
+});
+
+describe("the credential store, sealed", () => {
+  // A throwaway key, made for this test alone.
+  const key = (): Uint8Array => new Uint8Array(randomBytes(32));
+
+  it("keeps no token byte on disk, and round-trips every connection", async () => {
+    const dir = await root();
+    const store = createCredentialStore(dir, key());
+    await store.put("local", ME, "jira", jira);
+    await store.put("local", ME, "github", github);
+    const disk = await readFile(join(dir, "local.json"), "utf8");
+    for (const secret of ["ghp_abcdefghijkl", "refresh_abcdefgh", "dev1"]) expect(disk).not.toContain(secret);
+    expect((JSON.parse(disk) as { landrace: string }).landrace).toBe("sealed");
+    expect(await store.read("local")).toEqual({ person: ME, connections: { github, jira } });
+    expect(await store.list()).toEqual([ME]);
+  });
+
+  it("reads a file copied over another person's, or changed, as a problem naming it, and will not write over it", async () => {
+    const dir = await root();
+    const k = key();
+    const store = createCredentialStore(dir, k);
+    await store.put("alice", { id: "alice" }, "github", github);
+    await store.put("bob", { id: "bob" }, "github", github);
+    const copied = await readFile(join(dir, "alice.json"));
+    await writeFile(join(dir, "bob.json"), copied);
+    expect((await store.read("bob")).problem).toMatch(/bob\.json cannot be opened with the credentials key/);
+    await expect(store.put("bob", { id: "bob" }, "jira", jira)).rejects.toThrow(/bob\.json/);
+    expect(await readFile(join(dir, "bob.json"))).toEqual(copied);
+    expect(await store.list()).toEqual([{ id: "alice" }, { id: "bob" }]);
+  });
+
+  it("names a sealed file that opens to something not JSON, quoting none of it", async () => {
+    const dir = await root();
+    const k = key();
+    const token = "ghp_TOKENLIKE0123456789abcdef";
+    await createSealedFiles(dir, k).write("local.json", `{"person":{"id":"local"},"token":"${token}" oops`);
+    const { problem } = await createCredentialStore(dir, k).read("local");
+    expect(problem).toMatch(/local\.json is not JSON$/);
+    expect(problem).not.toContain(token.slice(4, 14));
   });
 });
 

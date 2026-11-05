@@ -107,7 +107,7 @@ function remoteApp(
   if (publicUrl === undefined) throw new Error("a remote door needs serve.publicUrl: its sign-in callback and its authorization server are built from it");
   const secure = new URL(publicUrl).protocol === "https:";
   const login = loginCookie(secure);
-  const auth = createMcpAuth({ publicUrl, sessions: door.sessions, root: door.authRoot, origins, log: door.log, admits: door.admits });
+  const auth = createMcpAuth({ publicUrl, sessions: door.sessions, files: door.authFiles, origins, log: door.log, admits: door.admits });
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", "loopback");

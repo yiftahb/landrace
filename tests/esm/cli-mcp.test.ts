@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { buildChildTool, buildMcpTools } from "#cli/mcp.js";
-import type { CredentialStore } from "#namespace.js";
+import { buildChildTool, buildMcpTools, pinnedStore } from "#cli/mcp.js";
+import type { CredentialStore, KeyHelper, KeyLocator } from "#namespace.js";
+import { credentialKey, KEY_CREDENTIAL } from "#people/key.js";
+import { fakeKeychain } from "#tests/support/fake-key.js";
 import { createCredentialStore } from "#people/store.js";
 import { createActivityLog } from "#runner/activity.js";
 import { sandboxRoot } from "#sandbox.js";
@@ -711,6 +713,78 @@ describe("buildMcpTools over a workspace of several workflows", () => {
   it("refuses a workflow the workspace does not have, naming those it does", async () => {
     const { dir } = await fixture({ screen: false, fast: true });
     await expect(buildMcpTools(dir, "nope")).rejects.toThrow(/no workflow "nope" in .*; it has fast, main/);
+  });
+});
+
+/*
+ * #205: a step's child server reads the step's person's store, sealed under
+ * the key in the source `start` pinned on its command line. Each source, by
+ * a fake of its helper or, for systemd, a directory: throwaway keys only.
+ */
+describe("landrace_create_child over a sealed store", () => {
+  const HOOKS = (created: string): string => `import { appendFile } from "node:fs/promises";
+const KIND = Symbol.for("landrace.hook.kind");
+export const forge = Object.defineProperty({ id: "forge", label: "Forge", kind: "credential", fields: ["token"] }, KIND, { value: "connection", enumerable: false });
+export const operator = Object.defineProperty({
+  id: "fake",
+  createItem: async (input: { title: string }, ctx: { secrets: ReadonlyMap<string, string> }): Promise<unknown> => {
+    await appendFile(${JSON.stringify(created)}, JSON.stringify(ctx.secrets.get("forgeToken") ?? null) + "\\n");
+    return { id: "9", kind: "item", title: input.title, link: "u/9", closed: null, priority: null, origin: null, state: { labels: [], assignees: [] } };
+  },
+  updateItem: async (): Promise<unknown> => { throw new Error("not here"); },
+}, KIND, { value: "operator", enumerable: false });
+`;
+  const TOKEN = "ghp_sealed_person_token_long_enough";
+  const workspace = async (): Promise<{ dir: string; created: string }> => {
+    const root = await mkdtemp(join(tmpdir(), "lr-child-sealed-"));
+    const dir = join(root, ".landrace");
+    const created = join(root, "created.jsonl");
+    const wf = join(dir, "workflows", "main");
+    await mkdir(join(wf, "steps"), { recursive: true });
+    await mkdir(join(dir, "hooks"), { recursive: true });
+    await writeFile(join(dir, "hooks", "fake.ts"), HOOKS(created));
+    await writeFile(join(wf, "steps", "breakdown.md"), "---\ncapabilities: [items:create]\n---\n\nBreak it down.\n");
+    await writeFile(join(wf, "workflow.yaml"), "version: 1\nname: main\ndescription: test\nhooks: [../../hooks/fake.ts]\nstages:\n  - id: breakdown\n    entry: true\n    terminal: true\n    step: steps/breakdown.md\n");
+    await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: claude, model: opus }\nsecrets: { forgeToken: { perPerson: true, connection: forge.token } }\n");
+    return { dir, created };
+  };
+  /** The Secret Service's `secret-tool`, as far as Landrace asks it, on one bus. */
+  const fakeSecretTool = (bus: string): KeyHelper => {
+    let held: string | undefined;
+    return async (_command, args, o) => {
+      if (o.env?.["DBUS_SESSION_BUS_ADDRESS"] !== bus) return { code: 1, stdout: "", stderr: "Cannot autolaunch D-Bus\n" };
+      if (args[0] === "store") held = o.input;
+      if (args[0] === "lookup") return held === undefined ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: held, stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+  };
+  const BUS = "unix:path=/run/user/1000/bus";
+
+  const sources: Array<[string, () => Promise<{ locator: KeyLocator; run?: KeyHelper; platform: NodeJS.Platform; env: Record<string, string> }>]> = [
+    ["the Keychain", async () => ({ locator: { source: "keychain" }, run: fakeKeychain().run, platform: "darwin", env: {} })],
+    ["the Secret Service", async () => ({ locator: { source: "secret-service", bus: BUS }, run: fakeSecretTool(BUS), platform: "linux", env: { DBUS_SESSION_BUS_ADDRESS: BUS } })],
+    ["a systemd credential", async () => {
+      const keyDir = await mkdtemp(join(tmpdir(), "lr-creds-dir-"));
+      await writeFile(join(keyDir, KEY_CREDENTIAL), Buffer.from(Array.from({ length: 32 }, (_, i) => i)));
+      return { locator: { source: "systemd", dir: keyDir }, platform: "linux", env: { CREDENTIALS_DIRECTORY: keyDir } };
+    }],
+  ];
+
+  it.each(sources)("files the sub-item with the step's person's token, the store sealed under %s", async (_name, make) => {
+    const { dir, created } = await workspace();
+    const { locator, run, platform, env } = await make();
+    const root = join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials");
+    // As `start` makes it, then the person's paste, sealed.
+    const made = await credentialKey({ create: true, root, platform, env, ...(run ? { run } : {}) });
+    expect(made.locator).toEqual(locator);
+    await createCredentialStore(root, made.key).put("local", { id: "local" }, "forge", { fields: { token: TOKEN }, source: "paste", connectedAt: new Date().toISOString() });
+    const disk = await readFile(join(root, "local.json"), "utf8");
+    expect(disk).not.toContain(TOKEN);
+    // The server: pinned to the source, its environment the agent's, which carries no bus.
+    const store = await pinnedStore(locator, { env: {}, ...(run ? { run } : {}) }, root);
+    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "main", "local", store);
+    await tool.createChild({ title: "API" });
+    expect(await linesOf(created)).toEqual([TOKEN]);
   });
 });
 
