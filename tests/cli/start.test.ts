@@ -410,10 +410,10 @@ describe("which executor screens", () => {
  * worktree, so a relative one would resolve somewhere else entirely.
  */
 describe("the item server an items:create step is handed", () => {
-  it("is this process started again as `landrace mcp --pairing` on the absolute workspace directory", () => {
-    expect(childServerCommand("relative/.landrace", "main")).toEqual({
+  it("is this process started again as `landrace mcp --pairing` on the absolute workspace directory, as the step's person", () => {
+    expect(childServerCommand("relative/.landrace", "main", "local")).toEqual({
       command: process.execPath,
-      args: [...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace"), "--workflow", "main", "--pairing"],
+      args: [...process.execArgv, process.argv[1], "mcp", "--workspace", resolve("relative/.landrace"), "--workflow", "main", "--person", "local", "--pairing"],
     });
   });
 });
@@ -849,7 +849,7 @@ describe("the item panel", () => {
     const tracker = createFakeTracker([{ number: 12, labels: ["lr:auto", "lr:stage:spec", "lr:awaiting"] }]);
     tracker.say(12, `Which markets?${renderMarker({ stage: "spec", kind: "output", round: 1, session: "sid-1" })}`);
     const root = await mkdtemp(join(tmpdir(), "lr-start-panel-"));
-    const activity = createActivityLog(root, (t) => t);
+    const activity = createActivityLog(root, "local", (t) => t);
     const panel = panelFor({
       source: tracker.registry.source as Source, pre: tracker.registry.pre,
       dispatcher: createDispatcher(tracker.registry.post),

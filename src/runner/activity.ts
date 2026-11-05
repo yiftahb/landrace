@@ -43,9 +43,11 @@ const sizeOf = (file: string): number | null => {
 const NONE: ActivityPage = { stage: null, round: null, lines: [], total: 0 };
 
 /**
- * What agents are doing, per item, kept at
- * `<root>/activity/<item>/<stage>.jsonl` — on disk, because a turn asked
- * through `landrace mcp` runs in another process and the page must show it.
+ * What one person's agents are doing, per item, kept at
+ * `<root>/activity/<person>/<item>/<stage>.jsonl` — on disk, because a turn
+ * asked through `landrace mcp` runs in another process and the page must
+ * show it. Per person: two people whose trackers list one item each run it,
+ * and one's lines are never shown to the other.
  *
  * Display only, and never state: one round per stage, and a stage's next
  * round replaces the last, so nothing here remembers anything the tracker
@@ -54,8 +56,11 @@ const NONE: ActivityPage = { stage: null, round: null, lines: [], total: 0 };
  * Every line is redacted before it is cut — cut first, a secret straddling
  * the cut would leave its head on disk where the redactor no longer matches.
  */
-export function createActivityLog(root: string, redact: (text: string) => string): ActivityLog {
-  const dirOf = (item: string): string => join(root, "activity", item);
+export function createActivityLog(root: string, personId: string, redact: (text: string) => string): ActivityLog {
+  // A person id is the sign-in's subject, which is anyone's to choose: encoded,
+  // with a suffix no encoding makes, `.` and `..` name no directory of another.
+  if (personId === "") throw new Error("an empty person id cannot name an activity log");
+  const dirOf = (item: string): string => join(root, "activity", `${encodeURIComponent(personId)}.person`, item);
   // A stage id is the workflow's own and an item id comes from the tracker;
   // encoded, neither can name a path outside its directory.
   const fileOf = (item: string, stage: string): string => join(dirOf(item), `${encodeURIComponent(stage)}.jsonl`);

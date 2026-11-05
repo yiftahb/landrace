@@ -34,7 +34,21 @@ describe("landrace mcp over stdio", () => {
   });
 
   it("is what a pairing's server, and with --child a step's, is started as", () => {
-    const { args } = childServerCommand("/w/.landrace", "main");
-    expect(args.slice(-6)).toEqual(["mcp", "--workspace", "/w/.landrace", "--workflow", "main", "--pairing"]);
+    const { args } = childServerCommand("/w/.landrace", "main", "sub-alice");
+    expect(args.slice(-8)).toEqual(["mcp", "--workspace", "/w/.landrace", "--workflow", "main", "--person", "sub-alice", "--pairing"]);
+  });
+
+  it("refuses --child with no --person, from the CLI the loop spawns, before reading any configuration", async () => {
+    const failed = await run(process.execPath, [
+      join(process.cwd(), "src", "cli", "index.ts"), "mcp", "--workspace", join(tmpdir(), "no-such-workspace"),
+      "--workflow", "main", "--child", "1", "--stage", "breakdown", "--round", "1",
+    ]).then(() => null, (e: { code?: number; stderr?: string }) => e);
+    expect(failed?.code).toBe(1);
+    expect(failed?.stderr).toContain("--child needs --person");
+  });
+
+  it("refuses --pairing as anyone but the local person", async () => {
+    await expect(runMcp(join(tmpdir(), "no-such-workspace"), { scope: "main", pairing: true, person: "sub-alice" }))
+      .rejects.toThrow('--pairing serves only the local person, not "sub-alice"');
   });
 });

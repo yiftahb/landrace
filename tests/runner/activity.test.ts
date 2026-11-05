@@ -30,7 +30,7 @@ const onDisk = (root: string): string =>
 
 describe("the activity log", () => {
   it("reads back what a run recorded, in order, from the line asked for", async () => {
-    const log = createActivityLog(rootDir(), redact);
+    const log = createActivityLog(rootDir(), "local", redact);
     log.record("25", "build", 1, tool("Read a.ts", 1));
     log.record("25", "build", 1, { kind: "message", text: "Looking at a.ts", at: 2 });
     log.record("25", "build", 1, tool("Bash pnpm test", 3));
@@ -43,22 +43,47 @@ describe("the activity log", () => {
   });
 
   it("answers the stage it recorded last, not every stage at once", async () => {
-    const log = createActivityLog(rootDir(), redact);
+    const log = createActivityLog(rootDir(), "local", redact);
     log.record("25", "spec", 1, tool("Read spec.md", 1));
     await new Promise((r) => setTimeout(r, 20));
     log.record("25", "build", 2, tool("Edit a.ts", 2));
     expect(await log.read("25", 0)).toMatchObject({ stage: "build", round: 2, total: 1 });
   });
 
+  // Two people whose trackers both list #25 each run it: one's run is never the other's to read.
+  it("keeps each person's lines for an item apart, under one root", async () => {
+    const root = rootDir();
+    const alice = createActivityLog(root, "sub-alice", redact);
+    const bob = createActivityLog(root, "sub-bob", redact);
+    alice.begin("25", "build", 1);
+    alice.record("25", "build", 1, tool("Read alice.ts", 1));
+    bob.record("25", "build", 3, tool("Read bob.ts", 2));
+    expect(await alice.read("25", 0)).toEqual({ stage: "build", round: 1, total: 1, lines: [tool("Read alice.ts", 1)] });
+    expect(await bob.read("25", 0)).toEqual({ stage: "build", round: 3, total: 1, lines: [tool("Read bob.ts", 2)] });
+    expect(await createActivityLog(root, "local", redact).read("25", 0)).toEqual({ stage: null, round: null, lines: [], total: 0 });
+  });
+
+  // A sign-in's subject is anyone's to choose: `..` must not name the directory above, nor `.` another's.
+  it("keeps a person id of . or .. inside its own folder", async () => {
+    const root = rootDir();
+    createActivityLog(root, "..", redact).record("25", "build", 1, tool("Read up.ts", 1));
+    createActivityLog(root, ".", redact).record("25", "build", 1, tool("Read here.ts", 1));
+    expect(await createActivityLog(root, "local", redact).read("25", 0)).toMatchObject({ lines: [] });
+    expect(await createActivityLog(root, "..", redact).read("25", 0)).toMatchObject({ lines: [tool("Read up.ts", 1)] });
+    expect(await createActivityLog(root, ".", redact).read("25", 0)).toMatchObject({ lines: [tool("Read here.ts", 1)] });
+    expect(readdirSync(join(root, "activity")).sort()).toEqual(["...person", "..person"]);
+    expect(() => createActivityLog(root, "", redact)).toThrow(/empty person id/);
+  });
+
   it("reads nothing for an item that has recorded nothing", async () => {
-    expect(await createActivityLog(rootDir(), redact).read("99", 0)).toEqual({ stage: null, round: null, lines: [], total: 0 });
+    expect(await createActivityLog(rootDir(), "local", redact).read("99", 0)).toEqual({ stage: null, round: null, lines: [], total: 0 });
   });
 
   it("keeps a finished round's lines until that stage's next round, which replaces them", async () => {
     const root = rootDir();
-    createActivityLog(root, redact).record("25", "build", 1, tool("Read old.ts"));
+    createActivityLog(root, "local", redact).record("25", "build", 1, tool("Read old.ts"));
     // Another process — `landrace mcp` — sees what the loop wrote.
-    const other = createActivityLog(root, redact);
+    const other = createActivityLog(root, "local", redact);
     expect((await other.read("25", 0)).lines).toEqual([tool("Read old.ts")]);
 
     other.record("25", "build", 2, tool("Read new.ts"));
@@ -67,23 +92,23 @@ describe("the activity log", () => {
 
   it("notices another process's write between two of its own", async () => {
     const root = rootDir();
-    const loop = createActivityLog(root, redact);
+    const loop = createActivityLog(root, "local", redact);
     loop.record("25", "build", 1, tool("Read a.ts"));
     loop.record("25", "build", 1, tool("Read b.ts"));
-    createActivityLog(root, redact).record("25", "build", 2, tool("Read new.ts"));
+    createActivityLog(root, "local", redact).record("25", "build", 2, tool("Read new.ts"));
     loop.record("25", "build", 1, tool("Read stale.ts"));
     expect(await loop.read("25", 0)).toMatchObject({ round: 2, lines: [tool("Read new.ts")] });
   });
 
   it("never lets an older round overwrite a newer one", async () => {
-    const log = createActivityLog(rootDir(), redact);
+    const log = createActivityLog(rootDir(), "local", redact);
     log.record("25", "build", 2, tool("Read new.ts"));
     log.record("25", "build", 1, tool("Read stale.ts"));
     expect(await log.read("25", 0)).toMatchObject({ round: 2, lines: [tool("Read new.ts")] });
   });
 
   it("cuts a line to 240 characters", async () => {
-    const log = createActivityLog(rootDir(), redact);
+    const log = createActivityLog(rootDir(), "local", redact);
     log.record("25", "build", 1, { kind: "message", text: "x".repeat(1000), at: 1 });
     expect((await log.read("25", 0)).lines[0]?.text).toHaveLength(240);
   });
@@ -93,7 +118,7 @@ describe("the activity log", () => {
   // that froze at line 500 made a healthy build look stalled, and an Ask
   // after it showed no progress at all.
   it("keeps at most 500 lines a round, and always the newest", async () => {
-    const log = createActivityLog(rootDir(), redact);
+    const log = createActivityLog(rootDir(), "local", redact);
     for (let i = 1; i <= 1200; i++) log.record("25", "build", 1, tool(`Read ${i}`));
     const page = await log.read("25", 0);
     expect(page.total).toBeLessThanOrEqual(500);
@@ -107,7 +132,7 @@ describe("the activity log", () => {
   // A step that never finished — a timeout, a Ctrl-C — is run again at the
   // same round, and its dead attempt's lines are not this run's.
   it("starts a run afresh when a step begins, even at the round it already holds", async () => {
-    const log = createActivityLog(rootDir(), redact);
+    const log = createActivityLog(rootDir(), "local", redact);
     log.record("25", "build", 1, tool("Read dead.ts"));
     log.begin("25", "build", 1);
     expect(await log.read("25", 0)).toMatchObject({ stage: "build", total: 0 });
@@ -119,13 +144,13 @@ describe("the activity log", () => {
     const root = rootDir();
     chmodSync(root, 0o500);
     const said = jest.spyOn(console, "error").mockImplementation(() => {});
-    expect(() => createActivityLog(root, redact).begin("25", "build", 1)).not.toThrow();
+    expect(() => createActivityLog(root, "local", redact).begin("25", "build", 1)).not.toThrow();
     said.mockRestore();
   });
 
   it("never writes a secret to disk, even one the 240-character cut would have split", async () => {
     const root = rootDir();
-    const log = createActivityLog(root, redact);
+    const log = createActivityLog(root, "local", redact);
     log.record("25", "build", 1, tool(`Bash curl -H "Authorization: ${SECRET}"`));
     log.record("25", "build", 1, tool(`${"y".repeat(230)}${SECRET}`));
     expect(onDisk(root)).not.toContain(SECRET);
@@ -134,7 +159,7 @@ describe("the activity log", () => {
   });
 
   it("puts one line on one line, whatever the agent's text held", async () => {
-    const log = createActivityLog(rootDir(), redact);
+    const log = createActivityLog(rootDir(), "local", redact);
     log.record("25", "build", 1, { kind: "message", text: "first\nsecond\r\n\tthird", at: 1 });
     expect((await log.read("25", 0)).lines[0]?.text).toBe("first second third");
   });
@@ -143,23 +168,23 @@ describe("the activity log", () => {
     const root = rootDir();
     chmodSync(root, 0o500);
     const said = jest.spyOn(console, "error").mockImplementation(() => {});
-    const log = createActivityLog(root, redact);
+    const log = createActivityLog(root, "local", redact);
     expect(() => log.record("25", "build", 1, tool("Read a.ts"))).not.toThrow();
     said.mockRestore();
   });
 
   it("skips a line it cannot parse rather than failing the whole read", async () => {
     const root = rootDir();
-    const log = createActivityLog(root, redact);
+    const log = createActivityLog(root, "local", redact);
     log.record("25", "build", 1, tool("Read a.ts", 1));
-    const file = join(root, "activity", "25", "build.jsonl");
+    const file = join(root, "activity", "local.person", "25", "build.jsonl");
     writeFileSync(file, `${readFileSync(file, "utf8")}{not json\n`);
     expect((await log.read("25", 0)).lines).toEqual([tool("Read a.ts", 1)]);
   });
 
   it("keeps a stage name that is not a safe file name inside its own directory", async () => {
     const root = rootDir();
-    const log = createActivityLog(root, redact);
+    const log = createActivityLog(root, "local", redact);
     log.record("25", "../../escape", 1, tool("Read a.ts"));
     expect(readdirSync(root)).toEqual(["activity"]);
     expect(await log.read("25", 0)).toMatchObject({ stage: "../../escape", total: 1 });

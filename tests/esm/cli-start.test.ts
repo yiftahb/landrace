@@ -277,7 +277,7 @@ describe("buildWorkspaceRuntime", () => {
   it("hands converge how to start its own item server, as this process on this workflow directory", async () => {
     const { dir } = await fixture();
     const rt = await buildMain(dir, {});
-    expect(rt.deps.childServer).toEqual(childServerCommand(dir, "main"));
+    expect(rt.deps.childServer).toEqual(childServerCommand(dir, "main", "local"));
   });
 
   /**
@@ -377,7 +377,7 @@ describe("buildWorkspaceRuntime", () => {
     const { dir } = await fixture();
     const rt = await buildMain(dir, {});
     rt.deps.activity?.record(ITEM, "spec", 1, { kind: "tool", text: `Bash curl -H "Authorization: Bearer ${TOKEN}"`, at: 1 });
-    const page = await createActivityLog(sandboxRoot(dir), (t) => t).read(ITEM, 0);
+    const page = await createActivityLog(sandboxRoot(dir), "local", (t) => t).read(ITEM, 0);
     expect(page).toMatchObject({ stage: "spec", round: 1, total: 1 });
     expect(JSON.stringify(page)).not.toContain(TOKEN);
   });
@@ -754,7 +754,7 @@ ${EXECUTOR}`);
     expect(rt.workflows.map((w) => w.id)).toEqual(["main", "fast"]);
     expect(rt.workflows[0]?.source).toBe(rt.workflows[1]?.source);
     expect(rt.preflights).toHaveLength(1);
-    expect(rt.workflows.map((w) => w.deps.childServer)).toEqual([childServerCommand(dir, "main"), childServerCommand(dir, "fast")]);
+    expect(rt.workflows.map((w) => w.deps.childServer)).toEqual([childServerCommand(dir, "main", "local"), childServerCommand(dir, "fast", "local")]);
 
     await mkdir(join(workflowIn(dir, "fast"), "steps"), { recursive: true });
     await writeFile(join(workflowIn(dir, "fast"), "steps", "build.md"), [
