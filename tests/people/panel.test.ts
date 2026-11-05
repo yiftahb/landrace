@@ -124,7 +124,7 @@ describe("the people panel", () => {
     expect(status).toMatchObject({ id: "forge", state: "connected" });
     const file = JSON.parse(await readFile(join(root, "local.json"), "utf8")) as { connections: Record<string, ConnectionValue> };
     expect(file.connections["forge"]).toMatchObject({ fields: { token: TOKEN }, source: "paste", connectedAt: NOW.toISOString() });
-    expect(events.filter((e) => e.name === "person.connected")).toEqual([{ name: "person.connected", connection: "forge" }]);
+    expect(events.filter((e) => e.name === "person.connected")).toEqual([{ name: "person.connected", connection: "forge", person: "local", personEmail: "dev1@example.invalid" }]);
     expect(printed.join("\n")).not.toContain(TOKEN);
     expect(changes).toEqual(["local"]);
     expect((await panel.me(ME)).ready).toBe(true);
@@ -193,7 +193,7 @@ describe("the people panel", () => {
     await panel.connect(ME, "forge", { token: TOKEN });
     await panel.disconnect(ME, "forge");
     expect((await store.read("local")).connections).toEqual({});
-    expect(events.filter((e) => e.name === "person.disconnected")).toEqual([{ name: "person.disconnected", connection: "forge" }]);
+    expect(events.filter((e) => e.name === "person.disconnected")).toEqual([{ name: "person.disconnected", connection: "forge", person: "local", personEmail: "dev1@example.invalid" }]);
     expect(changes).toEqual(["local", "local"]);
     expect((await panel.me(ME)).ready).toBe(false);
     await expect(panel.disconnect(ME, "nope")).rejects.toBeInstanceOf(Refusal);

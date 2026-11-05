@@ -1,3 +1,4 @@
+import type { IncomingMessage } from "node:http";
 import { spawn } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
@@ -5,7 +6,9 @@ import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } fro
 import { assertConfigUsable, redactionValues } from "#config/load.js";
 import { perPersonKeys } from "#people/keys.js";
 import { refreshIfNeeded } from "#people/oauth.js";
+import { createOidc } from "#people/oidc.js";
 import { createPeoplePanel } from "#people/panel.js";
+import { createSessions } from "#people/session.js";
 import {
   assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, lookupIdentities, personEnvOf, resolvePerson,
 } from "#people/resolve.js";
@@ -148,6 +151,8 @@ export async function startUi(
     /** Whose each request is, and that person's board: every route but the board's own fallback goes by them. */
     callerOf?: FrontDoorOptions["callerOf"];
     boardFor?: FrontDoorOptions["boardFor"];
+    /** Set, people sign in at the door: see `RemoteDoor`. */
+    remote?: FrontDoorOptions["remote"];
     serve?: ((opts: FrontDoorOptions) => Promise<UiServer>) | undefined;
   },
 ): Promise<UiServer | null> {
@@ -161,6 +166,7 @@ export async function startUi(
       ...(opts.mcp === undefined ? {} : { mcp: opts.mcp }),
       ...(opts.callerOf === undefined ? {} : { callerOf: opts.callerOf }),
       ...(opts.boardFor === undefined ? {} : { boardFor: opts.boardFor }),
+      ...(opts.remote === undefined ? {} : { remote: opts.remote }),
       board: {
         view: () => opts.board.view(),
         ...(opts.tick === undefined ? {} : { tick: opts.tick }),
@@ -1606,8 +1612,16 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   // OAuth token due has been offered to its refresh token, below.
   const store = opts.credentials ?? createCredentialStore();
   let first = await localGate(dir, store);
-  if (!first.resolution.ready && !serves) assertLocalUsable(first.local);
   const { config } = first.local.loaded;
+  // Remote — many people, each signed in — when `people.oidc` names where
+  // they sign in. Without it nothing asks who anyone is, as before.
+  const oidc = config.people?.oidc;
+  const mode = { remote: oidc !== undefined };
+  if (mode.remote && !serves) {
+    throw new Error("people.oidc is set, so people sign in through the board: a remote instance cannot run with --headless or --once");
+  }
+  // Remotely the local person is nobody's: their readiness stops nothing.
+  if (!mode.remote && !first.resolution.ready && !serves) assertLocalUsable(first.local);
 
   // One logger, one telemetry sink and one stop for the process, whatever
   // runtimes are current: events and telemetry outlive a reload, and Ctrl-C
@@ -1627,7 +1641,10 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
   const personLog = log.with(personFields(first.person));
   // Before anything logs. Each build tells it again, and checks them strictly.
   const { secretValues } = first.local.loaded;
-  log.redact([...config.log.redact.flatMap((name) => secretValues.get(name) ?? []), ...credentialValues(first.credentials)]);
+  log.redact([
+    ...config.log.redact.flatMap((name) => secretValues.get(name) ?? []), ...credentialValues(first.credentials),
+    ...(oidc === undefined ? [] : [oidc.clientSecret]),
+  ]);
   const stop = new AbortController();
   // Per person, and shared by every runtime of theirs: a run an old runtime
   // started is still stopped by closing its item or taking its admit label,
@@ -1655,7 +1672,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     // `--once` runs no loop at all: a token still ready but within the
     // renewal window would end under a long step of its one pass. Renewed,
     // refused and marked failed, or left — then the person judged again.
-    {
+    // Remotely the local person runs nothing, and has nothing to renew.
+    if (!mode.remote) {
       const ctx = first.local.loaded;
       await connectionRefresher({
         store, log: personLog, gate: () => first,
@@ -1665,7 +1683,7 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
         ...(opts.oauth?.fetch ? { fetch: opts.oauth.fetch } : {}),
       })();
     }
-    if (!first.resolution.ready && !serves) {
+    if (!mode.remote && !first.resolution.ready && !serves) {
       assertLocalUsable(first.local);
       assertPersonReady(first.resolution);
     }
@@ -1686,17 +1704,16 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       const rt = roster.get(personId)?.slot.current() ?? null;
       return rt === null ? null : served.get(rt) ?? null;
     };
-    // Remote mode — many people, signed in — does not exist yet: every start is local.
-    const mode = { remote: false };
     // The people this runner runs for: locally exactly the local person, as
-    // `start` always has. The build reads `schedule`, made below: no reload
+    // `start` always has; remotely everyone who has signed in. The build reads `schedule`, made below: no reload
     // runs before it is.
     const roster = createRoster({
       dir, loaded: first.local.configured, registry: { connections: first.connections }, store, mode, log, local, pool,
+      ...(config.people?.overrides ? { overrides: config.people.overrides } : {}),
       // Judged afresh: the connection just made or removed is in the store
       // now, and a reload re-reads the hooks lists and `landrace.yaml`.
       judge: async (person) => {
-        const gate = await personGate(dir, store, { person, log: log.with(personFields(person)), signal: stop.signal });
+        const gate = await personGate(dir, store, { person, remote: mode.remote, log: log.with(personFields(person)), signal: stop.signal });
         gates.set(person.id, gate);
         if (person.id === local.id) latest = gate;
         return gate;
@@ -1756,7 +1773,11 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
         return trackedRun(() => roster.tick(), stop, inFlight)();
       },
     });
-    await roster.reload(local.id);
+    // Remotely, everyone who signed in before: each judged and built, one
+    // whose build fails theirs alone. Locally the one person, whose failing
+    // build refuses the start.
+    if (mode.remote) await roster.sync();
+    else await roster.reload(local.id);
     const current = (): ServedRuntime | null => servedOf(local.id);
 
     // The Integrations tab. A paste is checked against the configuration and
@@ -1766,16 +1787,25 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       config: latest.local.loaded.config, secrets: latest.local.loaded.secretValues, signal: stop.signal,
       log: (event, data) => personLog(event as EventName, data),
     });
+    // Each caller by their own last judging; locally the one person's. One
+    // who signed in and was never judged yet is judged by the start's.
+    const gateOf = (personId: string): LocalGate => (mode.remote ? gates.get(personId) ?? first : latest);
     const people = createPeoplePanel({
-      store, mode, log: personLog,
-      gate: () => ({
-        registry: { connections: latest.connections },
-        loaded: latest.local.configured,
-        lookups: { person: latest.person.id, reasons: latest.lookups },
-        ctx: gateCtx(),
-      }),
-      onChange: async () => {
-        await roster.reload(local.id);
+      store, mode, log: mode.remote ? log : personLog,
+      gate: (personId) => {
+        const gate = gateOf(personId);
+        const theirs = log.with({ person: personId });
+        return {
+          registry: { connections: gate.connections },
+          loaded: gate.local.configured,
+          lookups: { person: gate.person.id, reasons: gate.lookups },
+          ctx: mode.remote
+            ? { config: gate.local.loaded.config, secrets: gate.local.loaded.secretValues, signal: stop.signal, log: (event, data) => theirs(event as EventName, data) }
+            : gateCtx(),
+        };
+      },
+      onChange: async (personId) => {
+        await roster.reload(mode.remote ? personId : local.id);
         schedule.wake();
       },
       // Where a provider sends the person back: `serve.publicUrl`, else the
@@ -1809,8 +1839,11 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       await Promise.all(roster.people().map(({ person }) => refresherOf(person)()));
     };
 
-    // Each request's caller, and their board: locally always the local person.
-    const callerOf = (): Person => latest.person;
+    // Each request's caller, and their board: locally always the local
+    // person; remotely whoever the session cookie says signed in, or nobody.
+    const secure = serves && config.serve.publicUrl !== undefined && new URL(config.serve.publicUrl).protocol === "https:";
+    const sessions = mode.remote ? createSessions({ secure }) : null;
+    const callerOf = (req: IncomingMessage): Person | null => (sessions ? sessions.personOf(req) : latest.person);
     const boardFor = (caller: Person): Omit<UiOptions, "allowedHosts" | "origins"> => {
       const theirs = (): ServedRuntime | null => servedOf(caller.id);
       return {
@@ -1844,6 +1877,20 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       // Never reached while `callerOf` names someone, which locally it always does.
       board: { view: () => current()?.board.view() ?? Promise.reject(new Error(NOT_RUNNING)) },
       callerOf, boardFor,
+      ...(oidc && sessions ? {
+        remote: {
+          // `serveProblems` refused a remote start without serve.publicUrl, before anything was built.
+          oidc: createOidc({ oidc, redirectUri: new URL("login/callback", `${(serve.publicUrl ?? "").replace(/\/+$/, "")}/`).href }),
+          sessions,
+          signIn: async (person: Person) => {
+            await roster.signIn(person);
+            schedule.wake();
+          },
+          // Under the store's root, which every run is denied reading: its tokens are as much a person's as their logins.
+          authRoot: join(store.root, "mcp"),
+          log,
+        },
+      } : {}),
       // Each caller's own runtime's endpoint, its sessions theirs alone.
       mcp: serves ? {
         handle: (req, res, caller) => {
@@ -1872,7 +1919,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
           throw new Error(`could not record which port serves this workspace's board: ${messageOf(e)}`);
         }
         console.error(`landrace: triage page at ${ui.url}`);
-        if (!current()) {
+        if (mode.remote) {
+          console.error(`landrace: people sign in at ${ui.url}; ${roster.people().length} have before`);
+        } else if (!current()) {
           // The judging the build just made, after the renewal pass above.
           const missing = latest.resolution.problems.filter((p) => p.rule.startsWith("connection.")).map((p) => `  ${p.rule}: ${p.message}`);
           console.error(`landrace: nothing runs until these are connected in the board's Integrations tab:\n${log.scrub(missing.join("\n"))}`);

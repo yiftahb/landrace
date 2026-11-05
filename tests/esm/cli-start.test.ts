@@ -2636,3 +2636,52 @@ export const spy = brand("preflight", {
     });
   }, 30_000);
 });
+
+/*
+ * #187: `people.oidc` makes the start remote. What is observed is what the
+ * door it serves answers before anyone signs in, and who its roster holds:
+ * everyone who signed in before, never the operator's own `local` file.
+ */
+describe("runStart with people.oidc", () => {
+  const REMOTE = "serve: { host: 0.0.0.0, publicUrl: \"https://landrace.example.org/\" }\n" +
+    "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n";
+
+  it("serves a door that asks who is calling, and holds who signed in before but the local file", async () => {
+    const { dir } = await fixture({ configExtra: REMOTE, items: [] });
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    await credentials.remember({ id: "local" });
+    await credentials.remember({ id: "sub-alice", email: "alice@example.invalid" });
+    const { serve, drive } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    try {
+      await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
+      expect(said.join("\n")).toContain("people sign in at http://127.0.0.1:4545/; 1 have before");
+      const page = await drive("/");
+      expect([page.status, page.headers["location"]]).toEqual([302, "/login?return=%2F"]);
+      expect((await drive("/board.json")).status).toBe(401);
+      expect((await drive("/people/me")).status).toBe(401);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  it("refuses --headless, which leaves nobody a door to sign in through", async () => {
+    const { dir } = await fixture({ configExtra: REMOTE, items: [] });
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    await expect(runStart(dir, { interactive: false, credentials, ui: false })).rejects.toThrow(/people\.oidc is set.*--headless/);
+  });
+
+  it("refuses people.oidc with no serve.publicUrl, in validate's words", async () => {
+    const { dir } = await fixture({
+      configExtra: "people: { oidc: { issuer: https://id.example.invalid, clientId: landrace, clientSecret: oidc-client-secret-value } }\n", items: [],
+    });
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    await expect(runStart(dir, { interactive: false, credentials, serve: inProcessDoor().serve })).rejects.toThrow(/serve\.public-url: people\.oidc is set and serve\.publicUrl is not/);
+  });
+});

@@ -1,4 +1,5 @@
 import { beginConnect, createPendingConnects, finishConnect, oauthOf } from "#people/oauth.js";
+import { personFields } from "#people/person.js";
 import { connectionStatus, resolvePerson } from "#people/resolve.js";
 import { messageOf, Refusal } from "#runner/errors.js";
 import type {
@@ -133,7 +134,7 @@ export function createPeoplePanel(opts: {
     disconnect: async (caller, id) => {
       defOf(opts.gate(caller.id).registry, id);
       await opts.store.remove(caller.id, id);
-      opts.log("person.disconnected", { connection: id });
+      opts.log("person.disconnected", { connection: id, ...personFields(caller) });
       await reload(caller.id, `"${id}" is disconnected`);
     },
   };
@@ -155,7 +156,7 @@ export function createPeoplePanel(opts: {
     }
     if (problem !== null) throw new Refusal(opts.log.scrub(`"${id}" does not work: ${problem}`, values));
     await opts.store.put(caller.id, caller, id, value);
-    opts.log("person.connected", { connection: id });
+    opts.log("person.connected", { connection: id, ...personFields(caller) });
     await reload(caller.id, `"${id}" is connected`, values);
     return connectionStatus(def, await opts.store.read(caller.id), now().getTime());
   }
