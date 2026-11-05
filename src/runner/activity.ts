@@ -44,7 +44,8 @@ const NONE: ActivityPage = { stage: null, round: null, lines: [], total: 0 };
 
 /**
  * What one person's agents are doing, per item, kept at
- * `<root>/activity/<person>/<item>/<stage>.jsonl` — on disk, because a turn
+ * `<root>/activity/<URL-encoded person>.person/<item>/<URL-encoded stage>.jsonl`
+ * — on disk, because a turn
  * asked through `landrace mcp` runs in another process and the page must
  * show it. Per person: two people whose trackers list one item each run it,
  * and one's lines are never shown to the other.
