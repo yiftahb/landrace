@@ -102,3 +102,27 @@ describe("a person's step on an instance with others", () => {
     expect((await settingsOf(["repo:read"])).permissions.deny).toContain(`Read(/${made}/**)`);
   });
 });
+
+describe("transcripts that cannot be listed", () => {
+  const runIn = async (home: string) => {
+    const cwd = temp("fake-agent-");
+    writeFileSync(join(cwd, "fake.json"), JSON.stringify({ out: "{{ARGV_JSON}}" }));
+    const worktrees = join(temp("sandbox-"), "worktrees");
+    return new Claude({ bin, home }).build({
+      servers: {}, tools: {}, plugins: [], sandbox: { hosts: [], deny: [] },
+      denyPaths: () => Promise.resolve(denyForPerson({ id: "alice" }, [{ id: "bob" }], { worktrees, credentials: CREDENTIALS_ROOT })),
+    }).run("p", { round: 1, cwd, capabilities: ["repo:read"], signal: new AbortController().signal });
+  };
+
+  // Read as none, bob's sessions would be left off the list and readable.
+  it("refuses the run when the projects folder is there and cannot be read", async () => {
+    const home = temp("fake-home-");
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(join(home, ".claude", "projects"), "not a folder");
+    await expect(runIn(home)).rejects.toThrow(/ENOTDIR/);
+  });
+
+  it("runs when there is no projects folder at all: nobody's sessions to deny", async () => {
+    await expect(runIn(temp("fake-home-"))).resolves.toMatchObject({ text: expect.any(String) });
+  });
+});

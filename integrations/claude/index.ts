@@ -112,7 +112,14 @@ export const claudeProjectDirOf = (cwd: string, home: string = homedir()): strin
 async function transcriptsIn(home: string, dir: string): Promise<string[]> {
   const projects = join(home, ".claude", "projects");
   const name = encoded(dir);
-  return (await readdir(projects).catch(() => [] as string[]))
+  // Only a folder that is not there holds no sessions. Any other failure —
+  // EACCES, EMFILE under many runs, ENOTDIR — read as none would leave the
+  // other person's sessions off the list and readable, so it refuses the run.
+  const entries = await readdir(projects).catch((e: unknown) => {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [] as string[];
+    throw e;
+  });
+  return entries
     .filter((entry) => entry === name || entry.startsWith(`${name}-`))
     .sort()
     .map((entry) => join(projects, entry));
