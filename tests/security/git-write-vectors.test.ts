@@ -16,8 +16,9 @@ import { commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js
  * worktree's `.git` file. Each way it could make git run its code is planted
  * here for real, proven armed by git run plainly, and then every entry point
  * the engine reaches git through is run and must leave no marker. A filter in
- * the repository's own config is not among them: a write step is denied that
- * file (`gitControlPaths`), and the engine overrides no `filter.*`.
+ * the repository's own config is not among them, nor a `commondir` in the
+ * common directory, which hands git a config of the step's: a write step is
+ * denied both files (`gitControlPaths`), and the engine overrides no `filter.*`.
  */
 
 jest.setTimeout(180_000);
@@ -200,6 +201,32 @@ describe.each(VECTORS)("a write step that planted %s", (vector) => {
   });
 });
 
+describe("a write step that planted the common directory's own commondir", () => {
+  // git reads `commondir` in any git directory, the main one too: written there, it hands every git
+  // in the checkout — the operator's, and the engine's fetch, push and `worktree add` — a config of
+  // the step's, past the guard args. Like the repository's `config`, the deny list alone closes it.
+  it("is armed: git in the checkout follows it, and runs its code even with the guard args", async () => {
+    const t = await trap();
+    const { root } = await gitRepoWithOrigin();
+    const common = realpathSync(join(root, ".git"));
+    const evil = await evilCopy(common, join(t.dir, "common"), t);
+    await writeFile(join(common, "commondir"), `${evil}\n`);
+    expect(realpathSync(await git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))).toBe(evil);
+    // A changed file, so adding it runs the clean filter the planted config names.
+    await writeFile(join(root, "src", "a.ts"), "export const a = 2;\n");
+    await exec("git", [...GIT_GUARD_ARGS, "add", "-A"], { cwd: root }).catch(() => undefined);
+    expect(ran(t.marker)).toBe(true);
+  });
+
+  it("is a path a write step may not write, listed while absent", async () => {
+    const { root } = await gitRepoWithOrigin();
+    const path = await ensureWorktree("10", root);
+    const common = realpathSync(join(root, ".git"));
+    expect(existsSync(join(common, "commondir"))).toBe(false);
+    expect(await gitControlPaths(path, root)).toContain(join(common, "commondir"));
+  });
+});
+
 describe("the admin folder the engine's git uses", () => {
   async function setup(): Promise<{ root: string; path: string; common: string; admin: string }> {
     const { root } = await gitRepoWithOrigin();
@@ -265,12 +292,13 @@ describe("gitControlPaths", () => {
     const paths = await gitControlPaths(path, root);
 
     expect(paths).toEqual([
-      join(common, "config"), join(common, "config.worktree"), join(common, "hooks"), join(common, "info"),
+      join(common, "config"), join(common, "config.worktree"), join(common, "commondir"), join(common, "hooks"), join(common, "info"),
       ...admins.flatMap((n) =>
         ["config", "config.worktree", "commondir", "gitdir", "hooks", "info"].map((f) => join(common, "worktrees", n, f))),
       join(path, ".git"),
     ]);
     expect(existsSync(join(common, "config.worktree"))).toBe(false);
+    expect(existsSync(join(common, "commondir"))).toBe(false);
     // An admin folder git made has no config or hooks of its own: listed absent, since a step
     // that recreated the folder without `commondir` would have git read them as a repository's.
     expect(existsSync(join(common, "worktrees", admins[0] ?? "", "config"))).toBe(false);
@@ -281,6 +309,6 @@ describe("gitControlPaths", () => {
     const { root } = await gitRepoWithOrigin();
     const common = realpathSync(join(root, ".git"));
     expect(await gitControlPaths(realpathSync(root), root)).toEqual(
-      ["config", "config.worktree", "hooks", "info"].map((f) => join(common, f)));
+      ["config", "config.worktree", "commondir", "hooks", "info"].map((f) => join(common, f)));
   });
 });

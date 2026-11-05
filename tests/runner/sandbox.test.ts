@@ -497,7 +497,7 @@ describe("converge and the sandbox", () => {
     const common = async (dir: string): Promise<string> =>
       realpathSync(resolve(dir, (await exec("git", ["rev-parse", "--git-common-dir"], { cwd: dir })).stdout.trim()));
 
-    it("hands a write step in a worktree that repository's config, hooks, info and admin files, and the worktree's .git file", async () => {
+    it("hands a write step in a worktree that repository's config, commondir, hooks, info and admin files, and the worktree's .git file", async () => {
       const root = await repo();
       const { runs, executor } = recorder();
       await converge("1", deps(world(), { executor, steps: write, sandbox: { root } }));
@@ -505,7 +505,7 @@ describe("converge and the sandbox", () => {
       const cwd = run?.cwd as string;
       const git = await common(root);
       expect(run?.denyWrite).toEqual(expect.arrayContaining([
-        join(git, "config"), join(git, "config.worktree"), join(git, "hooks"), join(git, "info"), join(cwd, ".git"),
+        join(git, "config"), join(git, "config.worktree"), join(git, "commondir"), join(git, "hooks"), join(git, "info"), join(cwd, ".git"),
       ]));
       expect(run?.denyWrite?.filter((p) => p.startsWith(join(git, "worktrees"))).map((p) => basename(p)))
         .toEqual(["config", "config.worktree", "commondir", "gitdir", "hooks", "info"]);
@@ -529,8 +529,8 @@ describe("converge and the sandbox", () => {
       const theirs = await common(workspace);
       const here = await common(process.cwd());
       expect(run?.denyWrite).toEqual(expect.arrayContaining([
-        ...["config", "hooks", "info"].map((f) => join(theirs, f)),
-        ...["config", "hooks", "info"].map((f) => join(here, f)),
+        ...["config", "commondir", "hooks", "info"].map((f) => join(theirs, f)),
+        ...["config", "commondir", "hooks", "info"].map((f) => join(here, f)),
       ]));
       expect(run?.denyWrite?.filter((p) => p.startsWith(join(theirs, "worktrees"))).map((p) => basename(p)))
         .toEqual(["config", "config.worktree", "commondir", "gitdir", "hooks", "info"]);

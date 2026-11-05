@@ -55,16 +55,16 @@ Codex's sandbox is different and keeps less — see [Integrations](integrations.
 
 ### Git write rules
 
-A write step must write the repository's shared git directory to commit. git also reads that directory for what to run: hooks, `core.hooksPath`, `core.fsmonitor`, filters. A worktree's `.git` file, and its admin folder's `commondir`, say where that directory is. A step that planted any of these would have its code run by Landrace's own git, outside the sandbox with the forge token, or by your `git pull`.
+A write step must write the repository's shared git directory to commit. git also reads that directory for what to run: hooks, `core.hooksPath`, `core.fsmonitor`, filters. A worktree's `.git` file, and a `commondir` file in any git directory, the shared one included, say where that directory is. A step that planted any of these would have its code run by Landrace's own git, outside the sandbox with the forge token, or by your `git pull`.
 
 Two rules stop that:
 
 - **A write step may not write the git control paths.** Landrace lists them for each write run, and the agent integration keeps the run from writing them, whatever `agent.sandbox.deny` says. A path that does not exist yet is listed too, so the step cannot create it.
-  - In the repository's common git directory: `config`, `config.worktree`, `hooks/` and `info/`.
+  - In the repository's common git directory: `config`, `config.worktree`, `commondir`, `hooks/` and `info/`. git reads `commondir` there too: written, it points every git in your checkout at a directory and config the step made.
   - In each worktree's admin folder under `worktrees/`: `config`, `config.worktree`, `hooks/`, `info/`, `commondir` and `gitdir`. git never reads an admin folder's own `config` or `hooks/`, unless a step remade the folder without `commondir`. Then your git, in a checkout that is a linked worktree, would read them as a repository's.
   - The worktree's own `.git` file.
   - With `agent.isolation: none`, the same paths of the checkout the step runs in and of the workspace's checkout.
-- **Landrace's git runs no hook and no fsmonitor, and does not trust a worktree's pointers.** Every git command it starts carries `-c core.hooksPath=/dev/null -c core.fsmonitor=false`. In a step's worktree it finds the admin folder itself — the one folder whose `gitdir` names the worktree — and takes the common directory from your checkout, never from `commondir`.
+- **Landrace's git runs no hook and no fsmonitor, and does not trust a worktree's pointers.** Every git command it starts carries `-c core.hooksPath=/dev/null -c core.fsmonitor=false`. In a step's worktree it finds the admin folder itself — the one folder whose `gitdir` names the worktree — and takes the common directory from your checkout, never from the admin folder's `commondir`.
 
 The step's commits, fetches, merges and pushes work as before: objects, refs, the index and `HEAD` stay writable.
 
@@ -86,10 +86,11 @@ To check a repository a step has written to, run these in your checkout. Each li
 git config --show-origin --get-regexp '^(core\.(hookspath|fsmonitor|sshcommand|pager|editor)|filter\.|diff\..*\.command|include|url\.)'
 ls -la "$(git rev-parse --git-common-dir)/hooks"
 find "$(git rev-parse --git-common-dir)" -name config.worktree
+ls "$(git rev-parse --git-dir)/commondir"
 cat "$(git rev-parse --git-common-dir)"/worktrees/*/commondir
 ```
 
-`commondir` should read `../..` in every admin folder. `validate` does not check for planted hooks, because it cannot tell them from your own.
+In a checkout that is not a linked worktree, `ls` should find no `commondir`; if it finds one, the other commands read the directory it names. `commondir` should read `../..` in every admin folder. `validate` does not check for planted hooks, because it cannot tell them from your own.
 
 ## Stored credentials
 
