@@ -182,7 +182,8 @@ export async function gitDirsOf(path: string, repoRoot: string): Promise<GitDirs
 
 /**
  * That a worktree reads as git made it, before it is handed to a person or
- * an agent is run in it: its admin folder, found by lookup, has a `commondir`
+ * an agent is run in it, or setup runs there: its `.git` file points at the
+ * admin folder found by lookup, which has a `commondir`
  * naming this repository's common directory, and no `config`, `hooks` or
  * `info` of its own. A checkout whose `.git` is a directory has no admin
  * folder, and passes.
@@ -201,6 +202,18 @@ export async function worktreeIntact(path: string, repoRoot: string): Promise<vo
   const what = `refusing to hand out or run in ${path}`;
   const common = await commonDirOf(repoRoot, what);
   const admin = await adminDirOf(path, common, what);
+  // The .git file is what a person's or a setup command's git reads first: pointed anywhere
+  // else, it hands that git a directory of the step's, whatever the admin folder holds.
+  const pointer = (await readFile(dotGit, "utf8").catch((e: unknown) => {
+    throw new Error(`${what}: ${messageOf(e)}`);
+  })).match(/^gitdir: (.+?)\s*$/m)?.[1];
+  const pointed = pointer === undefined ? null : await realpath(resolve(path, pointer)).catch(() => resolve(path, pointer));
+  if (pointed !== await realpath(admin)) {
+    throw new Error(
+      `${what}: ${dotGit} points at ${pointed ?? "no gitdir"}, not ${admin}, the admin folder that names it; ` +
+      "a step that may write could have pointed it at a git directory of its own",
+    );
+  }
   const file = join(admin, "commondir");
   const named = await readFile(file, "utf8").catch((e: unknown) => {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -826,6 +839,9 @@ function runSetup(command: string, cwd: string, timeoutMs: number, signal?: Abor
  * of truth. A failure throws the command's tail, before the agent is paid for.
  */
 export async function prepareWorktree({ item, path, root, setup, log, signal }: WorktreePreparation): Promise<void> {
+  // Setup runs the operator's commands outside the sandbox, and any git they start reads the
+  // worktree's `.git` file and its admin folder's `commondir`, not the directories pinned here.
+  await worktreeIntact(path, root);
   const dirs = await gitDirsOf(path, root);
   await copyInto(path, root, setup.copy, dirs);
   if (setup.setup.length === 0) return;

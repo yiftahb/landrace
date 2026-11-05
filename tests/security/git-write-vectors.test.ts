@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import {
   ensureWorktree, gitControlPaths, gitDirsOf, keptSlot, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead, worktreeIntact,
@@ -179,9 +179,13 @@ describe.each(VECTORS)("a write step that planted %s", (vector) => {
       ["pushBranch", () => pushBranch(gitIn(root), branch, "3", signal, [])],
     ];
     const fired: string[] = [];
+    const refused: string[] = [];
     for (const [name, call] of entries) {
       await plant(vector, root, path, t);
-      await call();
+      // prepareWorktree is about to run setup that git reads the worktree's own way, so it halts
+      // on a worktree pointing at a git directory of the step's; nothing else may.
+      if (name === "prepareWorktree") await call().catch(() => refused.push(name));
+      else await call();
       if (ran(t.marker)) fired.push(name);
       await rm(t.marker, { force: true });
       await unplant(vector, root, path);
@@ -199,6 +203,7 @@ describe.each(VECTORS)("a write step that planted %s", (vector) => {
     await removeWorktree("4", root);
     if (ran(t.marker)) fired.push("removeWorktree");
     expect(fired).toEqual([]);
+    expect(refused).toEqual(vector === "dotgit" || vector === "commondir" ? ["prepareWorktree"] : []);
   });
 });
 
@@ -256,6 +261,45 @@ describe("the admin folder the engine's git uses", () => {
     expect(dirs.GIT_COMMON_DIR).toBe(common);
     await worktreeState(path, root);
     expect(ran(t.marker)).toBe(false);
+  });
+
+  // `agent.worktree.setup` runs the operator's commands outside the sandbox, and any git they
+  // start reads the worktree as git would — through its `.git` file and the admin folder's
+  // `commondir`, never the directories the engine pinned. So the worktree is checked first.
+  it.each(["renamed-in", "dotgit"] as const)(
+    "refuses to run setup that starts git when the step left a %s git directory of its own",
+    async (how) => {
+      const t = await trap();
+      const { root, path, common, admin } = await setup();
+      const evilCommon = await evilCopy(common, join(t.dir, "common"), t);
+      if (how === "renamed-in") {
+        await rename(admin, join(common, "moved-away"));
+        const planted = join(common, "worktrees", "planted");
+        await cp(join(common, "moved-away"), planted, { recursive: true });
+        await writeFile(join(planted, "commondir"), `${evilCommon}\n`);
+        await writeFile(join(path, ".git"), `gitdir: ${planted}\n`);
+      } else {
+        await writeFile(join(path, ".git"), `gitdir: ${evilCommon}\n`);
+      }
+      // Armed: the same command, run as setup would run it, runs the step's code.
+      await exec("sh", ["-c", "git status"], { cwd: path }).catch(() => undefined);
+      expect(ran(t.marker)).toBe(true);
+      await rm(t.marker, { force: true });
+
+      await expect(prepareWorktree({
+        item: "5", path, root, log: () => {},
+        setup: { copy: [], setup: ["git status"], timeoutMs: 30_000, lockfiles: ["*.ts"] },
+      })).rejects.toThrow(/refusing to hand out or run in/);
+      expect(ran(t.marker)).toBe(false);
+    },
+  );
+
+  it("runs setup that starts git in a worktree as git made it", async () => {
+    const { root, path } = await setup();
+    await expect(prepareWorktree({
+      item: "5", path, root, log: () => {},
+      setup: { copy: [], setup: ["git status"], timeoutMs: 30_000, lockfiles: ["*.ts"] },
+    })).resolves.toBeUndefined();
   });
 
   it("halts when it holds a config.worktree, naming it", async () => {
@@ -347,6 +391,20 @@ describe("a worktree handed out or run in", () => {
     const { root, path, admin } = await setup();
     await writeFile(join(admin, "config.worktree"), "");
     await expect(worktreeIntact(path, root)).rejects.toThrow(join(admin, "config.worktree"));
+  });
+
+  it("halts on a .git file pointing anywhere but the admin folder that names it", async () => {
+    const t = await trap();
+    const { root, path, common } = await setup();
+    const evil = await evilCopy(common, join(t.dir, "gitdir"), t);
+    await writeFile(join(path, ".git"), `gitdir: ${evil}\n`);
+    await expect(worktreeIntact(path, root)).rejects.toThrow(`${join(path, ".git")} points at ${evil}`);
+  });
+
+  it("accepts a relative .git file naming its admin folder", async () => {
+    const { root, path, admin } = await setup();
+    await writeFile(join(path, ".git"), `gitdir: ${relative(path, admin)}\n`);
+    await expect(worktreeIntact(path, root)).resolves.toBeUndefined();
   });
 
   it("accepts the relative commondir git writes, and an absolute one naming the same directory", async () => {
