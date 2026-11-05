@@ -262,7 +262,14 @@ export function createMcpAuth(opts: {
       if (!res.headersSent) res.status(500).type("text/plain").send("the approval failed; the landrace log says why");
     });
   });
-  router.use(mcpAuthRouter({ provider, issuerUrl: issuer, resourceServerUrl: resource, resourceName: "Landrace" }));
+  // The SDK's rate limits stand, counted by the client's address. A request
+  // with none — over a socket that is no TCP connection — shares one count
+  // rather than logging an error on every request.
+  const limits = { rateLimit: { validate: { ip: false } } };
+  router.use(mcpAuthRouter({
+    provider, issuerUrl: issuer, resourceServerUrl: resource, resourceName: "Landrace",
+    authorizationOptions: limits, tokenOptions: limits, clientRegistrationOptions: limits, revocationOptions: limits,
+  }));
 
   return {
     router,
