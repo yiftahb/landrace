@@ -2788,7 +2788,7 @@ export interface ToolHands {
 export interface ToolOptions {
   /** Where the per-item locks live: the loop's, so the two processes find the same file. */
   lock?: LockOptions;
-  sandbox?: { root: string };
+  sandbox?: Pick<Sandbox, "root" | "scope">;
   /** Where a turn's activity goes, so the loop's page shows an Ask asked here too. */
   activity?: ActivityLog;
   /**
@@ -3274,7 +3274,7 @@ export interface ConversationDeps {
    * doing. Absent, the agent runs where the MCP process runs and there is
    * nothing to judge, exactly as in a tick with isolation off.
    */
-  sandbox?: { root: string };
+  sandbox?: Pick<Sandbox, "root" | "scope">;
   /**
    * The screener, when the operator configured one — the same shape runStep
    * takes, because a turn is an agent invocation like any other and §15 knows
