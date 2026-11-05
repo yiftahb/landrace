@@ -6,7 +6,7 @@ import { CREDENTIALS_ROOT } from "#conventions.js";
 import { messageOf } from "#runner/errors.js";
 import { credentialKey } from "#people/key.js";
 import { createSealedFiles } from "#people/sealed.js";
-import type { CredentialStore, KeyLocator, Person, PersonCredentials } from "#namespace.js";
+import type { CredentialStore, Person, PersonCredentials } from "#namespace.js";
 
 const time = z.string().refine((t) => !Number.isNaN(Date.parse(t)), { message: "must be an ISO 8601 time" });
 
@@ -149,10 +149,10 @@ export function createCredentialStore(
 /**
  * The store as a command that only reads opens it — `validate`, `status`,
  * `next`, and a server handed none: under the key already there, asked only
- * once a file is touched, and never made. `locator` asks that source alone.
+ * once a file is touched, and never made.
  */
-export function readingStore(root: string = defaultCredentialsRoot(), locator?: KeyLocator): CredentialStore {
-  return createCredentialStore(root, async () => (await credentialKey({ create: false, ...(locator ? { locator } : {}) })).key);
+export function readingStore(root: string = defaultCredentialsRoot()): CredentialStore {
+  return createCredentialStore(root, async () => (await credentialKey({ create: false })).key);
 }
 
 /** Every value a person's file holds, for the log to redact; none from a file that did not read, or was never read. */
