@@ -1,0 +1,282 @@
+import { execFile } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+import {
+  ensureWorktree, gitControlPaths, gitDirsOf, keptSlot, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead, worktreeState,
+} from "#agent/worktree.js";
+import { GIT_GUARD_ARGS } from "#conventions.js";
+import { branchHeads, fetchBranch, gitIn, pushBranch } from "#kit/git.js";
+import { commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
+
+/*
+ * A step that may write shares the repository's git directory and writes its
+ * worktree's `.git` file. Each way it could make git run its code is planted
+ * here for real, proven armed by git run plainly, and then every entry point
+ * the engine reaches git through is run and must leave no marker. A filter in
+ * the repository's own config is not among them: a write step is denied that
+ * file (`gitControlPaths`), and the engine overrides no `filter.*`.
+ */
+
+jest.setTimeout(180_000);
+
+const exec = promisify(execFile);
+const git = async (cwd: string, ...args: string[]): Promise<string> => (await exec("git", args, { cwd })).stdout.trim();
+
+const made: string[] = [];
+afterAll(async () => {
+  while (made.length) await rm(made.pop() as string, { recursive: true, force: true });
+  await removeRepos();
+});
+
+/** A scratch folder, a script in it that appends to `marker`, and a filter that does too and passes stdin through, as a filter must. */
+async function trap(): Promise<{ dir: string; marker: string; script: string; filter: string }> {
+  const dir = realpathSync(await mkdtemp(join(tmpdir(), "lr-trap-")));
+  made.push(dir);
+  const marker = join(dir, "MARKER");
+  const script = join(dir, "run.sh");
+  // Reads nothing: git may hold an fsmonitor hook's stdin open.
+  await writeFile(script, `#!/bin/sh\necho ran >> '${marker}'\n`);
+  await chmod(script, 0o755);
+  const filter = join(dir, "filter.sh");
+  await writeFile(filter, `#!/bin/sh\necho ran >> '${marker}'\ncat\n`);
+  await chmod(filter, 0o755);
+  return { dir, marker, script, filter };
+}
+
+const HOOKS = ["post-checkout", "pre-commit", "post-commit", "reference-transaction", "pre-push", "post-merge", "post-index-change", "post-rewrite", "pre-auto-gc"];
+
+async function hooksIn(dir: string, script: string): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  for (const hook of HOOKS) {
+    await writeFile(join(dir, hook), `#!/bin/sh\nexec '${script}'\n`);
+    await chmod(join(dir, hook), 0o755);
+  }
+}
+
+/** A git directory of the step's own: a copy of `from`, configured to run the script every way it can. */
+async function evilCopy(from: string, at: string, { script, filter }: { script: string; filter: string }): Promise<string> {
+  await cp(from, at, { recursive: true });
+  await hooksIn(join(at, "hooks"), script);
+  await mkdir(join(at, "info"), { recursive: true });
+  await writeFile(join(at, "info", "attributes"), "* filter=trap\n");
+  const config = await readFile(join(at, "config"), "utf8");
+  await writeFile(join(at, "config"),
+    `${config}[core]\n\tfsmonitor = ${script}\n\thooksPath = ${join(at, "hooks")}\n[filter "trap"]\n\tclean = ${filter}\n\tsmudge = ${filter}\n`);
+  return at;
+}
+
+/** The repository's common directory and the step worktree's admin folder, as git itself names them. */
+async function dirsOf(root: string, path: string): Promise<{ common: string; admin: string }> {
+  const common = realpathSync(join(root, ".git"));
+  for (const name of await readdir(join(common, "worktrees"))) {
+    const gitdir = (await readFile(join(common, "worktrees", name, "gitdir"), "utf8")).trim();
+    if (gitdir === join(path, ".git")) return { common, admin: join(common, "worktrees", name) };
+  }
+  throw new Error(`no admin folder names ${path}`);
+}
+
+type Vector = "hooks" | "hooksPath" | "fsmonitor" | "dotgit" | "commondir";
+
+/** What the step plants, in the repository at `root` and its worktree at `path`. */
+async function plant(vector: Vector, root: string, path: string, t: { dir: string; script: string; filter: string }): Promise<void> {
+  const { common, admin } = await dirsOf(root, path);
+  // Every tracked file's stat made stale, so a status re-reads it through whatever filter git
+  // is given — first, since the git that lists them would run an fsmonitor planted before it.
+  const now = new Date(Date.now() + 5_000);
+  for (const file of (await git(root, "ls-files")).split("\n").filter(Boolean)) {
+    if (existsSync(join(path, file))) await utimes(join(path, file), now, now);
+  }
+  if (vector === "hooks") await hooksIn(join(common, "hooks"), t.script);
+  if (vector === "hooksPath") {
+    await hooksIn(join(t.dir, "hooks"), t.script);
+    await git(root, "config", "core.hooksPath", join(t.dir, "hooks"));
+  }
+  if (vector === "fsmonitor") await git(root, "config", "core.fsmonitor", t.script);
+  if (vector === "dotgit") {
+    const evil = await evilCopy(common, join(t.dir, `gitdir-${Date.now()}`), t);
+    await writeFile(join(path, ".git"), `gitdir: ${evil}\n`);
+  }
+  if (vector === "commondir") {
+    const evil = await evilCopy(common, join(t.dir, `common-${Date.now()}`), t);
+    await writeFile(join(admin, "commondir"), `${evil}\n`);
+  }
+}
+
+/** Undo what `plant` did, so the next entry point starts from a planted state of its own. */
+async function unplant(vector: Vector, root: string, path: string): Promise<void> {
+  const common = realpathSync(join(root, ".git"));
+  if (vector === "hooks") for (const hook of HOOKS) await rm(join(common, "hooks", hook), { force: true });
+  if (vector === "hooksPath") await git(root, "config", "--unset", "core.hooksPath");
+  if (vector === "fsmonitor") await git(root, "config", "--unset", "core.fsmonitor");
+  if (vector === "dotgit" || vector === "commondir") {
+    for (const name of await readdir(join(common, "worktrees"))) {
+      const folder = join(common, "worktrees", name);
+      const gitdir = (await readFile(join(folder, "gitdir"), "utf8")).trim();
+      if (gitdir !== join(path, ".git")) continue;
+      if (vector === "dotgit" && existsSync(path)) await writeFile(join(path, ".git"), `gitdir: ${folder}\n`);
+      if (vector === "commondir") await writeFile(join(folder, "commondir"), "../..\n");
+    }
+  }
+}
+
+const ran = (marker: string): boolean => existsSync(marker);
+
+const VECTORS: Vector[] = ["hooks", "hooksPath", "fsmonitor", "dotgit", "commondir"];
+
+describe.each(VECTORS)("a write step that planted %s", (vector) => {
+  /** The operator's checkout, its origin, an item branch with a commit, and that item's kept write worktree. */
+  async function setup(item: string): Promise<{ root: string; origin: string; path: string; branch: string }> {
+    const { root, origin } = await gitRepoWithOrigin();
+    const branch = `landrace/${item}`;
+    await commitOn(root, branch, `${item}.ts`);
+    const path = await ensureWorktree(item, root, { branch, write: true }, keptSlot(item));
+    return { root, origin, path, branch };
+  }
+
+  it("is armed: git run plainly runs it", async () => {
+    const t = await trap();
+    const { root, path } = await setup("1");
+    await plant(vector, root, path, t);
+    // In the worktree for the step's own git directories, in the checkout for the repository's.
+    const where = vector === "dotgit" || vector === "commondir" ? path : root;
+    await exec("git", ["status"], { cwd: where }).catch(() => undefined);
+    await exec("git", ["commit", "-q", "--allow-empty", "-m", "x"], { cwd: where }).catch(() => undefined);
+    expect(ran(t.marker)).toBe(true);
+  });
+
+  if (vector === "dotgit" || vector === "commondir") {
+    it("is armed even past the guard args: git that reads the worktree's own pointers runs its filter", async () => {
+      const t = await trap();
+      const { root, path } = await setup("2");
+      await plant(vector, root, path, t);
+      await exec("git", [...GIT_GUARD_ARGS, "status"], { cwd: path }).catch(() => undefined);
+      expect(ran(t.marker)).toBe(true);
+    });
+  }
+
+  it("runs none of it through any entry point the engine reaches git by", async () => {
+    const t = await trap();
+    const { root, origin, path, branch } = await setup("3");
+    const signal = new AbortController().signal;
+    const entries: Array<[string, () => Promise<unknown>]> = [
+      ["ensureWorktree, reusing the kept slot", () => ensureWorktree("3", root, { branch, write: true }, keptSlot("3"))],
+      ["worktreeHead", () => worktreeHead(path, root)],
+      ["worktreeState", () => worktreeState(path, root)],
+      ["prepareWorktree", () => prepareWorktree({
+        item: "3", path, root, log: () => {}, signal,
+        setup: { copy: [], setup: ["true"], timeoutMs: 30_000, lockfiles: ["*.ts"] },
+      })],
+      ["releaseWorktree", () => releaseWorktree("3", root)],
+      // Released, so this attaches the kept slot to its branch again.
+      ["ensureWorktree, attaching the released kept slot", () => ensureWorktree("3", root, { branch, write: true }, keptSlot("3"))],
+      ["branchHeads", () => branchHeads(gitIn(root))],
+      ["fetchBranch", () => fetchBranch(gitIn(root), `file://${origin}`, branch, signal, [])],
+      ["pushBranch", () => pushBranch(gitIn(root), branch, "3", signal, [])],
+    ];
+    const fired: string[] = [];
+    for (const [name, call] of entries) {
+      await plant(vector, root, path, t);
+      await call();
+      if (ran(t.marker)) fired.push(name);
+      await rm(t.marker, { force: true });
+      await unplant(vector, root, path);
+    }
+    // Rebuilt: a slot at origin's default branch, asked for on the item's branch, is removed and added again.
+    const rebuilt = await ensureWorktree("8", root);
+    await plant(vector, root, rebuilt, t);
+    await ensureWorktree("8", root, { branch, write: false });
+    if (ran(t.marker)) fired.push("ensureWorktree, rebuilding");
+    await rm(t.marker, { force: true });
+    await unplant(vector, root, rebuilt);
+    // And removed.
+    const removing = await ensureWorktree("4", root);
+    await plant(vector, root, removing, t);
+    await removeWorktree("4", root);
+    if (ran(t.marker)) fired.push("removeWorktree");
+    expect(fired).toEqual([]);
+  });
+});
+
+describe("the admin folder the engine's git uses", () => {
+  async function setup(): Promise<{ root: string; path: string; common: string; admin: string }> {
+    const { root } = await gitRepoWithOrigin();
+    const path = await ensureWorktree("5", root);
+    return { root, path, ...(await dirsOf(root, path)) };
+  }
+
+  it("is the one that names the worktree, beside the repository's own common directory", async () => {
+    const { root, path, common, admin } = await setup();
+    expect(await gitDirsOf(path, root)).toEqual({ GIT_DIR: admin, GIT_COMMON_DIR: common, GIT_WORK_TREE: path });
+  });
+
+  it("is found again when a step renamed it away and made another naming the worktree, and its commondir is not read", async () => {
+    const t = await trap();
+    const { root, path, common, admin } = await setup();
+    // The real one moved out of worktrees/, a new one made in its place, the .git file pointed at it.
+    await rename(admin, join(common, "moved-away"));
+    const evilCommon = await evilCopy(common, join(t.dir, "common"), t);
+    const made = join(common, "worktrees", "planted");
+    await cp(join(common, "moved-away"), made, { recursive: true });
+    await writeFile(join(made, "commondir"), `${evilCommon}\n`);
+    await writeFile(join(path, ".git"), `gitdir: ${made}\n`);
+
+    const dirs = await gitDirsOf(path, root);
+    expect(dirs.GIT_DIR).toBe(made);
+    expect(dirs.GIT_COMMON_DIR).toBe(common);
+    await worktreeState(path, root);
+    expect(ran(t.marker)).toBe(false);
+  });
+
+  it("halts when it holds a config.worktree, naming it", async () => {
+    const { root, path, admin } = await setup();
+    await writeFile(join(admin, "config.worktree"), "[core]\n\tfsmonitor = /bin/true\n");
+    await expect(gitDirsOf(path, root)).rejects.toThrow(join(admin, "config.worktree"));
+    await expect(worktreeState(path, root)).rejects.toThrow(/config\.worktree/);
+  });
+
+  it("halts when two admin folders name the worktree, naming both", async () => {
+    const { root, path, common, admin } = await setup();
+    const second = join(common, "worktrees", "second");
+    await cp(admin, second, { recursive: true });
+    const refused = gitDirsOf(path, root);
+    await expect(refused).rejects.toThrow(admin);
+    await expect(gitDirsOf(path, root)).rejects.toThrow(second);
+  });
+
+  it("halts when none names it", async () => {
+    const { root, path, admin } = await setup();
+    await writeFile(join(admin, "gitdir"), "/somewhere/else/.git\n");
+    await expect(gitDirsOf(path, root)).rejects.toThrow(/no admin folder under .* names it/);
+  });
+});
+
+describe("gitControlPaths", () => {
+  it("lists the repository's config, hooks and info, each admin folder's control files and the .git file — absent ones too", async () => {
+    const { root } = await gitRepoWithOrigin();
+    const path = await ensureWorktree("6", root);
+    const other = await ensureWorktree("7", root);
+    const common = realpathSync(join(root, ".git"));
+    const admins = (await readdir(join(common, "worktrees"))).sort();
+    expect(admins).toHaveLength(2);
+
+    const paths = await gitControlPaths(path, root);
+
+    expect(paths).toEqual([
+      join(common, "config"), join(common, "config.worktree"), join(common, "hooks"), join(common, "info"),
+      ...admins.flatMap((n) => ["config.worktree", "commondir", "gitdir"].map((f) => join(common, "worktrees", n, f))),
+      join(path, ".git"),
+    ]);
+    expect(existsSync(join(common, "config.worktree"))).toBe(false);
+    expect(paths).not.toContain(join(other, ".git"));
+  });
+
+  it("lists no .git file for a checkout whose .git is a directory", async () => {
+    const { root } = await gitRepoWithOrigin();
+    const common = realpathSync(join(root, ".git"));
+    expect(await gitControlPaths(realpathSync(root), root)).toEqual(
+      ["config", "config.worktree", "hooks", "info"].map((f) => join(common, f)));
+  });
+});

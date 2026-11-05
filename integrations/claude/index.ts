@@ -50,8 +50,14 @@ const WRITE_TOOLS = ["Bash", "Edit", "MultiEdit", "NotebookEdit", "Write"] as co
  * The sandbox confines commands and not the Read tool, so each denied path is
  * a Read rule too — itself and everything under it, since which of the two it
  * is cannot be told without reading the operator's home.
+ *
+ * `denyWrite`, the git paths the engine lists (`RunPlan.denyWrite`), the same
+ * way: a sandbox rule for every command, and an Edit rule for the tools that
+ * write a file — itself and everything under it, since `hooks` is a folder
+ * and `config` a file, and one not there yet may be made either.
  */
-function sandboxSettings({ hosts, deny }: SandboxSettings, built: string | undefined): Record<string, unknown> {
+function sandboxSettings({ hosts, deny }: SandboxSettings, built: string | undefined, denyWrite: readonly string[]): Record<string, unknown> {
+  const unwritable = [...(built === undefined ? [] : [built]), ...denyWrite];
   return {
     sandbox: {
       enabled: true,
@@ -59,11 +65,15 @@ function sandboxSettings({ hosts, deny }: SandboxSettings, built: string | undef
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       network: { allowedDomains: hosts, strictAllowlist: true },
-      filesystem: { denyRead: deny, ...(built === undefined ? {} : { denyWrite: [built] }) },
+      filesystem: { denyRead: deny, ...(unwritable.length ? { denyWrite: unwritable } : {}) },
     },
     // `//` is an absolute path in a permission rule, where `/` is the settings' own root.
     permissions: {
-      deny: [...readRules(deny), ...(built === undefined ? [] : [`Edit(/${built}/**)`])],
+      deny: [
+        ...readRules(deny),
+        ...(built === undefined ? [] : [`Edit(/${built}/**)`]),
+        ...denyWrite.flatMap((path) => [`Edit(/${path})`, `Edit(/${path}/**)`]),
+      ],
     },
   };
 }
@@ -399,6 +409,12 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
   readonly pairings: readonly PairingKind[] = ["take", "continue", "fork"];
   /** A step's `skills:` is the plugin `prepare` makes; its `plugins:`, what `--settings` enables. */
   override readonly stepKeys: readonly StepKey[] = ["skills", "plugins"];
+  /**
+   * The sandbox's `filesystem.denyWrite` keeps every command a write step runs
+   * from the git paths it lists, and Edit rules keep the file tools; see
+   * `sandboxSettings`. The live check (`scripts/claude-check.mjs`) tries each.
+   */
+  protected override readonly keepsDenyWrite = true;
   /** Whose `~/.claude` a session is looked up in. The operator's own, but for a test. */
   private readonly home: string;
 
@@ -449,7 +465,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     if (skills?.length !== 0 && existsSync(join(cwd, ".claude", "skills"))) await buildPluginDir(cwd, join(built, "plugin"), skills, log);
   }
 
-  protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, extras, plugins: own, frontDoor }: RunPlan<ClaudeExtras>): string[] {
+  protected argv({ tier, model, effort, resume, fork, cwd, servers, allowed, sandbox, denyWrite, extras, plugins: own, frontDoor }: RunPlan<ClaudeExtras>): string[] {
     const declared = tier !== "screen";
     // A step's own instructions and skills: `--setting-sources ""` and
     // `--restricted` each keep the CLI from reading the worktree's
@@ -526,7 +542,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
     const deny = deniedPaths(sandbox);
     const settings = {
       ...(declared && plugins.length ? { enabledPlugins: Object.fromEntries(plugins.map((id) => [id, true])) } : {}),
-      ...(mayWrite ? sandboxSettings({ ...sandbox, deny }, built) : {}),
+      ...(mayWrite ? sandboxSettings({ ...sandbox, deny }, built, denyWrite) : {}),
       ...(declared && !mayWrite ? { permissions: { deny: readRules(deny) } } : {}),
       ...(built !== undefined ? { env: { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" } } : {}),
     };

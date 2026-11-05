@@ -234,6 +234,29 @@ describe("branch.push", () => {
   });
 
   /*
+   * A rewrite in the checkout's config — `url.<other>.insteadOf` — sends
+   * origin's push somewhere else. The URL checked is the one git reads after
+   * every rewrite, so the token is scoped to that, and a rewrite to another
+   * host hands it nothing.
+   */
+  it("hands no token when url.<other>.insteadOf sends origin's push to another host", async () => {
+    const { root } = await checkout();
+    await build(root, "landrace/1");
+    await run(root, "remote", "set-url", "origin", ORIGIN);
+    await run(root, "config", "url.https://evil.example/acme/.insteadOf", "https://github.com/acme/");
+    expect(await run(root, "remote", "get-url", "--push", "--all", "origin")).toBe("https://evil.example/acme/widgets.git");
+    const { git, calls } = recording(root, undefined, true);
+    const gh = createFakeTracker([{ number: 1 }], { git });
+
+    await post(gh).apply(push, contextOf(gh, await snapshotOf(gh)));
+
+    // git itself read the rewrite: the push was asked for, and went with no header for either host.
+    expect(calls.some((c) => c.args[0] === "push")).toBe(true);
+    expect(JSON.stringify(calls)).not.toContain(BASIC);
+    expect(configOf(pushOf(calls).env).map(([key]) => key).filter((key) => key.endsWith("extraheader"))).toEqual([]);
+  });
+
+  /*
    * An explicit refspec is the whole of what is pushed: git ignores
    * remote.origin.push when one is given, refuses a mirror remote outright,
    * and follows tags only when asked — which the push says it is not.
