@@ -406,6 +406,12 @@ describe("the Codex integration", () => {
         expect(refused).not.toContain("deny: []");
       });
 
+      // #205: alone or not, a systemd credential is a file its shell could read, and it opens every person's file.
+      it("refuses the run when the credentials key is a systemd credential, naming its directory", async () => {
+        const refused = await started({ always: ["~/.landrace/credentials"], people: [], key: ["/run/credentials/landrace.service"] }).then(() => "", (e: Error) => e.message);
+        expect(refused).toMatch(/refused the run: the credentials key is a file in \/run\/credentials\/landrace\.service[\s\S]*the codex executor cannot keep a command from reading a path/);
+      });
+
       it("runs as it always has when nobody else is there", async () => {
         await expect(started({ always: ["~/.landrace/credentials", "/r/.landrace/.env"], people: [] })).resolves.toMatchObject({ text: "ran" });
       });

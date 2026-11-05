@@ -94,13 +94,61 @@ In a checkout that is not a linked worktree, `ls` should find no `commondir`; if
 
 ## Stored credentials
 
-`~/.landrace/credentials/<person id>.json` holds what each person has connected — see [Per-person keys](configuration.md#per-person-keys). Four things in Landrace write it: the board's Integrations tab, when you paste, connect with a forge or disconnect a credential; `start`, when it looks an identity up by your email; `start`, when a step's agent refuses your stored login and it marks that connection failed; and `start`, when it renews an OAuth token, or marks one failed that the provider refused to renew ([Connect with GitLab or GitHub](integrations.md#connect-with-gitlab-or-github)). Each file is mode 0600, in a directory of mode 0700, written whole to a temporary file and renamed over the old one. The store refuses to write over a file it cannot read rather than drop the connections in it. Every value of 8 characters or more read from it is cut from the log, and a pasted one, or a token a forge's OAuth gave, is cut before its connection's `check` runs, so a hook's log line cannot carry it. The reason the tab shows has every pasted value cut out, whatever its length. The tab never sends a credential's value back to the page; it shows you only your own looked-up identities, which are who you are on a system, not a secret.
+`~/.landrace/credentials/<person id>.json` holds what each person has connected — see [Per-person keys](configuration.md#per-person-keys). Four things in Landrace write it: the board's Integrations tab, when you paste, connect with a forge or disconnect a credential; `start`, when it looks an identity up by your email; `start`, when a step's agent refuses your stored login and it marks that connection failed; and `start`, when it renews an OAuth token, or marks one failed that the provider refused to renew ([Connect with GitLab or GitHub](integrations.md#connect-with-gitlab-or-github)). Each file is mode 0600, in a directory of mode 0700, sealed under a key the operating system keeps ([Sealed at rest](#sealed-at-rest)), written whole to a temporary file and renamed over the old one. The store refuses to write over a file it cannot read or open rather than drop the connections in it. Every value of 8 characters or more read from it is cut from the log, and a pasted one, or a token a forge's OAuth gave, is cut before its connection's `check` runs, so a hook's log line cannot carry it. The reason the tab shows has every pasted value cut out, whatever its length. The tab never sends a credential's value back to the page; it shows you only your own looked-up identities, which are who you are on a system, not a secret.
 
 **A Claude token you paste reaches every step.** A stored `claude` connection is handed to every step and turn as `CLAUDE_CODE_OAUTH_TOKEN`, since that is how the agent runs on your login. A step's commands can read it from their environment, so connect only a token you would hand a step. No run is handed `ANTHROPIC_API_KEY`, whatever your shell holds: beside the token, a run gets only the few variables [BaseExecutor](hooks.md#baseexecutor) lists.
 
 The Claude Code integration denies `~/.landrace/credentials` to every step and turn, whatever `agent.sandbox.deny` says: a list you write replaces the defaults, and this repository's own `landrace.yaml` writes one. A write step gets it in the sandbox's `denyRead` and as `Read` rules; a read-only step gets the `Read` rules.
 
-**Codex does not keep it.** Codex cannot keep a command from reading a path, so it runs only with `deny: []` (see [Integrations](integrations.md#codex)). Under Codex, every step and turn can read `~/.landrace/credentials` and the workspace's `.env`. Do not store a connection, or keep a secret in `.env`, that you would not hand a step while running Codex.
+**Codex does not keep it.** Codex cannot keep a command from reading a path, so it runs only with `deny: []` (see [Integrations](integrations.md#codex)). Under Codex, every step and turn can read `~/.landrace/credentials` and the workspace's `.env`. Do not store a connection, or keep a secret in `.env`, that you would not hand a step while running Codex. Where the key is a systemd credential, Codex refuses every run: see below.
+
+### Sealed at rest
+
+Every file under `~/.landrace/credentials/` is sealed: each person's `<person id>.json`, and the MCP door's `mcp/mcp-clients.json` and `mcp/mcp-tokens.json` ([Remote](remote.md#what-is-on-disk)). A copy of the disk, a backup or a copied home folder holds no token. Each file is AES-256-GCM, under one 32-byte key, with a fresh IV on every write. On disk it is this envelope, with base64 values:
+
+```json
+{ "landrace": "sealed", "v": 1, "iv": "…", "tag": "…", "data": "…" }
+```
+
+The file's path under the folder, such as `mcp/mcp-tokens.json`, is sealed in with it. A file copied over another person's, or changed by one byte, does not open.
+
+**Where the key is.** `start` looks in the first of these that applies:
+
+| When | Where | Holds |
+|---|---|---|
+| `CREDENTIALS_DIRECTORY` is set | the file `landrace-credentials-key` in that folder: a systemd credential, or a container's mounted secret | 32 bytes, raw or as 64 hex digits |
+| macOS | the login Keychain, service `landrace`, account `credentials-key`, through `security` | 64 hex digits |
+| Linux with `DBUS_SESSION_BUS_ADDRESS` set and `secret-tool` installed | the Secret Service, attributes `service landrace` and `account credentials-key` | 64 hex digits |
+| anything else, Windows included | nowhere | — |
+
+**Only `start` makes a key**, and only in the Keychain or the Secret Service, and only when the store says plainly that it holds none: `security` exiting 44, or `secret-tool` exiting 1 with nothing on stderr. Any other failure refuses the start, since a new key would leave every file sealed under the old one unopenable. The key goes to the helper on stdin, never on its command line. `start` takes the lock `.key.lock` in the credentials folder while it makes the key, and asks the store once more under it, so two starts make one key. A lock whose process has died is removed. `start` never writes a systemd credential: a `CREDENTIALS_DIRECTORY` without `landrace-credentials-key` refuses the start, naming the file.
+
+**What `start` does with it.** Before it reads anyone's file, it seals each plain file in the folder in place, and deletes each temporary file a process that has since died left there. The key is cut from the log.
+
+**With no key.** A local `start` says so in one line and keeps the files as plain JSON. A remote `start`, with `people.oidc` set, refuses and writes nothing.
+
+**A file that does not open** is refused, named, and never written over: on the Integrations tab it is `connection.failed`, and a connect or disconnect will not write over it. Nothing from inside it is quoted. With a key, a plain file is refused too, since anyone who can write the folder could put one there; stop `start`, and the next one seals it. Without a key, a sealed file is refused.
+
+**Who else reads it.** `validate`, `status` and `next` read the files under the key that is there, ask for it only when they read a file, and never make one. The servers `start` hands a step or a pairing — `landrace_create_child`'s, and the pairing's — are told which store `start` found the key in, by `--key-source`, with `--key-dir` for systemd and `--key-bus` for the Secret Service's bus, since the agent's environment has no `DBUS_SESSION_BUS_ADDRESS`. Never the key itself. A server asks that store alone, never makes a key, and refuses to start, naming the store, when the key is not there.
+
+**What a step can reach.** A systemd credential is a file, so its folder joins the list of paths every step and turn may not read, whatever `agent.sandbox.deny` says, `deny: []` included. An agent that cannot keep a command from a path is refused every run while the key is a file: Codex. The agent's CLI starts those servers outside the step's sandbox, so a server reads what the step may not.
+
+**Limits.** The Keychain and the Secret Service hand the key to any process of the same user that asks, and a step's commands run as that user. Sealing keeps the files safe on a disk, in a backup or in a copy of the home folder. It does not keep them from a step on the machine: under the Keychain or the Secret Service, a step's shell can ask for the key and open them. A systemd credential is the one source a step is denied. Losing the key loses every file sealed under it: back it up with the folder ([Backups](remote.md#what-is-on-disk)).
+
+**What is tested.** Landrace's tests run against fakes of `security` and `secret-tool`, and against a folder for systemd, with throwaway keys. They have not been run against a live Keychain, Secret Service or systemd unit.
+
+**Setting up a systemd unit.** As root, seal 32 random bytes into an encrypted credential, then load it into the unit that runs `start`:
+
+```bash
+head -c 32 /dev/urandom | systemd-creds encrypt --name=landrace-credentials-key - /etc/credstore.encrypted/landrace-credentials-key
+```
+
+```ini
+[Service]
+LoadCredentialEncrypted=landrace-credentials-key:/etc/credstore.encrypted/landrace-credentials-key
+```
+
+systemd sets `CREDENTIALS_DIRECTORY` for the service and puts the decrypted key in it. In a container, mount the key as a secret file named `landrace-credentials-key`, and set `CREDENTIALS_DIRECTORY` to the folder it is mounted in.
 
 ### The workspace's `.env`
 

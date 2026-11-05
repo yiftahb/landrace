@@ -826,7 +826,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    * credentials and the `.env` it has always been run beside.
    */
   private async deniedNow(configured: readonly string[], denyPaths: () => Promise<RunDenials>): Promise<string[]> {
-    const { always, people, found = [] } = await denyPaths();
+    const { always, people, found = [], key = [] } = await denyPaths();
     // Each list with the transcripts kept under its folders, apart, so a
     // refusal names the case that fired: a folder found under the worktrees
     // may be a person who just left, or the operator's own, and calling it
@@ -839,7 +839,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
     const beyond = [...new Set([...listed, ...elsewhere])];
     const cases = (roster: boolean, folder: boolean, person: string, other: string): string =>
       [...(roster ? [person] : []), ...(folder ? [other] : [])].join(", and ");
-    const computed = [...always, ...beyond];
+    const computed = [...always, ...key, ...beyond];
     // eslint-disable-next-line no-control-regex -- excluding control chars is the point, not a leftover
     const unwritable = (paths: readonly string[]): string => paths.filter((path) => /[()\x00-\x1F\x7F]/.test(path)).map((p) => JSON.stringify(p)).join(", ");
     // `sandboxProblems` only decides: its words are about the operator's
@@ -855,6 +855,14 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       const own = unwritable(always);
       if (own) throw new Error(`refused the run: ${own} cannot be written as a rule the ${this.id} executor keeps, and left off, the run could read it`);
     }
+    // The key's directory is never run beside, as `always` is: what a step
+    // read there opens every person's file, a copy of which can be anywhere.
+    if (unkeptBy(key)) {
+      throw new Error(`refused the run: the credentials key is a file in ${key.join(", ")}, which a step must not read, ` +
+        `but the ${this.id} executor cannot keep a command from reading a path`);
+    }
+    const keyPaths = unwritable(key);
+    if (keyPaths) throw new Error(`refused the run: ${keyPaths} cannot be written as a rule the ${this.id} executor keeps, and left off, the run could read the credentials key`);
     const unkept = unkeptBy(beyond);
     const theirs = unkept ? "" : unwritable(beyond);
     if (theirs) {

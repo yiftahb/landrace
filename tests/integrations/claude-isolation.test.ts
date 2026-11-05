@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Claude, claudeProjectDirOf } from "landrace/integrations/claude";
 import { CREDENTIALS_ROOT } from "#conventions.js";
+import { DEFAULT_DENY } from "#kit/executor.js";
 import { denyForPerson } from "#people/isolation.js";
 
 /*
@@ -62,6 +63,29 @@ describe("a person whose id no rule can hold", () => {
     await expect(executor.run("p", { round: 1, cwd, capabilities: ["repo:read"], signal: new AbortController().signal }))
       .rejects.toThrow(`refused the run: ${JSON.stringify(join(worktrees, "b)ob"))}`);
   });
+});
+
+// #205: a systemd credential is a file, and the key in it opens every person's credentials.
+describe("a step on an instance whose credentials key is a systemd credential", () => {
+  const KEY_DIR = "/run/credentials/landrace.service";
+  it.each([["the default list", [...DEFAULT_DENY]], ["a written list", ["~/.kube"]], ["an empty list", [] as string[]]])(
+    "is denied $CREDENTIALS_DIRECTORY under %s, on every tier",
+    async (_list, deny) => {
+      const cwd = temp("fake-agent-");
+      writeFileSync(join(cwd, "fake.json"), JSON.stringify({ out: "{{ARGV_JSON}}" }));
+      const executor = new Claude({ bin, home: temp("fake-home-") }).build({
+        servers: {}, tools: {}, plugins: [], sandbox: { hosts: [], deny },
+        denyPaths: () => Promise.resolve(denyForPerson({ id: "local" }, [], { worktrees: "/w", credentials: CREDENTIALS_ROOT, env: ["/w/.landrace/.env"], keyDir: KEY_DIR })),
+      });
+      for (const capabilities of [[], ["repo:read"], ["repo:read", "repo:write"]]) {
+        const r = await executor.run("p", { round: 1, cwd, capabilities, signal: new AbortController().signal });
+        const argv = JSON.parse(r.text) as string[];
+        const settings = JSON.parse(argv[argv.indexOf("--settings") + 1] as string) as { permissions: { deny: string[] }; sandbox?: { filesystem: { denyRead: string[] } } };
+        expect(settings.permissions.deny).toContain(`Read(/${KEY_DIR}/**)`);
+        if (capabilities.includes("repo:write")) expect(settings.sandbox?.filesystem.denyRead).toContain(KEY_DIR);
+      }
+    },
+  );
 });
 
 describe("claudeProjectDirOf", () => {

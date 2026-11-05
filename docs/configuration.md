@@ -264,7 +264,7 @@ A key neither answers is reported by `validate` as `connection.missing`, naming 
 
 `landrace next` fills in a var from the store too.
 
-The credentials file is JSON, mode 0600, in a directory of mode 0700. Replace `your-member-id` with your Slack member id (`U…`, from your profile's ⋮ → Copy member ID):
+The credentials file is JSON, mode 0600, in a directory of mode 0700, sealed on disk under a key the operating system keeps ([Sealed at rest](security.md#sealed-at-rest)). To write one by hand, stop `start` and write it plain: the next `start` seals it, and one running refuses a plain file while it has a key. Replace `your-member-id` with your Slack member id (`U…`, from your profile's ⋮ → Copy member ID):
 
 ```json
 {

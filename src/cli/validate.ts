@@ -7,7 +7,7 @@ import { configProblems } from "#config/load.js";
 import { localPerson } from "#people/person.js";
 import { admits, allowProblems } from "#people/allow.js";
 import { perPersonKeys } from "#people/keys.js";
-import { createCredentialStore } from "#people/store.js";
+import { readingStore } from "#people/store.js";
 import { connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
 import { frontDoorOrigins, serveProblems } from "#front/hosts.js";
 import { GIT_GUARD_ARGS, ITEM_BRANCH, LOCAL_PERSON_ID } from "#conventions.js";
@@ -198,7 +198,9 @@ export async function runValidate(
   //
   // With the local person's stored connections answering each per-person key
   // their variable left unset, as `start` reads it.
-  const local: LocalConfig | null = await loadLocalConfig(dir, opts.credentials).catch((e: unknown) => {
+  // Under the key `start` sealed it with, asked only if a file is read, and never made here.
+  const store = opts.credentials ?? readingStore();
+  const local: LocalConfig | null = await loadLocalConfig(dir, store).catch((e: unknown) => {
     // Absent is the CI case above; present and unreadable is what `start`
     // refuses, and reading it as absent would pass what start will not.
     if ((e as { code?: unknown } | null)?.code !== "ENOENT") problems.push({ rule: "config", message: messageOf(e) });
@@ -290,7 +292,6 @@ export async function runValidate(
       const nobody = localPerson(local.loaded);
       problems.push(...resolvePerson(local.configured, defined, nobody, { person: nobody, connections: {} }, { remote: true })
         .problems.filter((p) => p.rule === "connection.unknown"));
-      const store = opts.credentials ?? createCredentialStore();
       // Only those `people.allow` admits: the roster runs nothing for anyone else.
       const allow = local.loaded.config.people?.allow;
       for (const person of (await store.list()).filter((p) => p.id !== LOCAL_PERSON_ID && admits(allow, p.email))) {
@@ -301,7 +302,7 @@ export async function runValidate(
       }
     } else {
       const person = localPerson(local.loaded);
-      const creds = await localCredentials(local, person, defined.connections, opts.credentials);
+      const creds = await localCredentials(local, person, defined.connections, store);
       problems.push(...resolvePerson(local.configured, defined, person, creds, { remote: false }).problems);
     }
   }

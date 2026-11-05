@@ -33,6 +33,12 @@ describe("denyForPerson", () => {
     expect(denyForPerson({ id: "local" }, [], { ...where, env: [ENV, ENV] }).always).toEqual([CREDENTIALS_ROOT, ENV]);
   });
 
+  it("lists the credentials key's directory apart, when the key is a file", () => {
+    expect(denyForPerson({ id: "local" }, [], { ...where, keyDir: "/run/credentials/landrace.service" })).toEqual({
+      always: [CREDENTIALS_ROOT, ENV], people: [], key: ["/run/credentials/landrace.service"],
+    });
+  });
+
   it("is only the credentials root and the .env for a person alone", () => {
     expect(denyForPerson({ id: "local" }, [], where)).toEqual({ always: [CREDENTIALS_ROOT, ENV], people: [] });
   });

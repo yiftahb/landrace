@@ -2,11 +2,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { redactionValues } from "#config/load.js";
 import { localPerson } from "#people/person.js";
 import { assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
-import { createCredentialStore, credentialValues } from "#people/store.js";
+import { createCredentialStore, credentialValues, defaultCredentialsRoot, readingStore } from "#people/store.js";
+import { credentialKey } from "#people/key.js";
 import { LOCAL_PERSON_ID, mayCreateItems, itemIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
 import type {
-  ChildBinding, ChildTool, CredentialStore, ExecutorContext, LoadedConfig, LoadedWorkflow, Person, PersonCredentials, PersonLogins, Registry, RuntimeContext,
+  ChildBinding, ChildTool, CredentialKeyOptions, CredentialStore, ExecutorContext, KeyLocator, LoadedConfig, LoadedWorkflow, Person, PersonCredentials, PersonLogins, Registry, RuntimeContext,
   Tools, ToolWorkflow,
 } from "#namespace.js";
 import { frontDoorOrigins } from "#front/hosts.js";
@@ -22,7 +23,7 @@ import { pairingStages } from "#workflow/validate.js";
 import { loadWorkspace, workflowById } from "#workflow/workspace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { touchWake, wakePath } from "#wake.js";
-import { childServerCommand, denyPathsFor, personGate, sandboxFor, screenerFor, stepExecutorFor } from "#cli/start.js";
+import { childServerCommand, denyPathsFor, keyDirOf, personGate, sandboxFor, screenerFor, stepExecutorFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.
@@ -36,7 +37,9 @@ import { childServerCommand, denyPathsFor, personGate, sandboxFor, screenerFor, 
  * workflow's claim can say. `scope` is `--workflow`, the server a pairing hands
  * the person's session, which acts for that one workflow alone.
  */
-export async function buildMcpTools(dir: string, scope?: string, store: CredentialStore = createCredentialStore()): Promise<Tools> {
+export async function buildMcpTools(
+  dir: string, scope?: string, store: CredentialStore = readingStore(), locator: KeyLocator = { source: "none" },
+): Promise<Tools> {
   // With the local person's stored values merged in, as the loop reads it.
   const local = await loadLocalConfig(dir, store);
   const { loaded } = local;
@@ -163,8 +166,9 @@ export async function buildMcpTools(dir: string, scope?: string, store: Credenti
       // The door `landrace start` serves on this configuration: a turn asked
       // here is held from it as the loop's own steps are.
       frontDoor: frontDoorOrigins(loaded.config.serve, loaded.config.serve.port),
-      // The local person, alone, as a pairing runs only locally: denied the credentials and the `.env`, as their steps are.
-      denyPaths: denyPathsFor(dir, person, sandbox, () => []),
+      // The local person, alone, as a pairing runs only locally: denied the
+      // credentials, the key's directory when it is one, and the `.env`, as their steps are.
+      denyPaths: denyPathsFor(dir, person, sandbox, () => [], keyDirOf(locator)),
     };
     /*
      * The same executor the loop invokes steps with, resolved the same way and
@@ -200,7 +204,8 @@ export async function buildMcpTools(dir: string, scope?: string, store: Credenti
       ...w, registry, executor,
       ...(screener ? { screen: screener } : {}),
       // This same server bound to this workflow, for a pairing's session to reach Landrace by.
-      server: childServerCommand(dir, w.id, person.id),
+      // Pinned to the key source this server was itself pinned to.
+      server: childServerCommand(dir, w.id, person.id, locator),
     });
   }
 
@@ -233,7 +238,9 @@ export const STDIO_REMOVED =
  * workflow as `childServerCommand` names it. Nothing else serves the
  * operator's tools over stdio any more: a bare `landrace mcp` is refused.
  */
-export async function runMcp(dir: string, opts: { scope?: string | undefined; pairing: boolean; person?: string | undefined }): Promise<void> {
+export async function runMcp(
+  dir: string, opts: { scope?: string | undefined; pairing: boolean; person?: string | undefined; key: () => KeyLocator },
+): Promise<void> {
   if (!opts.pairing) throw new Error(STDIO_REMOVED);
   if (opts.scope === undefined) throw new Error("--pairing needs --workflow");
   // A pairing runs in the local person's terminal, on their connections; a
@@ -241,8 +248,22 @@ export async function runMcp(dir: string, opts: { scope?: string | undefined; pa
   if (opts.person !== undefined && opts.person !== LOCAL_PERSON_ID) {
     throw new Error(`--pairing serves only the local person, not "${opts.person}"`);
   }
-  const server = createMcpServer(await buildMcpTools(dir, opts.scope));
+  const locator = opts.key();
+  const server = createMcpServer(await buildMcpTools(dir, opts.scope, await pinnedStore(locator), locator));
   await server.connect(new StdioServerTransport());
+}
+
+/**
+ * The store a server `landrace start` handed an agent reads: under the key
+ * in the source `start` pinned on its command line, and that source alone.
+ * Never made — a server that made one would orphan every sealed file — and
+ * absent there, refused, naming the source.
+ */
+export async function pinnedStore(
+  locator: KeyLocator, lookup: Pick<CredentialKeyOptions, "env" | "run"> = {}, root: string = defaultCredentialsRoot(),
+): Promise<CredentialStore> {
+  const { key } = await credentialKey({ create: false, locator, ...lookup });
+  return createCredentialStore(root, key);
 }
 
 /**
@@ -261,7 +282,7 @@ export async function runMcp(dir: string, opts: { scope?: string | undefined; pa
  * while they are not ready.
  */
 export async function buildChildTool(
-  dir: string, binding: ChildBinding, workflowId: string, personId: string, store: CredentialStore = createCredentialStore(),
+  dir: string, binding: ChildBinding, workflowId: string, personId: string, store: CredentialStore = readingStore(),
 ): Promise<ChildTool> {
   const parentProblem = itemIdProblem(binding.parent);
   if (parentProblem) throw new Error(parentProblem);
@@ -337,7 +358,7 @@ async function childConfig(
   return { loaded, credentials: gate.credentials, person };
 }
 
-export async function runChildMcp(dir: string, binding: ChildBinding, workflowId: string, personId: string): Promise<void> {
-  const server = createChildMcpServer(await buildChildTool(dir, binding, workflowId, personId));
+export async function runChildMcp(dir: string, binding: ChildBinding, workflowId: string, personId: string, key: KeyLocator): Promise<void> {
+  const server = createChildMcpServer(await buildChildTool(dir, binding, workflowId, personId, await pinnedStore(key)));
   await server.connect(new StdioServerTransport());
 }

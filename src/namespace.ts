@@ -1014,6 +1014,12 @@ export interface RunDenials {
    * is, and apart only so a refusal names the case that fired.
    */
   found?: string[] | undefined;
+  /**
+   * Where the credentials key is a file — systemd's `$CREDENTIALS_DIRECTORY`.
+   * Unlike `always`, an agent that cannot keep a command from a path is
+   * refused rather than run beside it: the key opens every person's file.
+   */
+  key?: string[] | undefined;
 }
 
 /**
@@ -2014,6 +2020,78 @@ export interface PersonCredentials {
 }
 
 /**
+ * Where the key the credentials are sealed under is kept: the macOS
+ * Keychain, the Secret Service on the session bus `bus` names, a systemd
+ * credential in `dir` (`$CREDENTIALS_DIRECTORY`), or nowhere, and the files
+ * stay plain JSON. What `start` found is pinned on each server it hands an
+ * agent, which asks that source alone.
+ */
+export type KeyLocator =
+  | { source: "keychain" }
+  | { source: "secret-service"; bus?: string }
+  | { source: "systemd"; dir: string }
+  | { source: "none" };
+
+/** The credentials key and where it came from; `key` is null when `locator` is `none`, or when it was asked of a source holding none without `create`. */
+export interface CredentialKey {
+  key: Uint8Array | null;
+  locator: KeyLocator;
+}
+
+/** How a key is looked up and made: each helper's exit code and output, the secret on stdin. */
+export type KeyHelper = (
+  command: string, args: readonly string[], opts: { input?: string; env?: Record<string, string | undefined> },
+) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+export interface CredentialKeyOptions {
+  /** Whether a key nobody made yet is made now: `start` alone, and only on its source saying it is absent. */
+  create: boolean;
+  /** Ask this source alone, as `start` pinned it; never made. */
+  locator?: KeyLocator | undefined;
+  /** Where the lock a creation takes lives: the credentials root. */
+  root?: string | undefined;
+  platform?: NodeJS.Platform | undefined;
+  env?: Record<string, string | undefined> | undefined;
+  run?: KeyHelper | undefined;
+  /** Whether a process is alive, for a lock a crashed start left. */
+  alive?: ((pid: number) => boolean) | undefined;
+  /** How long a live holder's lock is waited on before refusing. */
+  lockWaitMs?: number | undefined;
+}
+
+/** One secret store as `credentialKey` asks it: `lookup` is null only when the store says plainly it holds none, and throws for any other failure. */
+export interface KeySource {
+  locator: KeyLocator;
+  lookup(): Promise<Uint8Array | null>;
+  /** Stores `hex`, the key's 64 hex digits, never on argv. */
+  store(hex: string): Promise<void>;
+}
+
+/** What a sealed file holds on disk: base64 of the IV, the GCM tag and the ciphertext. */
+export interface SealedEnvelope {
+  landrace: "sealed";
+  v: 1;
+  iv: string;
+  tag: string;
+  data: string;
+}
+
+/**
+ * The files under the credentials root, each sealed with AES-256-GCM under
+ * the key when there is one, its path under `root` the additional data, so a
+ * file copied over another's does not open. `read` answers null for a file
+ * that is not there, and throws, naming the file, for one that does not open.
+ */
+export interface SealedFiles {
+  root: string;
+  /** Whether what is written is sealed: there is a key. Asks a lazily given key's source the first time. */
+  encrypted(): Promise<boolean>;
+  read(name: string): Promise<string | null>;
+  /** Written whole to a temporary file beside it and renamed over, 0600 under 0700 directories. */
+  write(name: string, text: string): Promise<void>;
+}
+
+/**
  * Where each person's connections are kept: `<root>/<encodeURIComponent(id)>.json`,
  * the file 0600 and its directory 0700. A person with no file has connected
  * nothing. `put` and `remove` refuse a file they cannot read rather than
@@ -2021,6 +2099,8 @@ export interface PersonCredentials {
  */
 export interface CredentialStore {
   root: string;
+  /** The files under `root`, sealed or not as the key says: the MCP door's grants are kept through the same ones. */
+  files: SealedFiles;
   read(personId: string): Promise<PersonCredentials>;
   put(personId: string, person: Person, connId: string, value: ConnectionValue): Promise<void>;
   /** Writes who the person is, keeping what they connected; makes their file when there is none. */
@@ -3215,8 +3295,15 @@ export interface StartOptions {
   open?: BrowserOpener;
   /** See BuildOptions.otel. */
   otel?: readonly string[];
-  /** See BuildOptions.credentials. */
+  /**
+   * See BuildOptions.credentials: a store handed in is used as it is, and no
+   * key is looked up. Absent, `start` finds or makes the key and seals the
+   * store at `credentialsRoot` (`~/.landrace/credentials`).
+   */
   credentials?: CredentialStore;
+  credentialsRoot?: string;
+  /** How the key is looked up — the platform, the environment, each helper — for a test to fake; absent, this machine's. */
+  keyLookup?: Pick<CredentialKeyOptions, "platform" | "env" | "run" | "alive">;
   /** Serves the front door. Default `serveFrontDoor`; a test passes one that binds nothing and drives the listener itself. */
   serve?: (opts: FrontDoorOptions) => Promise<UiServer>;
   /** The OAuth refresher's pass, every 60 s by default, and what it and a callback reach a token endpoint with; a test passes a stub. */
@@ -3282,8 +3369,10 @@ export interface BuildOptions {
   board?: () => string | null;
   /** The front door's port, `--ui-port` over `serve.port`: what every step is held from. Absent, `serve.port`. */
   port?: number;
-  /** Where the local person's connections are read from. Absent, `~/.landrace/credentials`. */
+  /** Where the local person's connections are read from. Absent, `~/.landrace/credentials`, under the key already there. */
   credentials?: CredentialStore;
+  /** Where `start` found the key `credentials` is sealed under, pinned on each server a step is handed. Absent, none. */
+  key?: KeyLocator;
   /**
    * The process's one logger, when the caller made it: `start`, whose
    * runtime is rebuilt on a connect and whose events and telemetry must
@@ -4074,8 +4163,8 @@ export interface RemoteDoor {
   signIn(person: Person): Promise<void>;
   /** Whether `people.allow` admits the person: asked again of every MCP grant, refresh and access token. */
   admits: (person: Person) => boolean;
-  /** The 0700 directory `mcp-clients.json` and `mcp-tokens.json` are kept in. */
-  authRoot: string;
+  /** The credentials root's files: `mcp/mcp-clients.json` and `mcp/mcp-tokens.json` are kept through them, sealed as each person's file is. */
+  authFiles: SealedFiles;
   /** The start's own log: every event, and every line the door prints, goes through its redaction. */
   log: RedactingLogger;
 }

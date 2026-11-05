@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { MCP_FOLDER } from "#people/sealed.js";
 import { join } from "node:path";
 import type { Request, Response } from "express";
 import { express } from "#front/express.js";
@@ -10,7 +10,7 @@ import { getOAuthProtectedResourceMetadataUrl, mcpAuthRouter } from "@modelconte
 import type { OAuthClientInformationFull, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { messageOf } from "#runner/errors.js";
 import { foreignOrigin } from "#ui/server.js";
-import type { IssuedAccess, McpAuth, Person, PendingConsent, RedactingLogger, Sessions, StoredRefresh } from "#namespace.js";
+import type { IssuedAccess, McpAuth, Person, PendingConsent, RedactingLogger, SealedFiles, Sessions, StoredRefresh } from "#namespace.js";
 
 /** A consent page's token, and the code it grants: each spent once, and worthless after this. */
 const CONSENT_TTL_MS = 10 * 60_000;
@@ -22,7 +22,7 @@ const REFRESH_TTL_MS = 30 * 24 * 60 * 60_000;
 const MAX_CLIENTS = 1000;
 const STALE_CLIENT_MS = 24 * 60 * 60_000;
 
-/** The files this keeps, beside each other in `root`. */
+/** The files this keeps, beside each other in the credentials root's `mcp/` folder. */
 export const MCP_CLIENTS_FILE = "mcp-clients.json";
 export const MCP_TOKENS_FILE = "mcp-tokens.json";
 
@@ -61,27 +61,17 @@ const CONSENT_HEADERS: Record<string, string> = {
   "referrer-policy": "same-origin",
 };
 
-/** A JSON file written whole, 0600 under a 0700 directory: a crash mid-write leaves the old one. */
-async function writeJson(root: string, name: string, value: unknown, nth: number): Promise<void> {
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  await chmod(root, 0o700);
-  const file = join(root, name);
-  const temporary = `${file}.${process.pid}.${nth}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await chmod(temporary, 0o600);
-  await rename(temporary, file);
+/** A JSON file written whole, sealed as the credentials are, 0600 under a 0700 directory: a crash mid-write leaves the old one. */
+async function writeJson(files: SealedFiles, name: string, value: unknown): Promise<void> {
+  await files.write(`${MCP_FOLDER}/${name}`, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-/** One of this door's maps, empty when the file is not there yet; anything but a JSON object is refused, naming the file. */
-async function readMap<T>(root: string, name: string): Promise<Map<string, T>> {
-  const file = join(root, name);
-  let text: string;
-  try {
-    text = await readFile(file, "utf8");
-  } catch (e) {
-    if ((e as { code?: unknown } | null)?.code === "ENOENT") return new Map();
-    throw new Error(`${file} cannot be read: ${messageOf(e)}`);
-  }
+/** One of this door's maps, empty when the file is not there yet; anything but a JSON object, or a file that does not open, is refused, naming the file. */
+async function readMap<T>(files: SealedFiles, name: string): Promise<Map<string, T>> {
+  const file = join(files.root, MCP_FOLDER, name);
+  // Its own refusal names the file, and quotes none of it.
+  const text = await files.read(`${MCP_FOLDER}/${name}`);
+  if (text === null) return new Map();
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -111,8 +101,8 @@ async function readMap<T>(root: string, name: string): Promise<Map<string, T>> {
  * one authorization request — so neither an overlay nor a form on another
  * site can approve for them, whatever a browser does with SameSite.
  *
- * Registered clients and the hash of each refresh token are kept in `root`,
- * 0600, so a restart does not make every editor sign in again; a refresh
+ * Registered clients and the hash of each refresh token are kept under the
+ * credentials root's `mcp/`, 0600 and sealed as each person's file is, so a restart does not make every editor sign in again; a refresh
  * token is rotated on use, and the file never holds a token itself. Codes,
  * access tokens and consent tokens live in memory.
  *
@@ -123,7 +113,8 @@ async function readMap<T>(root: string, name: string): Promise<Map<string, T>> {
 export function createMcpAuth(opts: {
   publicUrl: string;
   sessions: Sessions;
-  root: string;
+  /** The credentials root's files, under whose `mcp/` folder the two maps are kept. */
+  files: SealedFiles;
   /** The door's own origins: an approve from any other is refused. */
   origins: readonly string[];
   log: RedactingLogger;
@@ -136,11 +127,10 @@ export function createMcpAuth(opts: {
   const resource = new URL("mcp", opts.publicUrl.endsWith("/") ? opts.publicUrl : `${opts.publicUrl}/`);
   const resourceMetadataUrl = getOAuthProtectedResourceMetadataUrl(resource);
 
-  let written = 0;
   // One write at a time: each writes the whole map, so two at once would race to rename.
   let writing: Promise<void> = Promise.resolve();
   const persist = (name: string, value: () => unknown): Promise<void> => {
-    const next = writing.then(() => writeJson(opts.root, name, value(), ++written));
+    const next = writing.then(() => writeJson(opts.files, name, value()));
     writing = next.catch(() => {});
     return next;
   };
@@ -149,11 +139,11 @@ export function createMcpAuth(opts: {
   // the files are read, and the file written without it: removing a person
   // and restarting is the whole of revoking what their editors hold.
   const loaded = (async () => {
-    const clients = await readMap<OAuthClientInformationFull>(opts.root, MCP_CLIENTS_FILE);
-    const refresh = await readMap<StoredRefresh>(opts.root, MCP_TOKENS_FILE);
+    const clients = await readMap<OAuthClientInformationFull>(opts.files, MCP_CLIENTS_FILE);
+    const refresh = await readMap<StoredRefresh>(opts.files, MCP_TOKENS_FILE);
     const before = refresh.size;
     for (const [hash, r] of refresh) if (!opts.admits(r.person)) refresh.delete(hash);
-    if (refresh.size !== before) await writeJson(opts.root, MCP_TOKENS_FILE, Object.fromEntries(refresh), ++written);
+    if (refresh.size !== before) await writeJson(opts.files, MCP_TOKENS_FILE, Object.fromEntries(refresh));
     return { clients, refresh };
   })();
   // Read as the door is built, and awaited only by the first MCP request: left
