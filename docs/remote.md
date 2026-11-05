@@ -81,7 +81,7 @@ claude mcp add --transport http landrace https://landrace.example.org/mcp
 
 Registration is open, which is why consent is asked every time. How the consent page is protected is in [Security](security.md#remote-mode).
 
-Registered clients are kept in `~/.landrace/credentials/mcp/mcp-clients.json`. Refresh tokens are kept only as hashes in `mcp-tokens.json` beside it. Both files are `0600`. A refresh token lasts 30 days and works once: using it returns a new one. Access tokens, codes and consent pages live in memory, so after a restart a client refreshes its token.
+Registered clients are kept in `~/.landrace/credentials/mcp/mcp-clients.json`. Refresh tokens are kept only as hashes in `mcp-tokens.json` beside it. Both files are `0600`. A refresh token lasts 30 days and works once: using it returns a new one. Access tokens, codes and consent pages live in memory, so after a restart a client refreshes its token. If either file cannot be read or does not hold a JSON object, `start` logs it once and keeps running. The board still works, but `/mcp` and the sign-in routes answer `503` with the file's name until you fix or remove the file and restart.
 
 ## Checking people
 
@@ -91,7 +91,7 @@ On a remote instance, [`landrace validate`](validate.md) also judges every perso
   bob@example.org: connection.missing: secrets entry "forgeToken" has no value: ...
 ```
 
-These lines are each person's to fix in their own Integrations tab. They never change the exit code: `validate` exits `0` when the instance itself is sound.
+These lines are each person's to fix in their own Integrations tab. They never change the exit code: `validate` exits `0` when the instance itself is sound. A per-person key that names a connection no hook defines is a problem with the instance, not with a person. It is reported once and fails `validate`, even when nobody has signed in yet.
 
 ## Events
 
