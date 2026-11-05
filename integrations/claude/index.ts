@@ -68,8 +68,13 @@ function sandboxSettings({ hosts, deny }: SandboxSettings, built: string | undef
   };
 }
 
-/** A denied path as the Read tool's rules: itself and everything under it. */
-const readRules = (deny: readonly string[]): string[] => deny.flatMap((path) => [`Read(${path})`, `Read(${path}/**)`]);
+/**
+ * A denied path as the Read tool's rules: itself and everything under it.
+ * An absolute one is written `//…`: a rule reads `/…` relative to the
+ * settings it is in, and would deny nothing.
+ */
+const readRules = (deny: readonly string[]): string[] =>
+  deny.map((path) => (path.startsWith("/") ? `/${path}` : path)).flatMap((path) => [`Read(${path})`, `Read(${path}/**)`]);
 
 /**
  * The paths a run is denied: the sandbox's list, and Landrace's credentials
@@ -89,9 +94,29 @@ function toolLine(name: string, input: unknown, cwd: string): string {
   return key === undefined ? name : `${name} ${shortPath(args[key] as string, cwd)}`;
 }
 
-/** Where the CLI keeps a directory's sessions: its path, every character but a letter or digit made "-". */
-const projectDir = (home: string, cwd: string): string =>
-  join(home, ".claude", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
+/** The name the CLI gives a directory's sessions: its path, every character but a letter or digit made "-". */
+const encoded = (cwd: string): string => cwd.replace(/[^A-Za-z0-9]/g, "-");
+
+/** Where the CLI keeps the sessions of runs in `cwd`, under `home`. */
+export const claudeProjectDirOf = (cwd: string, home: string = homedir()): string => join(home, ".claude", "projects", encoded(cwd));
+
+/**
+ * The CLI's session folders of every run in `dir` or under it: the one
+ * named for `dir`, and each whose name goes on from it past a "-". So
+ * `/w/bob` takes `-w-bob-2-write` and never `-w-bobby-3-write`. The encoding
+ * loses characters, so another path can read as one under `dir` — that
+ * denies more, never less.
+ *
+ * ponytail: reads the CLI's own session layout, as `bringSession` does.
+ */
+async function transcriptsIn(home: string, dir: string): Promise<string[]> {
+  const projects = join(home, ".claude", "projects");
+  const name = encoded(dir);
+  return (await readdir(projects).catch(() => [] as string[]))
+    .filter((entry) => entry === name || entry.startsWith(`${name}-`))
+    .sort()
+    .map((entry) => join(projects, entry));
+}
 
 /**
  * The agent's session, made resumable from `here`: already there, or copied
@@ -383,6 +408,11 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
       : { extras: { plugins: [] }, problems: ['agent.plugins must be a list of plugin ids, like "name@marketplace"'] };
   }
 
+  /** A run's transcript is the session the CLI keeps in `~/.claude/projects`, in a folder named for where it ran. */
+  protected transcriptsUnder(dir: string): Promise<string[]> {
+    return transcriptsIn(this.home, dir);
+  }
+
   /** A skill is a folder of `.claude/skills` holding a SKILL.md, as `buildPluginDir` reads it. */
   protected async skillProblems(root: string, listed: readonly string[]): Promise<string[]> {
     const skills = join(root, ".claude", "skills");
@@ -403,7 +433,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
    * directories `argv` names, rebuilt on every run: the screener gets neither.
    */
   protected async prepare({ tier, resume, cwd, skills, log }: RunPlan<ClaudeExtras>): Promise<void> {
-    if (resume !== undefined && cwd !== undefined) await bringSession(this.home, resume, projectDir(this.home, cwd));
+    if (resume !== undefined && cwd !== undefined) await bringSession(this.home, resume, claudeProjectDirOf(cwd, this.home));
     if (tier === "screen" || cwd === undefined) return;
     const built = builtOf(cwd);
     await rm(built, { recursive: true, force: true });
@@ -561,7 +591,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
    * ran in the item's worktree, is brought over before it is forked here.
    */
   protected async handoffArgv({ cwd, session, promptFile, resume, server }: HandoffPlan): Promise<HandoffArg[]> {
-    const here = projectDir(this.home, cwd);
+    const here = claudeProjectDirOf(cwd, this.home);
     const argv: HandoffArg[] = [this.bin];
     if (existsSync(join(here, `${session}.jsonl`))) {
       argv.push("--resume", session);

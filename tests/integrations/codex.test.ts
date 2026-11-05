@@ -386,6 +386,27 @@ describe("the Codex integration", () => {
       await expect(new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] } }))).resolves.toBeDefined();
     });
 
+    // #186: with other people on the instance, a step must not read their
+    // worktrees, and codex's shell could. Alone, the list is the credentials
+    // every run was already beside, and the run goes on as it did.
+    describe("beside other people's work", () => {
+      const started = async (denied: string[]) => {
+        const { run: go } = await new Codex({ bin, home: temp("codex-home-") }).create({
+          ...ctxFor({ adapter: "codex", sandbox: { deny: [] } }), denyPaths: () => Promise.resolve(denied),
+        });
+        return go("p", { round: 1, cwd: withCfg({ out: "ran" }), capabilities: ["repo:read"], signal: new AbortController().signal });
+      };
+
+      it("refuses the run, naming what it could read", async () => {
+        await expect(started(["~/.landrace/credentials", "/tmp/landrace/r/worktrees/bob"]))
+          .rejects.toThrow(/refused the run[\s\S]*\/tmp\/landrace\/r\/worktrees\/bob[\s\S]*codex cannot keep a command from reading/);
+      });
+
+      it("runs as it always has when nobody else is there", async () => {
+        await expect(started(["~/.landrace/credentials"])).resolves.toMatchObject({ text: "ran" });
+      });
+    });
+
     it("refuses a key only another integration reads", async () => {
       await expect(new Codex().create(ctxFor({ adapter: "codex", sandbox: { deny: [] }, plugins: ["p@m"] })))
         .rejects.toThrow(/agent\.plugins is not a setting the codex executor reads/);
