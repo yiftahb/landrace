@@ -142,7 +142,7 @@ Each person whose connections are ready has a runtime of their own. It loads eve
 
 - An item one person's runtime claims is worked by that runtime alone, and shows on that person's board.
 - An item two people's runtimes claim is worked by neither. Landrace logs `item.ambiguous`, naming the item and both people. This is the same rule as two workflows claiming one item: it halts rather than picking one.
-- When one person's tracker cannot be listed, nobody can tell who else claims what. Runs already going on finish, and no new run starts for anyone on that tick.
+- When one person's tracker cannot be listed, nobody can tell who else claims what. Runs already going on finish, and no new run starts for anyone on that tick. Each board's rows say why, naming only that board's own person: anyone else reads as "another person's items could not be listed", or "other people's items could not be listed" when more than one other person's listing failed. Landrace logs `source.failed` with every person whose items could not be listed.
 
 So with the same workflows and nothing that differs per person, two ready people claim every item, and nothing new runs. Split the items between people. One way is a per-person var, filled from each person's connection, used in a workflow's `eligible` rule, as [Several developers, one repository](configuration.md#vars) shows for one instance per developer. With one ready person, nothing is compared, and they claim every item the workflows admit.
 
@@ -158,12 +158,14 @@ claude mcp add --transport http landrace https://landrace.example.org/mcp
 
 1. The client calls `/mcp`, gets `401` with a `resource_metadata` link, and registers itself.
 2. It opens `/authorize` in your browser. If you are not signed in, you sign in first.
-3. A consent page names the client and where it sends you back. Approve only if you just asked your client to connect.
+3. A consent page names the client and where it sends you back: the redirect's origin, such as `http://127.0.0.1:33418`, or, for an editor's own scheme such as `vscode://`, the whole redirect URI without its query. Approve only if you just asked your client to connect.
 4. The client gets an access token for one hour and a refresh token. With it, `/mcp` serves your items and tools only.
 
 Registration is open, which is why consent is asked every time. How the consent page is protected is in [Security](security.md#remote-mode).
 
-Registered clients are kept in `~/.landrace/credentials/mcp/mcp-clients.json`. Refresh tokens are kept only as hashes in `mcp-tokens.json` beside it. Both files are `0600`. A refresh token lasts 30 days and works once: using it returns a new one. Access tokens, codes and consent pages live in memory, so after a restart a client refreshes its token. If either file cannot be read or does not hold a JSON object, `start` logs it once and keeps running. The board still works, but `/mcp` and the sign-in routes answer `503` with the file's name until you fix or remove the file and restart.
+Registration is also bounded. Before each one, Landrace removes every client that registered more than 24 hours ago and holds no live refresh token. Past 1,000 stored clients, `/register` answers `400`, saying the instance holds too many registered clients. Each person keeps at most 16 open MCP sessions: opening a 17th closes their oldest, and that client initializes a new one.
+
+Registered clients are kept in `~/.landrace/credentials/mcp/mcp-clients.json`. Refresh tokens are kept only as hashes in `mcp-tokens.json` beside it. Both files are `0600`. A refresh token lasts 30 days and works once: using it returns a new one. Access tokens, codes and consent pages live in memory, so after a restart a client refreshes its token. If either file cannot be read or does not hold a JSON object, `start` logs it once and keeps running. The board still works, but `/mcp` and the sign-in routes answer `503` with the file's name until you fix or remove the file and restart. A file that is not JSON is named as such, and nothing from inside it is quoted.
 
 ## Checking people
 
@@ -260,7 +262,7 @@ Then they sign in through OAuth: see [Connecting an MCP client](#connecting-an-m
 - **No allow-list.** Landrace admits anyone your provider signs in with a verified email: see [Who can sign in](#who-can-sign-in).
 - **No single way to remove a person.** See [Removing a person](#removing-a-person).
 - **Sessions live in memory.** A restart signs everyone out, and ends every MCP access token.
-- **Registration is open.** Any MCP client can register, so every token waits on a signed-in person's consent ([Security](security.md#remote-mode)).
+- **Registration is open.** Any MCP client can register, so every token waits on a signed-in person's consent ([Security](security.md#remote-mode)). Someone who registers 1,000 clients within a day fills the instance, and nobody else can register until those clients age out, or until you clear `mcp-clients.json` while `start` is stopped.
 - **The roster is read at start.** A person's file deleted while `start` runs keeps them in the roster until the next start.
 - **One operating-system user.** Every person's steps run as the user that runs `start`, beside one shared `.git`: see [People on one instance](security.md#people-on-one-instance).
 
@@ -272,3 +274,4 @@ Then they sign in through OAuth: see [Connecting an MCP client](#connecting-an-m
 | `signin.refused` | `person: "anonymous"`, `reason`, sometimes `personEmail` | A sign-in was refused. |
 | `request.refused` | `person`, `path`, `status`, sometimes `reason` | A request from nobody signed in, or a consent approval refused. |
 | `item.ambiguous` | `item`, `people` | Two people's runtimes claim one item, so neither works it. |
+| `source.failed` | `people`, `reason` | A tick could not list these people's items, so no one's claims were judged. |

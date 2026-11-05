@@ -34,6 +34,7 @@ function door(o: { pairing?: boolean } = {}) {
   const trackers = { alice: createFakeTracker([{ number: ITEMS.alice ?? 0 }]), bob: createFakeTracker([{ number: ITEMS.bob ?? 0 }]) };
   const mcp = createMcpEndpoint({
     workflows: ["main"],
+    scrub: (text) => text,
     ...(o.pairing === undefined ? {} : { pairing: o.pairing }),
     toolsFor: (caller): Tools => {
       const tracker = caller.id === "bob" ? trackers.bob : trackers.alice;
