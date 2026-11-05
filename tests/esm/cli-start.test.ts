@@ -330,6 +330,27 @@ describe("buildWorkspaceRuntime", () => {
     ]);
   });
 
+  /*
+   * #185: the process's own logger names nobody, and each person's runtime
+   * stamps its own. Locally that is one person, so a local start prints
+   * every event as theirs, and its rows as it always did.
+   */
+  it("prints every event of a local --once run as the local person's, and a row per item", async () => {
+    const { dir } = await fixture();
+    const printed: string[] = [];
+    const log = console.log;
+    console.log = (line: unknown): void => { printed.push(String(line)); };
+    try {
+      await runStart(dir, { once: true, ui: false });
+    } finally {
+      console.log = log;
+    }
+    const events = printed.filter((l) => l.startsWith("{")).map((l) => JSON.parse(l) as LandraceEvent);
+    expect(events.map((e) => e.name)).toEqual(expect.arrayContaining(["tick.started", "tick.finished"]));
+    expect(events.filter((e) => e.person !== "local")).toEqual([]);
+    expect(printed.filter((l) => l.startsWith("#"))).toEqual([expect.stringMatching(new RegExp(`^#${ITEM} terminal after`))]);
+  });
+
   it("stamps only the person, with no email, when landrace.yaml names no people", async () => {
     const seen: LandraceEvent[] = [];
     const { dir } = await fixture();
@@ -1859,6 +1880,53 @@ export const forge = brand("connection", { id: "forge", label: "Forge", kind: "c
 
   const connected = (daysAgo: number) => ({
     forge: { fields: { login: "dev1", token: STORED_TOKEN }, source: "paste", connectedAt: new Date(Date.now() - daysAgo * 86_400_000).toISOString() },
+  });
+
+  /*
+   * #185: one runtime per person. Alice and bob each have a file of their
+   * own; what is checked is that each runtime is theirs alone — its config
+   * object, its values, its events, the person every hook is handed.
+   */
+  async function peopleStore(logins: Record<string, string>): Promise<CredentialStore> {
+    const root = join(await mkdtemp(join(tmpdir(), "lr-creds-")), "credentials");
+    await mkdir(root, { recursive: true });
+    for (const [id, login] of Object.entries(logins)) {
+      const forge = { fields: { login, token: `${STORED_TOKEN}-${id}` }, source: "paste", connectedAt: new Date().toISOString() };
+      await writeFile(join(root, `${id}.json`), JSON.stringify({ person: { id }, connections: { forge } }));
+    }
+    return createCredentialStore(root);
+  }
+
+  it("builds alice's and bob's runtimes apart: their own config object, values, person and events", async () => {
+    const { dir } = await fixture({ hookExtra: CONNECTION(), configExtra: PER_PERSON, workflow: usingAssignee });
+    const credentials = await peopleStore({ alice: "alice-login", bob: "bob-login" });
+    const seen: LandraceEvent[] = [];
+    const alice = await buildMain(dir, { sink: (e) => seen.push(e), credentials, person: { id: "alice" } });
+    const bob = await buildMain(dir, { sink: (e) => seen.push(e), credentials, person: { id: "bob" } });
+
+    expect(alice.ctx.config).not.toBe(bob.ctx.config);
+    expect(alice.ctx.config).toEqual(bob.ctx.config);
+    expect([alice.ctx.person?.id, bob.ctx.person?.id, bob.deps.ctx.person?.id]).toEqual(["alice", "bob", "bob"]);
+    expect(alice.deps.workflow.stages[0]?.on_enter?.[0]).toMatchObject({ body: "Writing the spec for alice-login, round {round}." });
+    expect(bob.deps.workflow.stages[0]?.on_enter?.[0]).toMatchObject({ body: "Writing the spec for bob-login, round {round}." });
+    // Each in a worktree folder of their own.
+    expect([alice.deps.sandbox?.scope, bob.deps.sandbox?.scope]).toEqual(["alice", "bob"]);
+
+    bob.deps.log("step.finished", { item: ITEM });
+    bob.deps.ctx.log("tracker.request", {});
+    expect(seen).toEqual([
+      { name: "step.finished", person: "bob", workflow: "main", item: ITEM },
+      { name: "tracker.request", person: "bob" },
+    ]);
+  });
+
+  it("takes a person's values from the resolution its caller judged, over the store's", async () => {
+    const { dir } = await fixture({ hookExtra: CONNECTION(), configExtra: PER_PERSON, workflow: usingAssignee });
+    const credentials = await peopleStore({ bob: "bob-login" });
+    const resolution = { vars: new Map([["assignee", "bob-judged"]]), secretValues: new Map([["jiraAssignee", "bob-account-id"]]), statuses: [], problems: [], ready: true };
+    const bob = await buildMain(dir, { sink: () => {}, credentials, person: { id: "bob" }, resolution });
+    expect(bob.deps.workflow.stages[0]?.on_enter?.[0]).toMatchObject({ body: "Writing the spec for bob-judged, round {round}." });
+    expect(bob.ctx.secrets.get("jiraAssignee")).toBe("bob-account-id");
   });
 
   it("runs with the stored value when the env is unset, and redacts what the store holds", async () => {

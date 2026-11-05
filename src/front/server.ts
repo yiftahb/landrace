@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isIPv6 } from "node:net";
-import type { FrontDoorOptions, UiServer } from "#namespace.js";
+import type { FrontDoorOptions, Person, UiServer } from "#namespace.js";
 import { allowedHosts, frontDoorOrigins } from "#front/hosts.js";
 import { messageOf } from "#runner/errors.js";
 import { boardListener, foreignOrigin, knownHost, send } from "#ui/server.js";
@@ -14,20 +14,32 @@ const TEXT = "text/plain; charset=utf-8";
  * items, as surely as it reaches the board — then `/mcp`, refused a foreign
  * `Origin` because a page elsewhere in the person's browser could otherwise
  * call its tools, then the board's own routes.
+ *
+ * With `callerOf`, every request after the Host check is someone's: their
+ * board, their MCP sessions, and nobody known is 401. Locally that is
+ * always the local person.
  */
 export function frontDoorListener(opts: FrontDoorOptions, port: number): (req: IncomingMessage, res: ServerResponse) => void {
   const hosts = allowedHosts(opts, port);
   const { origins } = frontDoorOrigins(opts, port);
   const board = boardListener({ ...opts.board, allowedHosts: hosts, origins });
+  const boardOf = (caller: Person | undefined): ((req: IncomingMessage, res: ServerResponse) => void) =>
+    caller === undefined || !opts.boardFor ? board : boardListener({ ...opts.boardFor(caller), allowedHosts: hosts, origins });
   return (req, res) => {
     if (!knownHost(req, hosts)) return send(res, 421, TEXT, "misdirected request");
+    let caller: Person | undefined;
+    if (opts.callerOf) {
+      const known = opts.callerOf(req);
+      if (known === null) return send(res, 401, TEXT, "who is asking is not known; sign in first");
+      caller = known;
+    }
     const path = (req.url ?? "/").split("?")[0] ?? "/";
     if (path === "/mcp") {
       if (!opts.mcp) return send(res, 404, TEXT, "not found");
       if (foreignOrigin(req, origins)) return send(res, 403, TEXT, "refused: this endpoint answers only this machine's own clients");
-      return opts.mcp.handle(req, res);
+      return opts.mcp.handle(req, res, caller);
     }
-    return board(req, res);
+    return boardOf(caller)(req, res);
   };
 }
 

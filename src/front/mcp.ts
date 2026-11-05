@@ -3,7 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import type { McpEndpoint, Tools } from "#namespace.js";
+import { LOCAL_PERSON_ID } from "#conventions.js";
+import type { McpEndpoint, Person, Tools } from "#namespace.js";
 import { createMcpServer } from "#mcp/server.js";
 import { messageOf } from "#runner/errors.js";
 import { send } from "#ui/server.js";
@@ -42,20 +43,30 @@ function jsonOf(req: IncomingMessage): Promise<unknown> {
  * `--workflow` once fixed a stdio server's: what a later request's query says
  * changes nothing. A workflow the workspace does not have is refused there,
  * with no session made, rather than a session every tool of which refuses.
- * `toolsFor` is asked once per scope; each session gets its own server over
- * them, because one MCP server connects to one transport.
+ * `toolsFor` is asked once per caller and scope; each session gets its own
+ * server over them, because one MCP server connects to one transport.
+ *
+ * A session is its caller's: whoever initialized it. Another caller naming
+ * its id is answered as if it did not exist, so one person's session id —
+ * seen in a log, say — reaches nobody else's items.
  */
-export function createMcpEndpoint(opts: { workflows: readonly string[]; toolsFor: (scope?: string) => Tools }): McpEndpoint {
-  const sessions = new Map<string, StreamableHTTPServerTransport>();
+export function createMcpEndpoint(opts: {
+  workflows: readonly string[];
+  toolsFor: (caller: Person, workflow?: string) => Tools;
+  /** Whether the pairing tools are offered. Absent, they are. */
+  pairing?: boolean;
+}): McpEndpoint {
+  const sessions = new Map<string, { transport: StreamableHTTPServerTransport; caller: string }>();
   const tools = new Map<string, Tools>();
-  const toolsOf = (scope: string | undefined): Tools => {
-    const key = scope ?? "";
-    const found = tools.get(key) ?? opts.toolsFor(scope);
+  const toolsOf = (caller: Person, scope: string | undefined): Tools => {
+    // A person id is a credentials file's name, so it cannot hold a NUL.
+    const key = `${caller.id}\0${scope ?? ""}`;
+    const found = tools.get(key) ?? opts.toolsFor(caller, scope);
     tools.set(key, found);
     return found;
   };
 
-  const initialize = async (req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void> => {
+  const initialize = async (req: IncomingMessage, res: ServerResponse, body: unknown, caller: Person): Promise<void> => {
     const scope = new URL(req.url ?? "/", "http://x").searchParams.get("workflow") ?? undefined;
     if (scope !== undefined && !opts.workflows.includes(scope)) {
       return send(res, 400, TEXT, `no workflow "${scope}"; the workspace has ${opts.workflows.join(", ")}`);
@@ -63,24 +74,27 @@ export function createMcpEndpoint(opts: { workflows: readonly string[]; toolsFor
     const transport: StreamableHTTPServerTransport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
-        sessions.set(id, transport);
+        sessions.set(id, { transport, caller: caller.id });
       },
     });
     transport.onclose = () => {
       if (transport.sessionId !== undefined) sessions.delete(transport.sessionId);
     };
     // The SDK types its own transport loosely for exactOptionalPropertyTypes; it is the one `connect` takes.
-    await createMcpServer(toolsOf(scope)).connect(transport as unknown as Transport);
+    const server = createMcpServer(toolsOf(caller, scope), undefined, opts.pairing === undefined ? {} : { pairing: opts.pairing });
+    await server.connect(transport as unknown as Transport);
     await transport.handleRequest(req, res, body);
   };
 
-  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handle = async (req: IncomingMessage, res: ServerResponse, caller: Person): Promise<void> => {
     const header = req.headers["mcp-session-id"];
     const id = Array.isArray(header) ? header[0] : header;
     if (id !== undefined) {
-      const transport = sessions.get(id);
+      const session = sessions.get(id);
       // The transport answers an unknown session itself, but only one it made.
-      if (!transport) return send(res, 404, TEXT, "no such MCP session; initialize a new one");
+      // Another person's is unknown to this caller.
+      if (session?.caller !== caller.id) return send(res, 404, TEXT, "no such MCP session; initialize a new one");
+      const { transport } = session;
       if (req.method !== "POST") return transport.handleRequest(req, res);
       const body = await jsonOf(req);
       if (body === null) return send(res, 413, TEXT, "that request is far larger than a tool call");
@@ -91,20 +105,22 @@ export function createMcpEndpoint(opts: { workflows: readonly string[]; toolsFor
     const body = await jsonOf(req);
     if (body === null) return send(res, 413, TEXT, "that request is far larger than a tool call");
     if (!isInitializeRequest(body)) return send(res, 400, TEXT, "no MCP session; POST an initialize request first");
-    return initialize(req, res, body);
+    return initialize(req, res, body, caller);
   };
 
   return {
-    handle: (req, res) => {
-      handle(req, res).catch((e: unknown) => {
+    handle: (req, res, caller) => {
+      handle(req, res, caller ?? { id: LOCAL_PERSON_ID }).catch((e: unknown) => {
         console.error(`landrace: an MCP request failed: ${messageOf(e)}`);
         if (!res.headersSent) send(res, 500, TEXT, "the MCP request failed; the landrace log says why");
       });
     },
-    close: async () => {
-      const open = [...sessions.values()];
-      sessions.clear();
-      await Promise.all(open.map((t) => t.close()));
+    close: async (personId) => {
+      const open = [...sessions].filter(([, s]) => personId === undefined || s.caller === personId);
+      for (const [id] of open) sessions.delete(id);
+      // Tools built for a person closed out are built again for their next session.
+      for (const key of [...tools.keys()]) if (personId === undefined || key.startsWith(`${personId}\0`)) tools.delete(key);
+      await Promise.all(open.map(([, s]) => s.transport.close()));
     },
   };
 }

@@ -508,6 +508,28 @@ describe("boardSink", () => {
     expect(printed).toEqual([event]);
     expect(observed).toEqual([event]);
   });
+
+  it("sends each event to the board of the person it names, and one naming nobody to none, printing every one", () => {
+    const printed: LandraceEvent[] = [];
+    const observed: Record<string, LandraceEvent[]> = { alice: [], bob: [] };
+    const boardOf = (id: string): Board => ({
+      observe: (e) => { observed[id]?.push(e); },
+      list: () => {},
+      ownerOf: (item) => ({ refused: `#${item} is not listed` }),
+      readerOf: (item) => ({ refused: `#${item} is not listed` }),
+      view: async () => ({ generatedAt: 0, rows: [], nextTickAt: null, folder: "f", workspace: "/w", workflows: [], needsYou: 0, listed: true }),
+    });
+    const boards = { alice: boardOf("alice"), bob: boardOf("bob") };
+    const sink = boardSink((e) => printed.push(e), { of: (id) => (id === "alice" || id === "bob" ? boards[id] : undefined) });
+    const bobs: LandraceEvent = { name: "step.started", item: "7", person: "bob" };
+    const nobodys: LandraceEvent = { name: "tick.started" };
+
+    sink(bobs);
+    sink(nobodys);
+
+    expect(printed).toEqual([bobs, nobodys]);
+    expect(observed).toEqual({ alice: [], bob: [bobs] });
+  });
 });
 
 describe("parsePort", () => {

@@ -133,8 +133,11 @@ export function createRoster(opts: RosterOptions): Roster {
     people: () => [...entries.values()],
     get: (personId) => entries.get(personId),
     ambiguous: () => lastAmbiguous,
+    // Unlike `sync`, a build that throws rejects: a local start whose first
+    // build fails is refused, as it always was, and a connect says why.
     reload: async (personId) => {
-      const entry = entries.get(personId);
+      const local = opts.mode.remote ? undefined : opts.local ?? localPerson(opts.loaded);
+      const entry = entries.get(personId) ?? (local?.id === personId ? entryFor(local) : undefined);
       if (!entry) throw new Error(`no person "${personId}" in this runner`);
       await entry.slot.reload();
     },

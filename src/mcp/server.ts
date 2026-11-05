@@ -48,7 +48,12 @@ const workflow = z.string().min(1).optional();
 const relation = z.object({ type: z.string().min(1).max(64), item: z.string().min(1).max(64) });
 const relations = (what: string) => z.array(relation).max(50).optional().describe(what);
 
-export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
+/**
+ * The operator's tools. `pairing` false — a remote instance, whose people
+ * have no terminal on this machine to join a session from — leaves out
+ * `landrace_pair`, `landrace_finish` and `landrace_release`.
+ */
+export function createMcpServer(tools: Tools, version = "0.0.0", opts: { pairing?: boolean } = {}): McpServer {
   const server = new McpServer({ name: "landrace", version });
   // Bound to one workflow, every tool says so: an agent holding this server
   // is told before its first call, not by the first refusal.
@@ -212,6 +217,8 @@ export function createMcpServer(tools: Tools, version = "0.0.0"): McpServer {
     { item, why: z.string().optional() },
     guard(({ item: n, why }) => tools.resolve(n, why)),
   );
+
+  if (opts.pairing === false) return server;
 
   server.tool(
     "landrace_pair",
