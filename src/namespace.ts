@@ -980,7 +980,8 @@ export type ExecutorContext = RuntimeContext & {
   personEnv?: Readonly<Record<string, string>>;
   /**
    * What the person's runs may not read beyond the sandbox's own list: the
-   * credentials, the workspace's `.env`, and each other person's worktrees.
+   * credentials, the workspace's `.env`, each other person's worktrees, and
+   * every other folder under the sandbox's worktrees, a departed person's too.
    * A function, asked as each run starts: who else is here changes on a sync,
    * and their runs keep leaving transcripts. Absent, only what the sandbox lists.
    */
@@ -988,9 +989,9 @@ export type ExecutorContext = RuntimeContext & {
 };
 
 /**
- * What one run may not read beyond `agent.sandbox.deny`, in two halves an
- * executor judges apart: an agent that cannot keep a path runs beside
- * `always`, as it always has, and is refused once `people` names anything.
+ * What one run may not read beyond `agent.sandbox.deny`, judged apart: an
+ * agent that cannot keep a path runs beside `always`, as it always has, and is
+ * refused once `people` or `found` names anything.
  */
 export interface RunDenials {
   /** Denied every run, alone or not: Landrace's credentials and the workspace's `.env`. */
