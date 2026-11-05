@@ -11,7 +11,8 @@ export const scopeOf = (person: Pick<Person, "id">): string => encodeURIComponen
 
 /**
  * What a person's step may not read, as the engine knows it: Landrace's
- * credentials and the workspace's `.env`, whoever else is here; and each
+ * credentials and the workspace's `.env`, by every spelling `env` gives it,
+ * whoever else is here; and each
  * other person's folder of worktrees. Never their own, and each once. The
  * agent integration adds what it keeps of the runs under each folder — its
  * transcripts — when the step starts.
@@ -26,13 +27,13 @@ export const scopeOf = (person: Pick<Person, "id">): string => encodeURIComponen
 export function denyForPerson(
   self: Pick<Person, "id">, others: readonly Pick<Person, "id">[],
   { worktrees, credentials, env, own, present = [] }: {
-    worktrees: string; credentials: string; env: string; own?: string | undefined; present?: readonly string[];
+    worktrees: string; credentials: string; env: readonly string[]; own?: string | undefined; present?: readonly string[];
   },
 ): RunDenials {
   const listed = others.filter((other) => other.id !== self.id).map((other) => scopeOf(other));
   const found = own === undefined ? [] : present;
   const folders = [...listed, ...found].filter((name) => name !== own && name !== scopeOf(self)).map((name) => join(worktrees, name));
-  return { always: [credentials, env], people: [...new Set(folders)] };
+  return { always: [...new Set([credentials, ...env])], people: [...new Set(folders)] };
 }
 
 /**

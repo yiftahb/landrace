@@ -33,7 +33,7 @@ function instance() {
     bob: project(join(worktrees, "bob", "2.write")),
     bobby: project(join(worktrees, "bobby", "3.write")),
   };
-  const denyPaths = () => Promise.resolve(denyForPerson({ id: "alice" }, [{ id: "bob" }], { worktrees, credentials: CREDENTIALS_ROOT, env: "/w/.landrace/.env" }));
+  const denyPaths = () => Promise.resolve(denyForPerson({ id: "alice" }, [{ id: "bob" }], { worktrees, credentials: CREDENTIALS_ROOT, env: ["/w/.landrace/.env"] }));
   const cwd = temp("fake-agent-");
   writeFileSync(join(cwd, "fake.json"), JSON.stringify({ out: "{{ARGV_JSON}}" }));
   const executor = new Claude({ bin, home }).build({
@@ -57,7 +57,7 @@ describe("a person whose id no rule can hold", () => {
     writeFileSync(join(cwd, "fake.json"), JSON.stringify({ out: "{{ARGV_JSON}}" }));
     const executor = new Claude({ bin, home: temp("fake-home-") }).build({
       servers: {}, tools: {}, plugins: [], sandbox: { hosts: [], deny: [] },
-      denyPaths: () => Promise.resolve(denyForPerson({ id: "alice" }, [{ id: "b)ob" }], { worktrees, credentials: CREDENTIALS_ROOT, env: "/w/.landrace/.env" })),
+      denyPaths: () => Promise.resolve(denyForPerson({ id: "alice" }, [{ id: "b)ob" }], { worktrees, credentials: CREDENTIALS_ROOT, env: ["/w/.landrace/.env"] })),
     });
     await expect(executor.run("p", { round: 1, cwd, capabilities: ["repo:read"], signal: new AbortController().signal }))
       .rejects.toThrow(`refused the run: ${JSON.stringify(join(worktrees, "b)ob"))}`);
@@ -110,7 +110,7 @@ describe("transcripts that cannot be listed", () => {
     const worktrees = join(temp("sandbox-"), "worktrees");
     return new Claude({ bin, home }).build({
       servers: {}, tools: {}, plugins: [], sandbox: { hosts: [], deny: [] },
-      denyPaths: () => Promise.resolve(denyForPerson({ id: "alice" }, [{ id: "bob" }], { worktrees, credentials: CREDENTIALS_ROOT, env: "/w/.landrace/.env" })),
+      denyPaths: () => Promise.resolve(denyForPerson({ id: "alice" }, [{ id: "bob" }], { worktrees, credentials: CREDENTIALS_ROOT, env: ["/w/.landrace/.env"] })),
     }).run("p", { round: 1, cwd, capabilities: ["repo:read"], signal: new AbortController().signal });
   };
 

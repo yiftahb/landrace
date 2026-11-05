@@ -1,5 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import { spawn } from "node:child_process";
+import { realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
 import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
@@ -807,6 +808,12 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sa
  * starts, since the roster changes on a sync and a person who left keeps their
  * folder. Shared by every path that builds an executor which runs: a step, a
  * screener, a pairing's turn.
+ *
+ * The `.env` by both its spellings: the `dir` the start was given, and its
+ * real path. Started through a symlink, a worktree's `.git` file names the
+ * real repository, so a step can read the `.env` by a path the given one's
+ * rule never matches. Read per run, as the folders are; a `dir` that will not
+ * resolve refuses the run rather than leave the real spelling open.
  */
 export function denyPathsFor(
   dir: string, person: Pick<Person, "id">, sandbox: Sandbox | null, others: () => readonly Pick<Person, "id">[],
@@ -814,7 +821,7 @@ export function denyPathsFor(
   const worktrees = join(sandboxRoot(dir), "worktrees");
   const own = sandbox?.scope;
   return async () => denyForPerson(person, others(), {
-    worktrees, credentials: CREDENTIALS_ROOT, env: resolve(dir, ".env"), own,
+    worktrees, credentials: CREDENTIALS_ROOT, env: [resolve(dir, ".env"), join(await realpath(dir), ".env")], own,
     present: own === undefined ? [] : await worktreeFolders(worktrees),
   });
 }

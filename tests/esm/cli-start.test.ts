@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -841,8 +841,11 @@ ${EXECUTOR}`);
    * with either dropped.
    */
   describe("a step's deny list, from the people beside it", () => {
-    const readDenied = async (opts: BuildOptions, before?: (dir: string) => Promise<void>): Promise<{ dir: string; deny: string[] }> => {
-      const { dir } = await fixture();
+    const readDenied = async (
+      opts: BuildOptions, before?: (dir: string) => Promise<void>, through?: (dir: string) => Promise<string>,
+    ): Promise<{ dir: string; deny: string[] }> => {
+      const { dir: made } = await fixture();
+      const dir = through ? await through(made) : made;
       const rt = await buildMain(dir, opts);
       await before?.(dir);
       const bin = await mkdtemp(join(tmpdir(), "lr-bin-"));
@@ -876,6 +879,23 @@ ${EXECUTOR}`);
       expect(deny).toContain(`Read(/${join(dir, ".env")})`);
       expect(deny).toEqual(expect.arrayContaining(["Read(~/.git-credentials)", "Read(~/.config/git/credentials)"]));
       expect(deny.join("\n")).not.toContain(join(sandboxRoot(dir), "worktrees"));
+    });
+
+    /*
+     * Started through a symlink, the .env has two spellings: the one `-w`
+     * named, and the real one a worktree's `.git` file points at, which a step
+     * can `cat` it by. A rule naming only the first leaves the second readable.
+     */
+    it("denies the .env by the path the start was given and by its real path, started through a symlink", async () => {
+      let real = "";
+      const { dir, deny } = await readDenied({}, undefined, async (made) => {
+        real = await realpath(made);
+        const link = join(await mkdtemp(join(tmpdir(), "lr-link-")), "workspace");
+        await symlink(made, link);
+        return link;
+      });
+      expect(dir).not.toBe(real);
+      expect(deny).toEqual(expect.arrayContaining([`Read(/${join(dir, ".env")})`, `Read(/${join(real, ".env")})`]));
     });
 
     /*

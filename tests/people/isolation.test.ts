@@ -5,7 +5,7 @@ import { CREDENTIALS_ROOT } from "#conventions.js";
 import { denyForPerson, scopeOf, worktreeFolders } from "#people/isolation.js";
 
 const ENV = "/repo/.landrace/.env";
-const where = { worktrees: "/tmp/landrace/repo-1/worktrees", credentials: CREDENTIALS_ROOT, env: ENV };
+const where = { worktrees: "/tmp/landrace/repo-1/worktrees", credentials: CREDENTIALS_ROOT, env: [ENV] };
 
 describe("scopeOf", () => {
   it("is a person's id, encoded, so no separator survives", () => {
@@ -25,6 +25,12 @@ describe("denyForPerson", () => {
     expect(denyForPerson({ id: "alice" }, [{ id: "alice" }, { id: "bob" }, { id: "bob" }], where).people).toEqual([
       "/tmp/landrace/repo-1/worktrees/bob",
     ]);
+  });
+
+  it("denies the .env by every spelling it is given, and one spelling once", () => {
+    const real = "/private/repo/.landrace/.env";
+    expect(denyForPerson({ id: "local" }, [], { ...where, env: [ENV, real] }).always).toEqual([CREDENTIALS_ROOT, ENV, real]);
+    expect(denyForPerson({ id: "local" }, [], { ...where, env: [ENV, ENV] }).always).toEqual([CREDENTIALS_ROOT, ENV]);
   });
 
   it("is only the credentials root and the .env for a person alone", () => {
