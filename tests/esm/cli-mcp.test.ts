@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -608,10 +608,12 @@ describe("buildMcpTools and the servers a turn is handed", () => {
     expect(argv.slice(argv.indexOf("--allowedTools") + 1)).toEqual(["mcp__codebase-memory-mcp"]);
     // And, like the step, the setting that loads the CLAUDE.md of the worktree
     // it runs in, and the Read rules of every denied path, Landrace's
-    // credentials and the workspace's .env among them (#207).
-    const denied = [
-      "~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.git-credentials", "~/.config/git/credentials", "~/.landrace/credentials", `/${join(dir, ".env")}`,
-    ];
+    // credentials and the workspace's .env among them (#207), by its real
+    // path too, where the temporary folder is a symlink (macOS's is).
+    const denied = [...new Set([
+      "~/.config/gh", "~/.ssh", "~/.aws", "~/.npmrc", "~/.git-credentials", "~/.config/git/credentials", "~/.landrace/credentials",
+      `/${join(dir, ".env")}`, `/${join(await realpath(dir), ".env")}`,
+    ])];
     expect(JSON.parse(after("--settings"))).toEqual({
       enabledPlugins: { "superpowers@claude-plugins-official": true },
       permissions: { deny: denied.flatMap((p) => [`Read(${p})`, `Read(${p}/**)`]) },
