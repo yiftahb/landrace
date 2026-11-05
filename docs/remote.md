@@ -39,7 +39,7 @@ You need:
        - "@example.com"
    ```
 
-   Set `LANDRACE_OIDC_SECRET` in `.landrace/.env` to the secret the provider issued. `people.allow` lists who may sign in ([Who can sign in](#who-can-sign-in)). What `validate` refuses here, and what it warns of, is listed in [validate](validate.md#loading).
+   Set `LANDRACE_OIDC_SECRET` in `.landrace/.env` to the secret the provider issued. `people.allow` lists who may sign in ([Who can sign in](#who-can-sign-in)). What `validate` refuses here is listed under [Loading](validate.md#loading); what it warns of opens [that page](validate.md).
 4. **Start it** with `landrace start`. It prints `people sign in at <publicUrl>; <n> have before`. A remote instance always serves the board, so `--headless` and `--once` are refused.
 
 An `http://` issuer is accepted only on loopback, for a provider you run on the same machine to try this out.
