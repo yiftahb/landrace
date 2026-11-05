@@ -133,7 +133,7 @@ An override is stored with `source: override` the next time they sign in, in pla
 
 Each person whose connections are ready has a runtime of their own. It loads every workflow in the workspace, with that person's own values.
 
-- **Their own keys.** Every per-person key is filled from their own connections. In a Claude project, a step runs on their own Claude Code token, handed to it as `CLAUDE_CODE_OAUTH_TOKEN`. Codex has no per-person connection: a Codex step runs on the operator's own Codex login (`CODEX_HOME`). And while anyone else is on the roster, every Codex run is refused, because Codex cannot keep the per-person deny list (see [People on one instance](security.md#people-on-one-instance)). A secret written as a plain value or `$VAR` in `landrace.yaml` is the instance's, and every person's runtime gets the same one.
+- **Their own keys.** Every per-person key is filled from their own connections. In a Claude project, a step runs on their own Claude Code token, handed to it as `CLAUDE_CODE_OAUTH_TOKEN`. Codex has no per-person connection: a Codex step runs on the operator's own Codex login (`CODEX_HOME`). And while another person's worktree folder is there, whether they are on the roster or have left, every Codex run is refused, because Codex cannot keep the per-person deny list (see [People on one instance](security.md#people-on-one-instance)). A secret written as a plain value or `$VAR` in `landrace.yaml` is the instance's, and every person's runtime gets the same one.
 - **Their own events.** Every event their runtime logs carries their `person` id and `personEmail`.
 - **One loop for everyone.** One schedule ticks every ready person's runtime together. The agent slots are shared: `tick.concurrency` bounds the steps running across the whole team, not per person.
 
@@ -145,7 +145,7 @@ Each person whose connections are ready has a runtime of their own. It loads eve
 
 So with the same workflows and nothing that differs per person, two ready people claim every item, and nothing new runs. Split the items between people. One way is a per-person var, filled from each person's connection, used in a workflow's `eligible` rule, as [Several developers, one repository](configuration.md#vars) shows for one instance per developer. With one ready person, nothing is compared, and they claim every item the workflows admit.
 
-**Their own worktrees.** Each person's worktrees are cut in a folder of their own, `$TMPDIR/landrace/<repo>/worktrees/<person id>/`, named after their id URL-encoded. A step may not read another person's folder, their Claude Code sessions, or `~/.landrace/credentials`. What this keeps apart, and what it does not, such as the shared `.git`, is in [People on one instance](security.md#people-on-one-instance).
+**Their own worktrees.** Each person's worktrees are cut in a folder of their own, `$TMPDIR/landrace/<repo>/worktrees/<person id>/`, named after their id URL-encoded. A step may not read another person's folder, even after a sync drops them from the roster, their Claude Code sessions, `~/.landrace/credentials`, or `.landrace/.env`, which holds the instance's client secrets. This needs `agent.isolation: worktree`, the default: `validate` reports `none` and `start` refuses it. What this keeps apart, and what it does not, such as the shared `.git`, is in [People on one instance](security.md#people-on-one-instance).
 
 ## Connecting an MCP client
 
@@ -234,6 +234,7 @@ A local instance runs for one person, `local`, the operator. Adding `people.oidc
 
 - **Who it runs for.** `start` no longer runs anything for `local`. It runs for each person who signs in, each with their own board and runtime.
 - **Where it listens.** `serve.host` may be other than loopback, and `serve.publicUrl` is required, `https` off loopback ([The front door](configuration.md#the-front-door)).
+- **Worktrees only.** `agent.isolation: none` is refused, since every person's agent would run in your checkout.
 - **Where values come from.** A per-person key's `env` variable is ignored, and each person connects their own value. Your shell's `GITHUB_TOKEN`, say, no longer answers anyone's `githubToken`.
 - **No pairing.** A person on a remote instance has no terminal on this machine, so pairing is off.
 - **Your items stay where they are.** State is read from the tracker, so each person's runtime picks items up where the local one left them. Split them between people first: see [How items are shared](#how-steps-run-for-each-person).
