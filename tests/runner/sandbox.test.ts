@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { DEFAULT_LOCKFILES, ensureWorktree, removeWorktree } from "#agent/worktree.js";
@@ -507,7 +507,8 @@ describe("converge and the sandbox", () => {
       expect(run?.denyWrite).toEqual(expect.arrayContaining([
         join(git, "config"), join(git, "config.worktree"), join(git, "hooks"), join(git, "info"), join(cwd, ".git"),
       ]));
-      expect(run?.denyWrite?.filter((p) => p.startsWith(join(git, "worktrees")))).toHaveLength(3);
+      expect(run?.denyWrite?.filter((p) => p.startsWith(join(git, "worktrees"))).map((p) => basename(p)))
+        .toEqual(["config", "config.worktree", "commondir", "gitdir", "hooks", "info"]);
     });
 
     it("hands a read step none", async () => {
@@ -531,7 +532,8 @@ describe("converge and the sandbox", () => {
         ...["config", "hooks", "info"].map((f) => join(theirs, f)),
         ...["config", "hooks", "info"].map((f) => join(here, f)),
       ]));
-      expect(run?.denyWrite?.filter((p) => p.startsWith(join(theirs, "worktrees")))).toHaveLength(3);
+      expect(run?.denyWrite?.filter((p) => p.startsWith(join(theirs, "worktrees"))).map((p) => basename(p)))
+        .toEqual(["config", "config.worktree", "commondir", "gitdir", "hooks", "info"]);
       await removeWorktree("9", workspace);
     });
   });
