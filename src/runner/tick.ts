@@ -13,6 +13,8 @@ import type {
   RunningItem,
   RuntimeContext,
   SeenAt,
+  SlotAsk,
+  SlotPool,
   Snapshot,
   Source,
   TickRow,
@@ -23,10 +25,11 @@ import type {
   WorkspaceRuntime,
   WorkspaceTickOptions,
 } from "#namespace.js";
-import { compareIds, compareWork, isItemNode, isOpenItem, itemIdProblem } from "#conventions.js";
+import { compareIds, compareWork, isItemNode, isOpenItem, itemIdProblem, LOCAL_PERSON_ID } from "#conventions.js";
 import { converge } from "#runner/converge.js";
 import { messageOf } from "#runner/errors.js";
 import { withLock } from "#runner/lock.js";
+import { createSlotPool } from "#runner/pool.js";
 import { oneLine } from "#runner/status.js";
 
 /** Claims and the tick judge eligibility through one function, so they cannot disagree. */
@@ -47,6 +50,29 @@ export const claimedBy = (workflows: readonly string[]): string => `claimed by $
 export const reportedBy = (workflows: readonly string[]): string => `reported by the sources of ${andList(workflows)}`;
 /** Each workflow's own `else`, said once however many workflows gave it. */
 export const turnedAway = (reasons: readonly string[]): string => [...new Set(reasons)].join("; ");
+/** An item more than one person's runtime claims, naming them. */
+export const claimedByPeople = (people: readonly string[]): string => `claimed by more than one person: ${andList(people)}`;
+
+/**
+ * The listing with every item in `ambiguous` taken out of who owns what, and
+ * said to be claimed by those people instead: none of them works it, and a
+ * run one of them has on it is stopped, as a run on an item two workflows
+ * claim is. Never in place: the listing is the person's own, and the next
+ * tick judges again.
+ */
+export function excludeAmbiguous(listing: WorkspaceListing, ambiguous: ReadonlyMap<string, readonly string[]>): WorkspaceListing {
+  const mine = [...ambiguous].filter(([item]) => listing.claims.owner.has(item) || listing.claims.closed.has(item));
+  if (mine.length === 0) return listing;
+  const owner = new Map(listing.claims.owner);
+  const closed = new Map(listing.claims.closed);
+  const held = new Map(listing.claims.ambiguous ?? []);
+  for (const [item, people] of mine) {
+    owner.delete(item);
+    closed.delete(item);
+    held.set(item, [...people]);
+  }
+  return { ...listing, claims: { ...listing.claims, owner, closed, ambiguous: held } };
+}
 
 /** The workflows whose source is the graph at `index`, in id order. */
 const workflowsOn = (sourceOf: ReadonlyMap<string, number>, index: number): string[] =>
@@ -128,7 +154,9 @@ export async function listWorkspace(runtime: { workflows: readonly ListedWorkflo
 }
 
 /** Why an open item is worked by nobody, as an event's reason and a row's outcome; null when one workflow owns it. */
-function unworked(claims: Claims, item: string): { reason: string; outcome: string; workflows?: string[] } | null {
+function unworked(claims: Claims, item: string): { reason: string; outcome: string; workflows?: string[]; people?: string[] } | null {
+  const people = claims.ambiguous?.get(item);
+  if (people) return { reason: claimedByPeople(people), outcome: claimedByPeople(people), people };
   const clash = claims.clashes.get(item);
   if (clash) return { reason: reportedBy(clash), outcome: reportedBy(clash), workflows: clash };
   const conflict = claims.conflicts.get(item);
@@ -341,37 +369,142 @@ export const waitingForSlot = (concurrency: number): string => `waiting for a fr
 /** Why a tick checked nothing. */
 export const SKIPPED_CHECKING = "an earlier tick is still checking its items";
 
+/** A runtime's own pool, for one built without a shared one: its `concurrency` slots, for as long as it lives. */
+const ownPools = new WeakMap<WorkspaceRuntime, SlotPool>();
+
+/** The slots a runtime's agents take: the shared pool, or its own. */
+function poolOf(runtime: WorkspaceRuntime): SlotPool {
+  if (runtime.slots) return runtime.slots;
+  const own = ownPools.get(runtime) ?? createSlotPool(runtime.concurrency);
+  ownPools.set(runtime, own);
+  return own;
+}
+
+/** Whose slots a runtime takes: its person's, the local one's when it names none. */
+const personOf = (runtime: WorkspaceRuntime): string => runtime.ctx.person?.id ?? LOCAL_PERSON_ID;
+
 /**
- * Grant the slots asked for in one turn of the event loop, most urgent first,
- * while one is free. Together rather than as each ask lands: checks run side
- * by side, and the one whose read answered first is not the one most urgent.
+ * The asks made in one turn of the event loop over every runtime sharing a
+ * pool, and how many each person still has waiting in it: an ask not yet
+ * granted is its person asking, which `take`'s fair share counts.
  */
-function grantAsks(runtime: WorkspaceRuntime): void {
-  for (const ask of runtime.asking.splice(0).sort((a, b) => compareWork(a.node, b.node))) {
-    const free = runtime.agents < runtime.concurrency;
-    if (free) runtime.agents += 1;
-    ask.grant(free);
+interface Batch {
+  asks: Array<{ runtime: WorkspaceRuntime; ask: SlotAsk }>;
+  left: Map<string, number>;
+}
+const batches = new WeakMap<SlotPool, Batch>();
+
+/** The tick whose run is giving a slot back: what a run the freed slot starts belongs to. Set only for the length of one `release`. */
+let freeing: TickWait | undefined;
+
+/**
+ * Grant the slots asked for in one turn of the event loop while one is free:
+ * each person's most urgent first, the people taking turns in the pool's
+ * order. Together rather than as each ask lands: checks run side by side,
+ * and the one whose read answered first is not the one most urgent — nor is
+ * the person whose three asks landed first the one the slots are for.
+ */
+function grantAsks(pool: SlotPool): void {
+  const batch = batches.get(pool);
+  batches.delete(pool);
+  if (!batch) return;
+  const byPerson = new Map<string, Array<{ runtime: WorkspaceRuntime; ask: SlotAsk }>>();
+  for (const entry of batch.asks) {
+    const person = personOf(entry.runtime);
+    byPerson.set(person, [...(byPerson.get(person) ?? []), entry]);
+  }
+  for (const asks of byPerson.values()) asks.sort((a, b) => compareWork(a.ask.node, b.ask.node));
+  // Each ask still waiting is counted as its person asking until granted.
+  waitingAsks.set(pool, batch.left);
+  try {
+    const people = pool.order([...byPerson.keys()]);
+    for (let more = true; more;) {
+      more = false;
+      for (const person of people) {
+        const next = byPerson.get(person)?.shift();
+        if (next === undefined) continue;
+        more = true;
+        batch.left.set(person, (batch.left.get(person) ?? 1) - 1);
+        const free = pool.take(person);
+        if (free) next.runtime.agents += 1;
+        next.ask.grant(free);
+      }
+    }
+  } finally {
+    if (waitingAsks.get(pool) === batch.left) waitingAsks.delete(pool);
   }
 }
 
+/** The asks being granted now, by person, while `grantAsks` runs. */
+const waitingAsks = new WeakMap<SlotPool, Map<string, number>>();
+
 function askSlot(runtime: WorkspaceRuntime, node: Node): Promise<boolean> {
+  const pool = poolOf(runtime);
   return new Promise((grant) => {
-    if (runtime.asking.push({ node, grant }) === 1) setImmediate(() => grantAsks(runtime));
+    const batch = batches.get(pool) ?? { asks: [], left: new Map<string, number>() };
+    batches.set(pool, batch);
+    const person = personOf(runtime);
+    batch.left.set(person, (batch.left.get(person) ?? 0) + 1);
+    if (batch.asks.push({ runtime, ask: { node, grant } }) === 1) setImmediate(() => grantAsks(pool));
   });
 }
 
 /**
- * Hand every free slot to the most urgent item a check turned away, which is
- * checked again holding it. Nothing once the loop is stopping: no new run
- * starts after Ctrl-C.
+ * Hand every free slot this person may take to the most urgent item a check
+ * of theirs turned away, which is checked again holding it. Nothing once the
+ * loop is stopping: no new run starts after Ctrl-C.
  */
 function drain(runtime: WorkspaceRuntime, by: TickWait): void {
-  while (runtime.agents < runtime.concurrency && !runtime.stop.signal.aborted) {
-    const next = runtime.turnedAway.shift();
-    if (next === undefined) return;
+  const pool = poolOf(runtime);
+  const person = personOf(runtime);
+  while (!runtime.stop.signal.aborted) {
+    const next = runtime.turnedAway[0];
+    if (next === undefined || !pool.take(person)) return;
+    runtime.turnedAway.shift();
     runtime.agents += 1;
     next.start(by);
   }
+}
+
+/** The tick each runtime last ran: a slot freed while no run of anyone's is giving one back starts its turned-away item under it. */
+const lastTick = new WeakMap<WorkspaceRuntime, TickWait>();
+
+/**
+ * This runtime as its person's listener on its pool: a slot anyone frees
+ * drains its queue. It is asking while it has a queue, an ask waiting, or a
+ * tick still checking — whose next check may ask, and whose share a person
+ * whose asks happened to land first must not take. The latest of a
+ * person's runtimes to tick is theirs, so one a reload replaced stops being
+ * handed slots once the new one ticks.
+ */
+function listen(runtime: WorkspaceRuntime): void {
+  const pool = poolOf(runtime);
+  const person = personOf(runtime);
+  const asking = (): number => (batches.get(pool)?.left.get(person) ?? 0) + (waitingAsks.get(pool)?.get(person) ?? 0);
+  pool.onFree(person, {
+    waiting: () => runtime.checking || runtime.turnedAway.length > 0 || asking() > 0,
+    drain: () => {
+      const by = freeing ?? lastTick.get(runtime);
+      if (by) drain(runtime, by);
+    },
+  });
+}
+
+/** `fn` on the pool, a run a drain starts meanwhile being `by`'s to wait for. */
+function freeingAs(by: TickWait, fn: () => void): void {
+  const outer = freeing;
+  freeing = by;
+  try {
+    fn();
+  } finally {
+    freeing = outer;
+  }
+}
+
+/** Give a slot back to the pool, which drains whoever is waiting. */
+function giveBack(runtime: WorkspaceRuntime, by: TickWait): void {
+  runtime.agents -= 1;
+  freeingAs(by, () => poolOf(runtime).release(personOf(runtime)));
 }
 
 /** Keep `turnedAway` most urgent first, one entry an item, and hand it a slot if one came free meanwhile. */
@@ -412,7 +545,8 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>
  * held until it ends. From there the run carries on outside the checks,
  * holding its lock and its slot, and the checks move on to the next item; the
  * tick's promise waits for it. `tick.concurrency` bounds the agents over every
- * workflow and every tick, counted in `runtime.agents`.
+ * workflow and every tick — and, through the pool `runtime.slots` shares,
+ * over every person's runtime — each runtime's own counted in `runtime.agents`.
  *
  * A step that finds no slot free is left owed, and its row says so. The next
  * slot a run of this process frees goes to the most urgent item the latest
@@ -446,6 +580,8 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
     },
     rows,
   };
+  lastTick.set(runtime, tick);
+  listen(runtime);
   let arrived = new Map<string, SeenAt>();
 
   /*
@@ -464,7 +600,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
       const slot: AgentSlot = {
         take: async () => {
           if (!holding) {
-            if (!(await askSlot(runtime, node))) return (refused = waitingForSlot(runtime.concurrency));
+            if (!(await askSlot(runtime, node))) return (refused = waitingForSlot(poolOf(runtime).capacity));
             holding = true;
           }
           checked();
@@ -475,8 +611,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
         give: () => {
           if (!holding) return;
           holding = false;
-          runtime.agents -= 1;
-          drain(runtime, by);
+          giveBack(runtime, by);
         },
       };
       const tell = (result: ConvergeResult | "locked"): void => {
@@ -551,7 +686,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
   let listing: WorkspaceListing | undefined;
   try {
     log("tick.started", {});
-    listing = await listWorkspace(runtime);
+    listing = opts.listed ?? await listWorkspace(runtime);
     const listed = listing;
 
     // A display must never be able to stop the work it is displaying.
@@ -569,7 +704,9 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
     // source answered. Runs are not stopped for it — what stops one is judged
     // above, and a clash would only stop it too. One source has no one to clash
     // with, and its own items are simply absent.
-    const unjudged = listed.failed.size > 0 && listed.graphs.length > 1;
+    // Likewise another person's listing that failed, which the roster says
+    // in `opts.unjudged`: whether they claim an item too is unknown.
+    const unjudged = opts.unjudged !== undefined || (listed.failed.size > 0 && listed.graphs.length > 1);
 
     const workflows = new Map(runtime.workflows.map((w) => [w.id, w]));
     const claimed: Array<{ node: Node; workflow: WorkflowRuntime }> = [];
@@ -588,7 +725,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
       const item = node.id;
       const closed = node.closed !== null;
       const closedOwner = closed ? listed.claims.closed.get(item) : undefined;
-      if (closed && !listed.claims.conflicts.has(item) && !listed.claims.clashes.has(item)) {
+      if (closed && !listed.claims.conflicts.has(item) && !listed.claims.clashes.has(item) && !listed.claims.ambiguous?.has(item)) {
         const owning = closedOwner === undefined ? undefined : workflows.get(closedOwner);
         if (owning === undefined || closedIdle(owning.deps.workflow, node)) continue;
       }
@@ -603,7 +740,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
       const owner = closed ? closedOwner : listed.claims.owner.get(item);
       const workflow = owner === undefined ? undefined : workflows.get(owner);
       if (workflow && unjudged) {
-        const reason = unknownClash(listed, item);
+        const reason = opts.unjudged ?? unknownClash(listed, item);
         log("item.skipped", { item, reason });
         rows.set(item, { item, outcome: reason });
         continue;
@@ -614,7 +751,9 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
       }
       const why = unworked(listed.claims, item);
       if (!why) continue;
-      log("item.skipped", { item, reason: why.reason, ...(why.workflows ? { workflows: why.workflows } : {}) });
+      log("item.skipped", {
+        item, reason: why.reason, ...(why.workflows ? { workflows: why.workflows } : {}), ...(why.people ? { people: why.people } : {}),
+      });
       rows.set(item, { item, outcome: why.outcome });
     }
 
@@ -641,6 +780,9 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
     });
   } finally {
     runtime.checking = false;
+    // No longer asking: a share another person held back for this tick's
+    // checks is theirs again.
+    if (runtime.slots) freeingAs(tick, () => poolOf(runtime).nudge());
   }
 
   // The runs this tick's checks started, and the ones a slot they freed

@@ -658,6 +658,12 @@ export interface HookContext {
    * `satisfied` reads them. Absent when the caller cannot say.
    */
   trackerFields?: ReadonlySet<string> | undefined;
+  /**
+   * Whose runtime this context is: the item's person, or the caller's. Every
+   * per-person context `start` builds carries it; absent where nobody's is
+   * meant, a test's or `landrace status`'s.
+   */
+  person?: Person | undefined;
 }
 
 /** What a `tracker.field` sets one field to, from the workflow file: text, a number, or a list of strings. */
@@ -1774,7 +1780,7 @@ export interface Dispatcher {
  */
 export type EventName =
   | "tick.started" | "tick.skipped" | "tick.finished"
-  | "item.evaluated" | "item.skipped" | "item.aborted"
+  | "item.evaluated" | "item.skipped" | "item.aborted" | "item.ambiguous"
   | "step.invoked" | "step.started" | "step.finished" | "step.completed" | "step.rejected" | "step.unchecked"
   | "agent.event"
   | "worktree.setup.started" | "worktree.setup.finished" | "worktree.setup.failed"
@@ -2057,6 +2063,68 @@ export interface PeoplePanel {
   finish(caller: Person, id: string, callback: ConnectCallback): Promise<ConnectionStatus>;
 }
 
+/** One person in the runner: their runtime's slot, their board, and how their connections were last judged. */
+export interface PersonRuntime {
+  person: Person;
+  slot: RuntimeSlot;
+  board: Board;
+  statuses: ConnectionStatus[];
+}
+
+/**
+ * Every person the runner runs for. Locally exactly the local person;
+ * remotely every person in the credential store. `reload` judges one person
+ * again and rebuilds their runtime; `sync` meets the store's people, and
+ * reloads each. `tick` is one pass over every ready person's runtime, with
+ * an item more than one of them claims worked by none.
+ */
+export interface Roster {
+  people(): PersonRuntime[];
+  get(personId: string): PersonRuntime | undefined;
+  reload(personId: string): Promise<void>;
+  sync(): Promise<void>;
+  tick(): Promise<void>;
+  /** The items the last judged tick found claimed by more than one person, each with who: what a write from the page or the MCP goes by. */
+  ambiguous(): ReadonlyMap<string, string[]>;
+}
+
+/** What one judging of a person found: how they resolve, and what `start` keeps of it. */
+export interface PersonJudged {
+  resolution: PersonResolution;
+}
+
+export interface RosterOptions {
+  dir: string;
+  /** `landrace.yaml` before any person's store: what each person is judged over. */
+  loaded: LoadedConfig;
+  registry: Pick<Registry, "connections">;
+  store: CredentialStore;
+  mode: { remote: boolean };
+  /** A ready person's runtime, or null when there is none to run. */
+  build: (person: Person, resolution: PersonResolution) => Promise<WorkspaceRuntime | null>;
+  log: RedactingLogger;
+  /** The one person a local roster holds. Absent, `people.local`'s. */
+  local?: Person;
+  /** The slots every runtime shares, and the order people are listed and ticked in. Absent, a pool of `tick.concurrency`. */
+  pool?: SlotPool;
+  /**
+   * How a person is judged. Absent, by `resolvePerson` over `loaded`,
+   * `registry` and what the store holds for them. `start` judges afresh
+   * from `landrace.yaml` and the hooks, as a reload always has.
+   */
+  judge?: (person: Person) => Promise<PersonJudged>;
+  /** Each runtime's board, once it is built. Absent, the board shows nothing. */
+  boardOf?: (rt: WorkspaceRuntime) => Board | undefined;
+  /** Told of each listing a person's tick works from, ambiguity excluded. */
+  seen?: (person: Person, rt: WorkspaceRuntime, listing: WorkspaceListing) => void;
+  /** Where the per-item locks live, shared by every person. Absent, the default. */
+  lock?: LockOptions;
+  /** Told of each person's rows once their tick has run. */
+  rows?: (person: Person, rt: WorkspaceRuntime, rows: TickRow[]) => void;
+  /** A person's runtime replaced: what only the old one held can be let go. */
+  onSwap?: (person: Person, previous: WorkspaceRuntime | null, next: WorkspaceRuntime | null) => void | Promise<void>;
+}
+
 /**
  * The runtime the loop and the front door use now, rebuilt on a connect or a
  * disconnect. `reload` swaps only when the build succeeds — null, a person
@@ -2288,6 +2356,18 @@ export interface WorkspaceTickOptions {
    * and asking the sources again would double the tracker traffic of every tick.
    */
   onList?: (listing: WorkspaceListing) => void;
+  /**
+   * The listing this tick works from, made by the caller — the roster, which
+   * lists every person's before judging who else claims what. Absent, the
+   * tick lists for itself.
+   */
+  listed?: WorkspaceListing;
+  /**
+   * Why no item is worked this tick, though every run in flight carries on:
+   * another person's listing failed, so whether they claim an item too is
+   * unknown. Each item it would have worked is a row saying so.
+   */
+  unjudged?: string;
 }
 
 export interface TickRow {
@@ -2320,6 +2400,12 @@ export interface Claims {
   conflicts: Map<string, string[]>;
   clashes: Map<string, string[]>;
   unclaimed: Map<string, string[]>;
+  /**
+   * Item → the people, by id, whose runtimes each claim it: worked by none of
+   * them, and taken out of `owner` and `closed` (`excludeAmbiguous`). Absent
+   * where one person's listing is all there is.
+   */
+  ambiguous?: Map<string, string[]>;
 }
 
 /* --------------------------------------------------------------- testing -- */
@@ -2719,6 +2805,11 @@ export interface ToolOptions {
    * create names this workflow unasked.
    */
   scope?: string;
+  /**
+   * The items the last tick found claimed by more than one person: worked
+   * by none of them, so no tool acts on one. Absent, none.
+   */
+  ambiguous?: () => ReadonlyMap<string, string[]>;
 }
 
 /* ------------------------------------------------------------------- cli -- */
@@ -2793,6 +2884,36 @@ export interface AgentSlot {
   give: () => void;
 }
 
+/**
+ * What `release` hands a freed slot to: a person's queue of what their checks
+ * turned away, and whether they are waiting for one — what `take` counts as
+ * asking.
+ */
+export interface SlotListener {
+  drain(): void;
+  waiting(): boolean;
+}
+
+/**
+ * The agent slots every person's runtime shares, `tick.concurrency` of them.
+ * `take` grants one while fewer than `capacity` are held and the person
+ * holds fewer than `ceil(capacity / askers)` — askers being whoever holds a
+ * slot or is waiting, and the person asking — so the slots are shared fairly
+ * and a lone asker fills them. `release` gives one back, then lets each
+ * person's queue drain, in `order`. `order` is the people it is given,
+ * starting one further on every call.
+ */
+export interface SlotPool {
+  capacity: number;
+  take(personId: string): boolean;
+  release(personId: string): void;
+  /** Lets each person's queue drain, in `order`, as a release does, with nothing given back: someone stopped asking. */
+  nudge(): void;
+  order(personIds: readonly string[]): string[];
+  /** The person's one listener, replacing any earlier one; the function takes it off again. */
+  onFree(personId: string, listener: SlotListener): () => void;
+}
+
 /** Everything the loop needs, assembled once, so a tick is only a call. */
 export interface WorkspaceRuntime {
   dir: string;
@@ -2816,6 +2937,12 @@ export interface WorkspaceRuntime {
   concurrency: number;
   /** Agent slots held now, over every tick and workflow: what `concurrency` bounds. Starts at 0. */
   agents: number;
+  /**
+   * The slots this runtime's agents take, shared with every other person's
+   * runtime in the process. Absent, the runtime has a pool of its own of
+   * `concurrency` slots.
+   */
+  slots?: SlotPool;
   /**
    * Whether a tick is checking its items now. A tick that starts meanwhile
    * is skipped, rather than checking the same items from the top again.
@@ -3007,6 +3134,20 @@ export interface BuildOptions {
    * is marked failed: `start` reloads, and the person is no longer ready.
    */
   onConnectionFailed?: () => Promise<void>;
+  /**
+   * Whose runtime this is. Absent, the local person, from `people.local`.
+   * Their id names their credentials file, stamps every event, and is
+   * `ctx.person`.
+   */
+  person?: Person;
+  /**
+   * How they were judged, by the caller: each per-person key's value, over
+   * what `landrace.yaml` and `.env` answer. Absent, the build judges the
+   * local person as it always has.
+   */
+  resolution?: PersonResolution;
+  /** The agent slots every person's runtime shares. Absent, the runtime has its own. */
+  slots?: SlotPool;
 }
 
 /* ------------------------------------------------------- sandbox (§15) -- */
@@ -3057,6 +3198,12 @@ export interface WorktreeSetup {
 export interface Sandbox {
   root: string;
   worktree?: WorktreeSetup;
+  /**
+   * The folder under the sandbox root a person's worktrees go in — their id,
+   * encoded — so two people's checkouts of one item never meet. Absent for
+   * the local person, whose worktrees stay where they always were.
+   */
+  scope?: string;
 }
 
 /** What `prepareWorktree` is handed: the worktree, the checkout it copies from, and where its events go. */
@@ -3486,6 +3633,12 @@ export type EditRoute = Ownership | { workflows: string[] };
 
 export interface Board {
   observe(e: LandraceEvent): void;
+  /**
+   * Whether `item` is on this board: an item the last listing showed, or
+   * any item before the first. The page's item routes answer 404 for one it
+   * is not, so one person's board never reaches another's item.
+   */
+  has?(item: string): boolean;
   /** What the page is shown of a listing: every source's graph, which workflows read each, and who owns what in them. */
   list(listing: Pick<WorkspaceListing, "graphs" | "claims" | "sourceOf">): void;
   /**
@@ -3544,6 +3697,16 @@ export interface UiOptions {
    * always the one local person. Absent, the three are 404.
    */
   people?: { panel: PeoplePanel; caller(req: IncomingMessage): Person };
+  /**
+   * Whether the item routes may name `item`: the caller's board's `has`.
+   * False, the route answers 404. Absent, every item.
+   */
+  has?: (item: string) => boolean;
+  /**
+   * Whether pairing is offered. False — a remote instance — every pairing
+   * route is 404. Absent, it is.
+   */
+  pairing?: boolean;
   /**
    * Whether the board has a runtime behind it. False, `/board.json` answers
    * `{ ready: false }` and every write but the Integrations tab's is refused
@@ -3656,10 +3819,14 @@ export interface UiServer {
 
 /** The operator's MCP tools over HTTP: one session per `mcp-session-id`, each scoped at its initialize. */
 export interface McpEndpoint {
-  /** One request to `/mcp`, its Host and Origin already checked. */
-  handle(req: IncomingMessage, res: ServerResponse): void;
-  /** Ends every session. */
-  close(): Promise<void>;
+  /**
+   * One request to `/mcp`, its Host and Origin already checked, from
+   * `caller`: a session belongs to whoever initialized it, and is 404 to
+   * anyone else. Absent, the local person.
+   */
+  handle(req: IncomingMessage, res: ServerResponse, caller?: Person): void;
+  /** Ends every session, or only those of the person named. */
+  close(personId?: string): Promise<void>;
 }
 
 /** What `serveFrontDoor` serves: the board on its routes, and the MCP endpoint at `/mcp`. */
@@ -3670,6 +3837,14 @@ export interface FrontDoorOptions {
   board: Omit<UiOptions, "allowedHosts" | "origins">;
   /** Absent, `/mcp` is 404. */
   mcp?: McpEndpoint;
+  /**
+   * Who sent the request: locally, always the local person. Null is nobody
+   * known, answered 401. Absent, nobody is asked, and `board` serves every
+   * request.
+   */
+  callerOf?: (req: IncomingMessage) => Person | null;
+  /** The board of the caller `callerOf` named. Absent, `board`. */
+  boardFor?: (caller: Person) => Omit<UiOptions, "allowedHosts" | "origins">;
 }
 
 /**
