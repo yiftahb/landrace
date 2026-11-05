@@ -119,7 +119,7 @@ The engine runs no coding agent of its own: `agent.adapter` names an **executor*
 
 A factory that cannot start — a bad `agent.*` key, a server `.mcp.json` does not define, a step's effort it has no level for — throws, and `landrace validate` reports it under the `executor` rule, one problem per line.
 
-**The engine hands every run** the rendered prompt; the folder to run in; the step's capabilities; its model and effort; a time limit; the session to resume; and, for an `items:create` step, the engine's own item server, ready to start. At the limit the engine aborts the run's signal but keeps waiting for the run, so an executor that honours neither holds its item until the process dies. It gets back the agent's text, a session id and, when the executor can say, the model the agent used and the effort it ran at. Those two sign what the agent wrote — see [What an agent signs](workflows.md#what-an-agent-signs). An executor that reports neither leaves the step's own `model` and `effort`, then `unknown` and `default`.
+**The engine hands every run** the rendered prompt; the folder to run in; the step's capabilities; its model and effort; a time limit; the session to resume; and, for an `items:create` step, the engine's own item server, ready to start; and `denyWrite`, the [git control paths](security.md#git-write-rules) a write run may not write, empty for any other run. At the limit the engine aborts the run's signal but keeps waiting for the run, so an executor that honours neither holds its item until the process dies. It gets back the agent's text, a session id and, when the executor can say, the model the agent used and the effort it ran at. Those two sign what the agent wrote — see [What an agent signs](workflows.md#what-an-agent-signs). An executor that reports neither leaves the step's own `model` and `effort`, then `unknown` and `default`.
 
 Beyond `agent.adapter`, `agent.isolation`, `agent.worktree` and `agent.signature`, the `agent:` block is passed to the executor unread. A hook reads it only when `agent.adapter` names it: an executor that only `security.adapter` names is there to screen, and gets the screener's model from `security.model` on each run.
 
@@ -134,6 +134,7 @@ An executor must, or else refuse the run:
 - never pass the engine's own process environment to the agent, because a secret can come from the shell and the agent must not hold tracker credentials;
 - honour a named model and effort;
 - stop at the limit and on abort.
+- keep a write run from writing each path in `denyWrite` — with a command or a file tool, a path not there yet included — because the engine's git and the operator's read what is planted there. Only `BaseExecutor` refuses a write step whose integration does not declare `keepsDenyWrite`; a hook written with `defineExecutor` alone is trusted to keep this rule or refuse the run.
 
 The engine checks a read-only step's worktree afterwards whatever the executor claims — a backstop, not a licence to skip the rest.
 
