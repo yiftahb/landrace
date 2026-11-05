@@ -4,7 +4,7 @@ import { resolvePerson } from "#people/resolve.js";
 import { messageOf } from "#runner/errors.js";
 import { createSlotPool } from "#runner/pool.js";
 import { createRuntimeSlot } from "#runner/slot.js";
-import { andList, excludeAmbiguous, listingFailures, listWorkspace, tickWorkspace } from "#runner/tick.js";
+import { andList, excludeAmbiguous, listingFailures, listWorkspace, retireRuntime, tickWorkspace } from "#runner/tick.js";
 import type {
   Board, BoardView, Person, PersonJudged, PersonRuntime, Roster, RosterOptions, WorkspaceListing, WorkspaceRuntime,
 } from "#namespace.js";
@@ -106,6 +106,7 @@ export function createRoster(opts: RosterOptions): Roster {
         return opts.build(entry.person, resolution);
       }, {
         onSwap: async (previous, next) => {
+          if (previous !== null && previous !== next) retireRuntime(previous);
           const board = next === null ? undefined : opts.boardOf?.(next);
           if (board) boards.current = board;
           else delete boards.current;
@@ -157,7 +158,9 @@ export function createRoster(opts: RosterOptions): Roster {
         if (ids.has(id)) continue;
         entries.delete(id);
         // Gone from the store: their runtime is let go of, its runs left to unwind under their own locks.
-        await opts.onSwap?.(entry.person, entry.slot.current(), null);
+        const current = entry.slot.current();
+        if (current !== null) retireRuntime(current);
+        await opts.onSwap?.(entry.person, current, null);
       }
       for (const person of people) {
         const entry = entryFor(person);

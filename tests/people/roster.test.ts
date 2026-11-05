@@ -299,6 +299,48 @@ describe("one runner, many people", () => {
     expect(w.runs.map((r) => r.person).sort()).toEqual(["alice", "bob"]);
   });
 
+  /*
+   * A runtime the roster let go of keeps nothing on the pool: its queue
+   * does not hold alice to half the cap, nor does a slot she frees start
+   * an agent for a person no longer running.
+   */
+  it("gives the slot bob's run frees to alice, not to the item bob's runtime turned away before he left", async () => {
+    const release = new Map<string, () => void>();
+    const store = await storeOf(["alice", "bob"]);
+    const w = await world({
+      people: ["alice", "bob"], store, capacity: 2, held: true, release, slow: ["bob"],
+      items: [{ id: "1", labels: ["for:alice"] }, { id: "2", labels: ["for:alice"] }, { id: "4", labels: ["for:bob"] }, { id: "5", labels: ["for:bob"] }],
+    });
+    const ticking = w.roster.tick();
+    await until(() => w.inFlight("alice") === 1 && w.inFlight("bob") === 1, "one run each");
+    // Long enough for the asks turned away to have settled.
+    await new Promise((r) => setTimeout(r, 50));
+    // Which of alice's two runs first is the tick's to rank; each person has one, and one more of each was turned away.
+    const [bobs] = w.runs.filter((r) => r.person === "bob").map((r) => r.item);
+    expect(w.runs).toHaveLength(2);
+    expect(["4", "5"]).toContain(bobs);
+
+    const alices = w.runs.find((r) => r.person === "alice")?.item ?? "";
+    const other = alices === "1" ? "2" : "1";
+
+    // Bob's Claude login is gone: he is no longer running, and alice ticks alone.
+    await store.remove("bob", "claude");
+    await w.roster.sync();
+    // The slot bob's run frees starts nothing for him.
+    release.get(`bob:${bobs ?? ""}`)?.();
+    await until(() => w.inFlight("bob") === 0, "bob's run to end");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(w.runs).toHaveLength(2);
+
+    // Nor does his old queue hold alice to half the cap.
+    const alone = w.roster.tick();
+    await until(() => w.inFlight("alice") === 2, `alice's run on ${other} in the cap's second slot`);
+    expect(w.runs.map((r) => `${r.person}:${r.item}`).sort()).toEqual(["alice:1", "alice:2", `bob:${bobs ?? ""}`]);
+    release.get(`alice:${alices}`)?.();
+    release.get(`alice:${other}`)?.();
+    await Promise.all([ticking, alone]);
+  });
+
   it("skips everyone's items while bob's listing fails, keeps alice's run going, and works them once it lists again", async () => {
     const release = new Map<string, () => void>();
     const w = await world({

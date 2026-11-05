@@ -451,7 +451,7 @@ function askSlot(runtime: WorkspaceRuntime, node: Node): Promise<boolean> {
 function drain(runtime: WorkspaceRuntime, by: TickWait): void {
   const pool = poolOf(runtime);
   const person = personOf(runtime);
-  while (!runtime.stop.signal.aborted) {
+  while (!runtime.stop.signal.aborted && !retired.has(runtime)) {
     const next = runtime.turnedAway[0];
     if (next === undefined || !pool.take(person)) return;
     runtime.turnedAway.shift();
@@ -467,21 +467,42 @@ const lastTick = new WeakMap<WorkspaceRuntime, TickWait>();
  * This runtime as its person's listener on its pool: a slot anyone frees
  * drains its queue. It is asking while it has a queue, an ask waiting, or a
  * tick still checking — whose next check may ask, and whose share a person
- * whose asks happened to land first must not take. The latest of a
- * person's runtimes to tick is theirs, so one a reload replaced stops being
- * handed slots once the new one ticks.
+ * whose asks happened to land first must not take. One the roster swapped
+ * out is retired, and listens no more.
  */
 function listen(runtime: WorkspaceRuntime): void {
+  if (retired.has(runtime)) return;
   const pool = poolOf(runtime);
   const person = personOf(runtime);
   const asking = (): number => (batches.get(pool)?.left.get(person) ?? 0) + (waitingAsks.get(pool)?.get(person) ?? 0);
-  pool.onFree(person, {
-    waiting: () => runtime.checking || runtime.turnedAway.length > 0 || asking() > 0,
+  listeners.set(runtime, pool.onFree(person, {
+    waiting: () => !retired.has(runtime) && (runtime.checking || runtime.turnedAway.length > 0 || asking() > 0),
     drain: () => {
       const by = freeing ?? lastTick.get(runtime);
       if (by) drain(runtime, by);
     },
-  });
+  }));
+}
+
+/** Each runtime's listener on its pool, to be taken off when it is retired. */
+const listeners = new WeakMap<WorkspaceRuntime, () => void>();
+
+/** Runtimes no longer their person's: never handed a slot again, nor counted as asking. */
+const retired = new WeakSet<WorkspaceRuntime>();
+
+/**
+ * Let go of a runtime that stopped being its person's — they became not
+ * ready, left the store, or a reload replaced it. Its listener comes off the
+ * shared pool and its queue is emptied: a person no longer running must not
+ * hold anyone else to a share of the cap, nor have an agent started for
+ * them by a slot someone else frees. Its runs already going finish and give
+ * their slots back as usual.
+ */
+export function retireRuntime(runtime: WorkspaceRuntime): void {
+  retired.add(runtime);
+  runtime.turnedAway = [];
+  listeners.get(runtime)?.();
+  listeners.delete(runtime);
 }
 
 /** `fn` on the pool, a run a drain starts meanwhile being `by`'s to wait for. */
@@ -503,6 +524,8 @@ function giveBack(runtime: WorkspaceRuntime, by: TickWait): void {
 
 /** Keep `turnedAway` most urgent first, one entry an item, and hand it a slot if one came free meanwhile. */
 function turnAway(runtime: WorkspaceRuntime, entry: TurnedAway, by: TickWait): void {
+  // A check still going when its runtime was retired: the next runtime's tick owns the item now.
+  if (retired.has(runtime)) return;
   const queue = runtime.turnedAway.filter((t) => t.node.id !== entry.node.id);
   const at = queue.findIndex((t) => compareWork(entry.node, t.node) < 0);
   queue.splice(at === -1 ? queue.length : at, 0, entry);
