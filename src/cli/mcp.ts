@@ -3,9 +3,12 @@ import { redactionValues } from "#config/load.js";
 import { localPerson } from "#people/person.js";
 import { assertLocalUsable, assertPersonReady, connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from "#people/resolve.js";
 import { createCredentialStore, credentialValues } from "#people/store.js";
-import { mayCreateItems, itemIdProblem } from "#conventions.js";
+import { LOCAL_PERSON_ID, mayCreateItems, itemIdProblem } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
-import type { ChildBinding, ChildTool, CredentialStore, ExecutorContext, LoadedWorkflow, PersonLogins, Registry, RuntimeContext, Tools, ToolWorkflow } from "#namespace.js";
+import type {
+  ChildBinding, ChildTool, CredentialStore, ExecutorContext, LoadedConfig, LoadedWorkflow, Person, PersonCredentials, PersonLogins, Registry, RuntimeContext,
+  Tools, ToolWorkflow,
+} from "#namespace.js";
 import { frontDoorOrigins } from "#front/hosts.js";
 import { createChildMcpServer, createMcpServer } from "#mcp/server.js";
 import { createTools } from "#mcp/tools.js";
@@ -19,7 +22,7 @@ import { pairingStages } from "#workflow/validate.js";
 import { loadWorkspace, workflowById } from "#workflow/workspace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { touchWake, wakePath } from "#wake.js";
-import { childServerCommand, sandboxFor, screenerFor, stepExecutorFor } from "#cli/start.js";
+import { childServerCommand, personGate, sandboxFor, screenerFor, stepExecutorFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.
@@ -195,7 +198,7 @@ export async function buildMcpTools(dir: string, scope?: string, store: Credenti
       ...w, registry, executor,
       ...(screener ? { screen: screener } : {}),
       // This same server bound to this workflow, for a pairing's session to reach Landrace by.
-      server: childServerCommand(dir, w.id),
+      server: childServerCommand(dir, w.id, person.id),
     });
   }
 
@@ -203,7 +206,7 @@ export async function buildMcpTools(dir: string, scope?: string, store: Credenti
     ...(sandbox === null ? {} : { sandbox }),
     // A turn asked here runs in this process, and the loop's page reads its
     // progress from the same directory the loop's own steps write to.
-    activity: createActivityLog(sandboxRoot(dir), scrubberOf(ctx.secrets, events.scrub)),
+    activity: createActivityLog(sandboxRoot(dir), person.id, scrubberOf(ctx.secrets, events.scrub)),
     // This process is not the loop, so a person's write reaches it through
     // the file `landrace start` watches. Here only: the child server an agent
     // is handed gets no wake, so an agent cannot drive the loop.
@@ -227,9 +230,14 @@ export const STDIO_REMOVED =
  * workflow as `childServerCommand` names it. Nothing else serves the
  * operator's tools over stdio any more: a bare `landrace mcp` is refused.
  */
-export async function runMcp(dir: string, opts: { scope?: string | undefined; pairing: boolean }): Promise<void> {
+export async function runMcp(dir: string, opts: { scope?: string | undefined; pairing: boolean; person?: string | undefined }): Promise<void> {
   if (!opts.pairing) throw new Error(STDIO_REMOVED);
   if (opts.scope === undefined) throw new Error("--pairing needs --workflow");
+  // A pairing runs in the local person's terminal, on their connections; a
+  // remote instance offers none, so no one else's is ever served here.
+  if (opts.person !== undefined && opts.person !== LOCAL_PERSON_ID) {
+    throw new Error(`--pairing serves only the local person, not "${opts.person}"`);
+  }
   const server = createMcpServer(await buildMcpTools(dir, opts.scope));
   await server.connect(new StdioServerTransport());
 }
@@ -241,8 +249,17 @@ export async function runMcp(dir: string, opts: { scope?: string | undefined; pa
  *
  * No preflight and no source probe: the loop that started this agent ran both
  * already, moments ago, against the same configuration.
+ *
+ * As `personId`, the step's own person, named on the command line by the
+ * loop that ran the step: their stored connections answer each per-person
+ * key, so a child is filed with their keys, never the local person's. An id
+ * the store does not hold is refused. Remotely, judged as the roster judges
+ * them — the machine's `.env` ignored for a per-person key — and refused
+ * while they are not ready.
  */
-export async function buildChildTool(dir: string, binding: ChildBinding, workflowId: string): Promise<ChildTool> {
+export async function buildChildTool(
+  dir: string, binding: ChildBinding, workflowId: string, personId: string, store: CredentialStore = createCredentialStore(),
+): Promise<ChildTool> {
   const parentProblem = itemIdProblem(binding.parent);
   if (parentProblem) throw new Error(parentProblem);
   if (!Number.isInteger(binding.round) || binding.round < 1) {
@@ -251,9 +268,7 @@ export async function buildChildTool(dir: string, binding: ChildBinding, workflo
 
   // A var a person's connection answers is in the graph too: without the
   // store, the child server would refuse a workflow the loop runs.
-  const local = await loadLocalConfig(dir);
-  const { loaded } = local;
-  assertLocalUsable(local);
+  const { loaded, credentials, person } = await childConfig(dir, personId, store);
   // The workflow whose step this server was started for, named on its command
   // line by the loop that started it. It is also what says how a child is
   // labelled, so a workspace of several workflows labels each one's children
@@ -272,10 +287,11 @@ export async function buildChildTool(dir: string, binding: ChildBinding, workflo
     redactValues: redactionValues(loaded),
     sink: (event) => process.stderr.write(`${JSON.stringify(event)}\n`),
   });
-  events.redact(credentialValues(local.credentials));
+  events.redact(credentialValues(credentials));
   const ctx: RuntimeContext = {
     config: loaded.config, secrets: loaded.secretValues, signal: new AbortController().signal,
     log: (event, data) => events(event as EventName, data),
+    person,
   };
 
   return {
@@ -286,7 +302,39 @@ export async function buildChildTool(dir: string, binding: ChildBinding, workflo
   };
 }
 
-export async function runChildMcp(dir: string, binding: ChildBinding, workflowId: string): Promise<void> {
-  const server = createChildMcpServer(await buildChildTool(dir, binding, workflowId));
+/**
+ * The configuration a child server runs on, as `personId`'s step's runtime
+ * reads it. Locally only the local person runs steps, on their store as
+ * the loop reads it. Remotely only someone who signed in does, judged by
+ * `personGate` as the roster judges them, their values winning over
+ * `.env`'s as the build's do.
+ */
+async function childConfig(
+  dir: string, personId: string, store: CredentialStore,
+): Promise<{ loaded: LoadedConfig; credentials: PersonCredentials | null; person: Person }> {
+  const local = await loadLocalConfig(dir, store, personId);
+  const remote = local.configured.config.people?.oidc !== undefined;
+  if (personId === LOCAL_PERSON_ID) {
+    if (remote) throw new Error(`people.oidc is set, so no step runs as the local person "${LOCAL_PERSON_ID}", and no child is created as them`);
+    assertLocalUsable(local);
+    return { loaded: local.loaded, credentials: local.credentials, person: localPerson(local.loaded) };
+  }
+  if (!remote) throw new Error(`people.oidc is not set, so only the local person "${LOCAL_PERSON_ID}" runs steps here, not "${personId}"`);
+  const person = (await store.list()).find((p) => p.id === personId);
+  if (person === undefined) throw new Error(`no person "${personId}" is stored in ${store.root}, so no child can be created as them`);
+  const gate = await personGate(dir, store, { person, remote: true });
+  assertPersonReady(gate.resolution);
+  const loaded: LoadedConfig = {
+    ...gate.local.loaded,
+    vars: new Map([...gate.local.loaded.vars, ...gate.resolution.vars]),
+    secretValues: new Map([...gate.local.loaded.secretValues, ...gate.resolution.secretValues]),
+  };
+  // Judged ready just above: every per-person key is answered.
+  assertLocalUsable({ ...gate.local, loaded, problems: [] });
+  return { loaded, credentials: gate.credentials, person };
+}
+
+export async function runChildMcp(dir: string, binding: ChildBinding, workflowId: string, personId: string): Promise<void> {
+  const server = createChildMcpServer(await buildChildTool(dir, binding, workflowId, personId));
   await server.connect(new StdioServerTransport());
 }

@@ -140,7 +140,8 @@ program
   .option("--child <parent>", "serve only landrace_create_child, bound to this parent item")
   .option("--stage <stage>", "with --child: the stage creating the children")
   .option("--round <round>", "with --child: the round creating the children")
-  .action(async (opts: { workspace: string; workflow?: string; pairing?: boolean; child?: string; stage?: string; round?: string }) => {
+  .option("--person <id>", "whose step the server serves; with --child, whose connections the children are created with")
+  .action(async (opts: { workspace: string; workflow?: string; pairing?: boolean; child?: string; stage?: string; round?: string; person?: string }) => {
     // The MCP client that spawned us shows stderr, so what loadingHooks prints
     // there is the only diagnostic a user gets.
     await loadingHooks("mcp", () => {
@@ -149,9 +150,11 @@ program
           throw new Error("--child needs --stage and --round");
         }
         if (opts.workflow === undefined) throw new Error("--child needs --workflow");
-        return runChildMcp(opts.workspace, { parent: opts.child, stage: opts.stage, round: Number(opts.round) }, opts.workflow);
+        // Never defaulted: a child server that guessed would file one person's sub-items with another's keys.
+        if (opts.person === undefined) throw new Error("--child needs --person");
+        return runChildMcp(opts.workspace, { parent: opts.child, stage: opts.stage, round: Number(opts.round) }, opts.workflow, opts.person);
       }
-      return runMcp(opts.workspace, { scope: opts.workflow, pairing: opts.pairing === true });
+      return runMcp(opts.workspace, { scope: opts.workflow, pairing: opts.pairing === true, person: opts.person });
     });
   });
 

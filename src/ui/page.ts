@@ -1529,6 +1529,8 @@ let boardReady = true;
 let lastBoardHash = null;
 // The /people/me last drawn, so a poll that changed nothing redraws nothing.
 let meKey = null;
+// The sentence /people/me last refused with, shown in the status line until an answer replaces it.
+let meRefusal = null;
 
 function backHash() { return lastBoardHash || "#/"; }
 
@@ -1610,8 +1612,17 @@ async function loadMe() {
   const status = document.getElementById("integrations-status");
   try {
     const res = await fetch("/people/me", { cache: "no-store" });
+    // Declined, not failed — a person Landrace has not judged yet — and said
+    // in the server's words. The next poll asks again.
+    if (res.status === 409) {
+      meRefusal = await res.text();
+      status.textContent = meRefusal;
+      return;
+    }
     if (!res.ok) throw new Error(String(res.status));
     const me = await res.json();
+    if (meRefusal !== null && status.textContent === meRefusal) status.textContent = "";
+    meRefusal = null;
     const key = JSON.stringify(me);
     if (key === meKey || integrationsBusy()) return;
     meKey = key;
