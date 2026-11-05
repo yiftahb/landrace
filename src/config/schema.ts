@@ -180,6 +180,16 @@ export const runtimeConfigSchema = z.object({
        * rule as a lookup: a value another person holds is refused.
        */
       overrides: z.record(z.record(z.record(z.string().min(1)))).optional(),
+      /**
+       * Who a remote instance admits: each entry an email, or `@domain` for
+       * every email whose text after its last `@` is that domain — never a
+       * subdomain of it. Nothing else: a `*`, a bare `@` or a bare domain
+       * would admit far more than it reads as. `allowProblems` refuses a
+       * remote instance that lists no one.
+       */
+      allow: z
+        .array(z.string().regex(/^[^\s@]*@[^\s@]+$/, { message: 'must be an email like "ann@example.com", or "@example.com" for its whole domain' }))
+        .optional(),
     })
     .strict()
     .optional(),
