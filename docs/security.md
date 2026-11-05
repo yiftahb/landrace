@@ -61,7 +61,7 @@ Two rules stop that:
 
 - **A write step may not write the git control paths.** Landrace lists them for each write run, and the agent integration keeps the run from writing them, whatever `agent.sandbox.deny` says. A path that does not exist yet is listed too, so the step cannot create it.
   - In the repository's common git directory: `config`, `config.worktree`, `hooks/` and `info/`.
-  - In each worktree's admin folder under `worktrees/`: `config.worktree`, `commondir` and `gitdir`.
+  - In each worktree's admin folder under `worktrees/`: `config`, `config.worktree`, `hooks/`, `info/`, `commondir` and `gitdir`. git never reads an admin folder's own `config` or `hooks/`, unless a step remade the folder without `commondir`. Then your git, in a checkout that is a linked worktree, would read them as a repository's.
   - The worktree's own `.git` file.
   - With `agent.isolation: none`, the same paths of the checkout the step runs in and of the workspace's checkout.
 - **Landrace's git runs no hook and no fsmonitor, and does not trust a worktree's pointers.** Every git command it starts carries `-c core.hooksPath=/dev/null -c core.fsmonitor=false`. In a step's worktree it finds the admin folder itself — the one folder whose `gitdir` names the worktree — and takes the common directory from your checkout, never from `commondir`.

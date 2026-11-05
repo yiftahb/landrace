@@ -180,12 +180,18 @@ export async function gitDirsOf(path: string, repoRoot: string): Promise<GitDirs
   return { GIT_DIR: await adminDirOf(path, common, what), GIT_COMMON_DIR: common, GIT_WORK_TREE: path };
 }
 
+const ADMIN_CONTROL_FILES = ["config", "config.worktree", "commondir", "gitdir", "hooks", "info"];
+
 /**
  * What a write step's agent may not write, so neither the engine's git nor
  * the operator's runs code it planted: the repository's `config`,
- * `config.worktree`, `hooks` and `info`, each admin folder's `config.worktree`,
- * `commondir` and `gitdir`, and `<path>/.git` when it is a file. A path that
- * is not there yet is listed too: made by the step, it would be read.
+ * `config.worktree`, `hooks` and `info`, the same four in each admin folder
+ * with its `commondir` and `gitdir`, and `<path>/.git` when it is a file. A
+ * path that is not there yet is listed too: made by the step, it would be
+ * read. An admin folder's own `config` and `hooks` are never git's, but a
+ * step that renamed one away and made it again without `commondir` would have
+ * git — the operator's, in a checkout that is a linked worktree — read them
+ * as a repository's.
  * Everything else under the git directory — objects, refs, the index, `HEAD` —
  * stays writable: a step commits, fetches and merges.
  */
@@ -201,7 +207,7 @@ export async function gitControlPaths(path: string, repoRoot: string): Promise<s
   const isFile = await lstat(dotGit).then((s) => !s.isDirectory(), () => false);
   return [
     ...["config", "config.worktree", "hooks", "info"].map((f) => join(common, f)),
-    ...names.sort().flatMap((n) => ["config.worktree", "commondir", "gitdir"].map((f) => join(under, n, f))),
+    ...names.sort().flatMap((n) => ADMIN_CONTROL_FILES.map((f) => join(under, n, f))),
     ...(isFile ? [dotGit] : []),
   ];
 }

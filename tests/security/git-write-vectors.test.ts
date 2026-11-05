@@ -266,10 +266,14 @@ describe("gitControlPaths", () => {
 
     expect(paths).toEqual([
       join(common, "config"), join(common, "config.worktree"), join(common, "hooks"), join(common, "info"),
-      ...admins.flatMap((n) => ["config.worktree", "commondir", "gitdir"].map((f) => join(common, "worktrees", n, f))),
+      ...admins.flatMap((n) =>
+        ["config", "config.worktree", "commondir", "gitdir", "hooks", "info"].map((f) => join(common, "worktrees", n, f))),
       join(path, ".git"),
     ]);
     expect(existsSync(join(common, "config.worktree"))).toBe(false);
+    // An admin folder git made has no config or hooks of its own: listed absent, since a step
+    // that recreated the folder without `commondir` would have git read them as a repository's.
+    expect(existsSync(join(common, "worktrees", admins[0] ?? "", "config"))).toBe(false);
     expect(paths).not.toContain(join(other, ".git"));
   });
 
