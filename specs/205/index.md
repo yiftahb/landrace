@@ -1,48 +1,43 @@
-I have what I need: the store and MCP-auth write paths, how `start` builds them, the Claude deny list and Codex's `deny: []` rule, and the existing security docs. No secret-store command was run.
+I have what I need. Read the deny-list code (`deniedNow`, `denyForPerson`), the child-server command and its argv, the pairing server (`buildMcpTools`, `runMcp`), the Claude and Codex server hand-off, and `INHERITED_ENV_KEYS`. #208 could not be read here (no shell), so the spec builds on the reviewer's description of it.
 
 ## Problem
-`~/.landrace/credentials/<id>.json`, `mcp/mcp-clients.json`, `mcp/mcp-tokens.json`: plain JSON, guarded only by 0600/0700 modes. Disk read, backup or home copy → every person's pasted tokens and refresh tokens.
+`~/.landrace/credentials/<id>.json`, `mcp/mcp-clients.json`, `mcp/mcp-tokens.json`: plain JSON behind 0600. Any disk, backup or home copy leaks every person's tokens.
 
 ## Decisions
-1. macOS or Linux desktop: `start` finds no key → makes one in Keychain or Secret Service, encrypts every plaintext file in place.
-2. Remote Linux: operator loads `landrace-credentials-key` with `LoadCredentialEncrypted=`, per docs. No key source → remote `start` refuses, naming setup. Local warns once, keeps plaintext.
-3. Undecryptable file: refused, never replaced. Message names file, never contents.
-
-- Key: 32 random bytes, base64. Service `landrace`, account `credentials-key`. Reason: one key per OS user.
-- Key created only on unambiguous absence: `security` exit 44, or `secret-tool lookup` exit 1 with empty stderr. Any other failure = source unavailable. Reason: new key over old orphans every file.
-- Creation held by `<root>/.key.lock` (`wx`), then looked up again. Only `start` creates. Reason: two starts never encrypt under two keys.
-- Containers: no new setting. Set `CREDENTIALS_DIRECTORY` to mounted secret's folder.
-- Windows: no DPAPI. No step sandbox there today.
-- Step access: systemd key is a path → Claude denies `$CREDENTIALS_DIRECTORY` whatever `agent.sandbox.deny` says. Codex cannot deny paths → limit. Keychain and Secret Service answer any process of same OS user, and no rule Landrace writes closes them → limit, both agents.
-- Migration deletes `*.tmp` of dead pids. Reason: crash leftovers hold plaintext.
+- Desktop: `start` creates absent key in Keychain/Secret Service, seals plaintext in place. Remote: unit loads `landrace-credentials-key` via `LoadCredentialEncrypted=`. No source: remote refuses naming setup; local warns once, stays plaintext. Undecryptable file refused, unquoted, never replaced.
+- Key: 32 random bytes, service `landrace`, account `credentials-key`. Only `start` creates, only on clear absence (`security` exit 44; `secret-tool` exit 1, empty stderr), under lock, looked up again: new key orphans every file.
+- Round 3, lock: `.key.lock` linked from `.key.lock.<pid>`, never empty; dead holder removed, retried. Crashed start never blocks later ones.
+- Round 3, deny: `$CREDENTIALS_DIRECTORY` joins engine's computed list → every integration; `deniedNow` refuses one that can't keep it (Codex remote). No Claude-only deny.
+- Round 3, servers: child and pairing servers get `--key-source`, plus `--key-dir` (systemd) or `--key-bus` (agent env drops `DBUS_SESSION_BUS_ADDRESS`). Pinned source only, never create; key bytes never passed. Agent CLIs start MCP servers outside command sandbox: dir denied to step, open to server. Keychain/Secret Service answer any same-user process → documented limit; argv adds no reach. #208 shape: child reads step's person's store.
+- Containers: `CREDENTIALS_DIRECTORY` → mounted secret. Windows: none. Migration deletes dead-pid `*.tmp`.
 
 ## Technical design
-- `src/namespace.ts` — `CredentialKey { key: Uint8Array; source: "keychain" | "secret-service" | "systemd" }`; `KeyLookup = { key: CredentialKey } | { none: string }`; `KeyHelper(file, args, stdin?) → { code, stdout, stderr }`; `SealedFiles { root; encrypted; read(name); write(name, text) }`.
-- `src/people/key.ts` — new. `credentialKey({ create, platform?, env?, run? })`, memoized. `execFile`, fixed argv, secrets on stdin only. Key not 32 bytes → refused.
-- `src/people/sealed.ts` — new. Envelope `{ landrace: "sealed", v: 1, iv, tag, data }`, strict. AAD = path relative to credentials root. `createSealedFiles(root, key | null)`, `sealAll(files)`.
-- `src/people/store.ts` — reads and writes through `SealedFiles`. Parse and schema errors give file, path and issue code: no fragment, no received value.
-- `src/front/mcp-auth.ts` — `createMcpAuth` takes `files: SealedFiles` in place of `root`. Same error rule.
-- `src/cli/start.ts` — `loadConfig` first, then `credentialKey({ create: true })`, refusal or warning, `sealAll`, then the store. Key's base64 passed to `log.redact`.
-- `src/cli/mcp.ts`, `src/cli/validate.ts` — `credentialKey({ create: false })`, key redacted.
-- `src/kit/executor.ts` — `keyDeny(env?)`: `[$CREDENTIALS_DIRECTORY]` when absolute.
-- `integrations/claude/index.ts` — `deniedPaths` appends `keyDeny()`.
-- `docs/security.md` — `#stored-credentials`: format, sources, setup, limits (including old plaintext in backups).
+- `src/namespace.ts` — `KeyLocator = {source:"keychain"} | {source:"secret-service"; bus?: string} | {source:"systemd"; dir: string} | {source:"none"}`; `CredentialKey { key: Uint8Array; locator }`; `SealedFiles { root; encrypted; read(name); write(name, text) }`.
+- `src/people/key.ts` — new. `credentialKey({ create, locator?, platform?, env?, run? })`, memoized; `keyArgs(locator)`. `execFile`, secrets on stdin.
+- `src/people/sealed.ts` — new. AES-256-GCM, envelope `{ landrace: "sealed", v: 1, iv, tag, data }`, AAD = path under root. `createSealedFiles(root, key | null)`, `sealAll`.
+- `src/people/store.ts`, `src/front/mcp-auth.ts` — through `SealedFiles`; errors: file, path, issue code.
+- `src/people/resolve.ts` — store required.
+- `src/people/isolation.ts` — `denyForPerson` takes `keyDir?`.
+- `src/cli/start.ts` — key, `sealAll`, store; key redacted; `childServerCommand(dir, id, locator)` appends `keyArgs`; `denyPaths` gets `keyDir`.
+- `src/cli/index.ts` — `mcp` parses `--key-*`.
+- `src/cli/mcp.ts` — both servers `credentialKey({ create: false, locator })`; pairing `ectx.denyPaths` = root + key dir.
+- `src/cli/validate.ts` — `credentialKey({ create: false })`.
+- `docs/security.md` — `#stored-credentials`: format, sources, setup, limits.
 
 ## Done when
-- Written file is envelope; no token bytes on disk; read round-trips.
-- Two writes, two IVs.
-- File copied over another person's → `problem`, not their connections.
-- Tampered byte → `problem` naming file, no file bytes; `put` refuses; file unchanged.
-- Decrypted bad JSON or enum → message without fragment or received value.
-- `sealAll` seals plaintext person and both `mcp/` files; dead-pid `*.tmp` gone.
-- Remote, every source unavailable → refused naming setup; nothing written.
-- Local, none → one warning; plaintext written.
-- Lookup error other than absent → no create spawned.
-- Two concurrent creates → one key, both use it.
-- Keychain write argv holds no key.
-- Key's base64 absent from every log line.
-- Claude run denies `$CREDENTIALS_DIRECTORY` under default deny, written list, `deny: []`.
-- Tests spawn no real `security` or `secret-tool`; throwaway keys only.
+- Disk file is envelope, no token bytes; round-trips; two writes, two IVs.
+- Copied over another person's, or byte tampered → `problem` naming file; `put` refuses; file unchanged.
+- Bad decrypted JSON → no fragment quoted.
+- `sealAll` seals all three; dead-pid `*.tmp` gone.
+- Remote, no source → refused, nothing written. Local → one warning.
+- Non-absent lookup error → no create.
+- Concurrent creates → one key.
+- Dead-pid `.key.lock` → removed, key created; live → kept.
+- Key absent from Keychain argv, server argv/env/MCP config, logs.
+- systemd: Claude denies `$CREDENTIALS_DIRECTORY` under default, written, `[]` deny; Codex refused.
+- `landrace_create_child` files sub-item, store sealed, each source.
+- Server missing pinned key → refuses, names source.
+- Fake helpers, throwaway keys only.
 - `pnpm typecheck && pnpm lint && pnpm test && pnpm build` pass.
 
 // Generated by AI (claude-opus-5-5:high)
