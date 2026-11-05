@@ -68,9 +68,13 @@ notify:
 
 # The webhook is the credential; the member id is only who to mention.
 log:
-  redact: [githubToken, slackWebhookUrl]
+  redact: [githubToken, githubOauthClientSecret, slackWebhookUrl]
 
 secrets:
-  githubToken: $GITHUB_TOKEN
+  # The token comes from the board's Connect with GitHub, through this
+  # repository's GitHub OAuth app; a set GITHUB_TOKEN overrides it.
+  githubToken: { perPerson: true, env: GITHUB_TOKEN, connection: github.token }
+  githubOauthClientId: $GITHUB_OAUTH_CLIENT_ID
+  githubOauthClientSecret: $GITHUB_OAUTH_CLIENT_SECRET
   slackWebhookUrl: $SLACK_WEBHOOK_URL
   slackNotifyUser: $SLACK_NOTIFY_USER

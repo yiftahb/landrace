@@ -4,7 +4,9 @@
  * project's hooks by the kit's `compose` — one source, operator, pre and post
  * hook under the id `project`, and the spec artifact. Configured by
  * `tracker.repo`, the `githubToken` secret and `tracker.bot` in
- * landrace.yaml; git runs in the repository this file is in.
+ * landrace.yaml; git runs in the repository this file is in. The token comes
+ * from GITHUB_TOKEN, or from `githubConnection`, the board's Connect with
+ * GitHub, when GITHUB_TOKEN is unset.
  *
  * `landrace/kit` and `landrace/integrations/github` resolve here by Node's
  * package self-reference: run `pnpm build` before the CLI runs out of this
@@ -18,3 +20,5 @@ export const { preflight, source, operator, pre, post, spec } = compose({
   forge: new GitHubForge({ closingRefs: true }),
   docs: new GitHubPages(),
 });
+
+export { githubConnection } from "landrace/integrations/github";

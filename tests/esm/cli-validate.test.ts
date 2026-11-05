@@ -7,7 +7,7 @@ import { snapshotProvides } from "#runner/snapshot.js";
 import { loadWorkflow } from "#workflow/load.js";
 import { validate } from "#workflow/validate.js";
 import type { Problem } from "#namespace.js";
-import { loadShipped } from "#tests/support/shipped.js";
+import { connectedStore, loadShipped } from "#tests/support/shipped.js";
 import { workflowIn, workspaceOf } from "#tests/support/workspace.js";
 
 /**
@@ -25,6 +25,10 @@ describe("landrace validate, against the hooks the workflow loads", () => {
    * fixture. Two exceptions, both facts about this checkout and not the
    * workflow: whether a token resolves ("secret"), and whether `agsync sync`
    * has written this checkout's gitignored `.mcp.json` — which CI never has.
+   * The GitHub token is a per-person key, which `validate` stops at when
+   * nothing answers it, so the store it is handed holds a `github`
+   * connection: every rule is reached on every machine, and a hook that
+   * stopped defining `github` fails here as `connection.unknown`.
    *
    * Only that one missing-file problem is excused, matched by the whole of
    * its own message rather than a substring: an executor's several problems
@@ -37,7 +41,7 @@ describe("landrace validate, against the hooks the workflow loads", () => {
    * machine.
    */
   it("validates the shipped .landrace workflow clean, on every rule", async () => {
-    const r = await runValidate(".landrace");
+    const r = await runValidate(".landrace", { credentials: await connectedStore() });
     const missingMcpJson =
       /^executor "claude" could not start: mcp: agent\.mcp names "codebase-memory-mcp", but .*\.mcp\.json does not exist; `agsync sync` generates it$/;
     const machine = (p: Problem): boolean =>
@@ -56,7 +60,7 @@ describe("landrace validate, against the hooks the workflow loads", () => {
     const config = await readFile(join(dir, "landrace.yaml"), "utf8");
     expect(config).toMatch(/^branchVariants: \[retro\]$/m);
     await writeFile(join(dir, "landrace.yaml"), config.replace(/^branchVariants: \[retro\]$/m, ""));
-    const r = await runValidate(dir);
+    const r = await runValidate(dir, { credentials: await connectedStore() });
     expect(r.problems).toContainEqual({ rule: "branch", message: expect.stringMatching(/stage "retro" works on branch "landrace\/\{item\}-retro"/) });
   });
 
