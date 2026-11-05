@@ -2077,6 +2077,43 @@ export interface PeoplePanel {
   finish(caller: Person, id: string, callback: ConnectCallback): Promise<ConnectionStatus>;
 }
 
+/** A sign-in begun and not yet back from the provider. `binding` is the `landrace_login` cookie of the browser that began it. */
+export interface PendingSignIn {
+  binding: string;
+  verifier: string;
+  nonce: string;
+  returnTo: string;
+  expires: number;
+}
+
+/** What a callback came to: who signed in and where they asked to go, or why not, with the status it is answered. */
+export type OidcFinished =
+  | { person: Person; returnTo: string }
+  | { refused: string; status: 400 | 403 | 502 };
+
+/** A remote instance's sign-in at its `people.oidc` provider. */
+export interface Oidc {
+  /** The provider's URL to send the person to, and the binding their browser keeps until it sends them back. */
+  begin(returnTo: string | null): Promise<{ url: string; binding: string }>;
+  /** The provider sent them back to `callback`, from a browser carrying `binding`. */
+  finish(callback: URL, binding: string | undefined): Promise<OidcFinished>;
+}
+
+/**
+ * Who is signed in, by the `landrace_session` cookie. Held in memory: a
+ * restart signs everyone out, and they sign in again.
+ */
+export interface Sessions {
+  /** A session for `person`: the `Set-Cookie` header value that carries it. */
+  issue(person: Person): string;
+  /** The person the request's session belongs to, or null. */
+  personOf(req: IncomingMessage): Person | null;
+  /** The request's session id, or null: what a consent is bound to. */
+  idOf(req: IncomingMessage): string | null;
+  /** Ends the request's session: the `Set-Cookie` header value that clears it. */
+  end(req: IncomingMessage): string;
+}
+
 /** One person in the runner: their runtime's slot, their board, and how their connections were last judged. */
 export interface PersonRuntime {
   person: Person;

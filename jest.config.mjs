@@ -79,6 +79,9 @@ export default async () => {
   return jestConfig;
 };
 
+/** Packages published as ES modules only, transpiled for the CommonJS pass. */
+const ESM_ONLY = ["openid-client", "oauth4webapi", "jose"];
+
 const jestConfig = {
   preset: "ts-jest/presets/default-esm",
   testEnvironment: "node",
@@ -88,7 +91,13 @@ const jestConfig = {
     ...subpathImports,
     ...selfReferences,
   },
-  transform: { "^.+\\.ts$": ["ts-jest", { useESM: true, tsconfig: { paths } }] },
+  transform: {
+    "^.+\\.ts$": ["ts-jest", { useESM: true, tsconfig: { paths } }],
+    // The sign-in's OpenID Connect client and what it is built on ship ESM
+    // alone, which the first pass's CommonJS runtime cannot load untranspiled.
+    [`/node_modules/(${ESM_ONLY.join("|")})/.+\\.js$`]: ["ts-jest", { useESM: true, tsconfig: { allowJs: true } }],
+  },
+  transformIgnorePatterns: [`/node_modules/(?!\\.pnpm/|${ESM_ONLY.join("/|")}/)`],
   // tests/esm/** needs jest's ESM runtime, which is a process-wide node flag,
   // so it runs as a second pass under jest.esm.config.mjs. See that file.
   // plugins/** are Claude Code mods: their *.test.ts import `claude-code/testing`
