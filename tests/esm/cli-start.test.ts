@@ -3289,4 +3289,46 @@ describe("runStart and the credentials key", () => {
     expect(denied.key).toEqual(["/run/credentials/landrace.service"]);
     expect((await denyPathsFor(dir, { id: "local" }, null, () => [], keyDirOf({ source: "keychain" }))()).key).toBeUndefined();
   });
+
+  /*
+   * The same, through the runtime a start builds: `runStart` hands the build
+   * where it found the key. Dropped, the runtime falls back to no source, so
+   * every child server is pinned to none and refuses the sealed store, and
+   * no step is denied `$CREDENTIALS_DIRECTORY` — while the test above, with
+   * its locator built by hand, still passes.
+   */
+  it("pins a start's child server to the systemd key it found, and denies its step that folder", async () => {
+    const { dir, record } = await fixture({ agent: "fake", workflow: stepped(true), items: [{ id: ITEM, labels: ["lr:auto", "lr:stage:breakdown"] }] });
+    await exec("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "base"], { cwd: dirname(dir) });
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), breakdownStep("repo:read, items:create"));
+    // The factory writes down what its context denies; each run, the child server it was handed.
+    await appendFile(join(dir, "hooks", "fake.ts"), `
+export const executor = brand("executor", {
+  id: "fake",
+  create: async (ctx: { denyPaths?: () => Promise<unknown> }): Promise<unknown> => ({
+    run: async (_prompt: string, o: { child?: { server?: { args: string[] } } }): Promise<{ text: string; sessionId: string | null }> => {
+      await appendFile(${JSON.stringify(record)}, JSON.stringify({ denied: await ctx.denyPaths?.(), child: o.child?.server?.args ?? [] }) + "\\n");
+      return { text: "", sessionId: null };
+    },
+  }),
+});
+
+// No child was ever made before the first round, so none is left to close.
+export const closer = brand("post", { id: "closer", handles: ["nodes.close"], satisfied: (): boolean => true, apply: async (): Promise<void> => {} });
+`);
+    const keyDir = await mkdtemp(join(tmpdir(), "lr-systemd-creds-"));
+    await writeFile(join(keyDir, "landrace-credentials-key"), randomBytes(32).toString("hex"));
+    const root = await plainRoot();
+    await quietly(() => runStart(dir, { once: true, credentialsRoot: root, keyLookup: { platform: "linux", env: { CREDENTIALS_DIRECTORY: keyDir }, alive: () => false } }));
+
+    const runs = (await applied(record)).filter((r): r is { denied: { key?: string[] }; child: string[] } => (r as { child?: unknown }).child !== undefined);
+    expect(runs).toHaveLength(1);
+    const run = runs[0];
+    if (!run) throw new Error("the start ran no step");
+    expect(run.child).toEqual(expect.arrayContaining(["--key-source=systemd", `--key-dir=${keyDir}`]));
+    expect(run.denied.key).toEqual([keyDir]);
+    // Sealed under that key, which the child server is pinned to.
+    expect((JSON.parse(await readFile(join(root, "local.json"), "utf8")) as { landrace: string }).landrace).toBe("sealed");
+  }, 30_000);
 });
