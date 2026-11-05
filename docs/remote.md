@@ -81,7 +81,7 @@ A person opens the public URL.
 
 1. Nobody is signed in, so the board sends them to `/login`, which sends them to the provider.
 2. The provider sends them back to `/login/callback`. Landrace checks the answer and sets a `landrace_session` cookie: `HttpOnly`, `SameSite=Lax`, and `Secure` when `serve.publicUrl` is `https`.
-3. They land on the page they asked for. Until their connections are ready, that is the Integrations tab; then it is their own board.
+3. They land on the page they asked for. Until their connections are ready, that is the Integrations tab; then it is their own board. In the moment before Landrace has judged their connections, the tab answers "not ready yet; try again in a moment", and the page asks again on its next poll. If judging them failed, the tab says their connections "could not be judged" and gives the error, with secrets removed. Waiting does not fix that: the operator reads the same error in the log, as "could not build their runtime".
 
 Their connections are ready when every connection their steps need is connected and none they stored has expired or failed. On a remote instance that means:
 
@@ -133,8 +133,9 @@ An override is stored with `source: override` the next time they sign in, in pla
 
 Each person whose connections are ready has a runtime of their own. It loads every workflow in the workspace, with that person's own values.
 
-- **Their own keys.** Every per-person key is filled from their own connections. In a Claude project, a step runs on their own Claude Code token, handed to it as `CLAUDE_CODE_OAUTH_TOKEN`. Codex has no per-person connection: a Codex step runs on the operator's own Codex login (`CODEX_HOME`). And while another person's worktree folder is there, whether they are on the roster or have left, every Codex run is refused, because Codex cannot keep the per-person deny list (see [People on one instance](security.md#people-on-one-instance)). A secret written as a plain value or `$VAR` in `landrace.yaml` is the instance's, and every person's runtime gets the same one.
+- **Their own keys.** Every per-person key is filled from their own connections. The sub-items a step files with `landrace_create_child` are created with that same person's connections, never the operator's. In a Claude project, a step runs on their own Claude Code token, handed to it as `CLAUDE_CODE_OAUTH_TOKEN`. Codex has no per-person connection: a Codex step runs on the operator's own Codex login (`CODEX_HOME`). And while another person's worktree folder is there, whether they are on the roster or have left, every Codex run is refused, because Codex cannot keep the per-person deny list (see [People on one instance](security.md#people-on-one-instance)). A secret written as a plain value or `$VAR` in `landrace.yaml` is the instance's, and every person's runtime gets the same one.
 - **Their own events.** Every event their runtime logs carries their `person` id and `personEmail`.
+- **Their own activity.** The item panel's agent activity shows a person only what their own runs did. Two people whose trackers both list an item never see each other's lines for it.
 - **One loop for everyone.** One schedule ticks every ready person's runtime together. The agent slots are shared: `tick.concurrency` bounds the steps running across the whole team, not per person.
 
 **How items are shared.** Each person's runtime lists the tracker and claims items by the workflows' rules, as a local instance does. On each tick with more than one ready person, every listing is compared:
@@ -206,7 +207,7 @@ No single action ends a person's access. Each of these ends one part of it:
 | Remove them at the provider, or take away what lets them sign in to this client | Every new sign-in | A session they already hold lasts its 12 hours. Signing them out at the provider alone ends nothing on Landrace, since Landrace does not ask the provider again |
 | Restart `start` | Every session and MCP access token, for everyone | Their refresh tokens, which still issue access tokens. Their file, which keeps them in the roster |
 | Remove their refresh tokens from `mcp-tokens.json`, while `start` is stopped | Their MCP clients' way back in | An edit while `start` runs is lost: `start` holds the entries in memory, and its next write of the file puts them back |
-| Delete their file in `~/.landrace/credentials/`, named after their id URL-encoded, while `start` is stopped | Their place in the roster, and every connection they stored | Their worktree folder, which Landrace does not remove |
+| Delete their file in `~/.landrace/credentials/`, named after their id URL-encoded, while `start` is stopped | Their place in the roster, and every connection they stored | Their worktree folder and their activity log folder, which Landrace does not remove |
 
 To remove someone completely, do all four, in this order:
 

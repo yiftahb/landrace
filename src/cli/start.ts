@@ -436,11 +436,18 @@ export function boardSink(
  * workspace directory made absolute so the agent's cwd cannot move it. The
  * stdio server a pairing's session is handed, and with `--child` appended,
  * the one a step's create_child is; a bare `landrace mcp` serves nothing.
+ * `personId` is whose step it serves: the child server reads that person's
+ * stored connections, so one person's sub-items are never filed with
+ * another's keys. Locally it is always `LOCAL_PERSON_ID`. Joined to its flag
+ * with `=`: an id is a sign-in's subject, and one starting with "-" standing
+ * alone would be read as a flag of its own.
  */
-export function childServerCommand(dir: string, workflowId: string): ServerCommand {
+export function childServerCommand(dir: string, workflowId: string, personId: string): ServerCommand {
   return {
     command: process.execPath,
-    args: [...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir), "--workflow", workflowId, "--pairing"],
+    args: [
+      ...process.execArgv, process.argv[1] ?? "landrace", "mcp", "--workspace", resolve(dir), "--workflow", workflowId, `--person=${personId}`, "--pairing",
+    ],
   };
 }
 
@@ -637,8 +644,10 @@ export function connectionRefresher(opts: {
   const one = async (def: ConnectionDef, stored: ConnectionValue, gate: Pick<LocalGate, "person" | "connections" | "local">): Promise<void> => {
     const { person } = gate;
     let next: ConnectionValue | null;
+    // Outside the try: a context refused is no provider's refusal, and must never mark the connection failed.
+    const ctx = opts.ctx();
     try {
-      next = await refreshIfNeeded(def, opts.ctx(), stored, { now: () => now().getTime(), ...(opts.fetch ? { fetch: opts.fetch } : {}) });
+      next = await refreshIfNeeded(def, ctx, stored, { now: () => now().getTime(), ...(opts.fetch ? { fetch: opts.fetch } : {}) });
     } catch (e) {
       const why = opts.log.scrub(oneLine(messageOf(e))).slice(0, 500);
       if (!(e instanceof Refusal)) {
@@ -690,6 +699,9 @@ export function connectionRefresher(opts: {
         }
       }
     } catch (e) {
+      // A gate that refuses — a person not judged yet — has nothing to renew
+      // under: the pass is skipped, and the next one, after their judging, renews.
+      if (e instanceof Refusal) return;
       opts.log("connection.failed", { error: `could not read the stored connections to renew them: ${opts.log.scrub(messageOf(e))}` });
     } finally {
       busy = false;
@@ -1128,10 +1140,11 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
   const unscoped = await sandboxFor(loaded.config, dir);
   const sandbox = unscoped === null || person.id === LOCAL_PERSON_ID ? unscoped : { ...unscoped, scope: scopeOf(person) };
   const denyPaths = denyPathsFor(dir, person, sandbox, opts.others ?? (() => []));
-  // What each step's agent is doing, for the page's item panel: one log for
-  // the workspace, keyed by item as the locks are. Not for `landrace status`,
-  // which runs no step and must write nothing.
-  const activity = opts.readOnly ? undefined : createActivityLog(sandboxRoot(dir), scrubberOf(ctx.secrets, log.scrub));
+  // What each step's agent is doing, for the page's item panel: one log per
+  // person, keyed by item as the locks are, so two people's runs of one item
+  // never share lines. Not for `landrace status`, which runs no step and must
+  // write nothing.
+  const activity = opts.readOnly ? undefined : createActivityLog(sandboxRoot(dir), person.id, scrubberOf(ctx.secrets, log.scrub));
 
   const preflights = scopedPreflights(hooked.map(({ loaded, registry }) => ({ preflights: registry.preflights, workflow: loaded })));
   const workflows: WorkflowRuntime[] = [];
@@ -1163,7 +1176,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
       ? readOnlyExecutor(registeredExecutor(loaded.config, registry))
       : await stepExecutorFor(loaded.config, registry, ectx, logins);
     const connectionFailed = opts.readOnly ? undefined : connectionFailedFor(loaded.config, registry, logins, failedOpts);
-    const childServer = childServerCommand(dir, id);
+    const childServer = childServerCommand(dir, id, person.id);
     // The same hooks, executor, screener and pairing server as the steps', so
     // a turn asked through the front door's `/mcp` runs as one asked on the page.
     if (!opts.readOnly) {
@@ -1391,9 +1404,10 @@ export function gotoByClaim(
  * The item panel, each item's through its owning workflow's: a read by
  * `read`, which sends an item no one workflow owns to the reader of the one
  * source that lists it, and a write by `write`. A refusal is a `Refusal`, which the
- * page's routes answer with its own sentence. Activity is one log for the
- * workspace, keyed by item: what a step did stays readable whoever claims
- * the item now.
+ * page's routes answer with its own sentence. Activity is read through the
+ * same check as the conversation, from this runtime's person's own log:
+ * what their step did stays readable whoever claims the item now, and no
+ * one else's run of it is ever shown.
  */
 export function panelByClaim(opts: {
   read: (item: string) => ReadRoute;
@@ -1417,7 +1431,7 @@ export function panelByClaim(opts: {
     return panel ? fn(panel) : Promise.reject(new Refusal(`#${item} belongs to ${owner.workflow}, which keeps no panel`));
   };
   return {
-    activity: (item, after) => opts.activity.read(item, after),
+    activity: (item, after) => read(item, () => opts.activity.read(item, after)),
     conversation: (item) => read(item, (p) => p.conversation(item)),
     pairing: (item) => read(item, (p) => p.pairing(item)),
     reply: (item, message) => write(item, (p) => p.reply(item, message)),
@@ -1720,6 +1734,9 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
     const local = first.person;
     // Each person's last judging, for their refresher and their expiry warnings.
     const gates = new Map<string, LocalGate>([[local.id, first]]);
+    // Each person whose last judging threw, by its scrubbed error: they have no
+    // gate either, but waiting will not give them one, so their tab says why.
+    const unjudgeable = new Map<string, string>();
     // What `start` serves of each runtime the roster builds: its board, the
     // listing its ticks feed, its writes and its MCP endpoint.
     const served = new WeakMap<WorkspaceRuntime, ServedRuntime>();
@@ -1736,7 +1753,14 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       // Judged afresh: the connection just made or removed is in the store
       // now, and a reload re-reads the hooks lists and `landrace.yaml`.
       judge: async (person) => {
-        const gate = await personGate(dir, store, { person, remote: mode.remote, log: log.with(personFields(person)), signal: stop.signal });
+        let gate: LocalGate;
+        try {
+          gate = await personGate(dir, store, { person, remote: mode.remote, log: log.with(personFields(person)), signal: stop.signal });
+        } catch (e) {
+          unjudgeable.set(person.id, log.scrub(messageOf(e)));
+          throw e;
+        }
+        unjudgeable.delete(person.id);
         gates.set(person.id, gate);
         if (person.id === local.id) latest = gate;
         return gate;
@@ -1811,8 +1835,17 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       log: (event, data) => personLog(event as EventName, data),
     });
     // Each caller by their own last judging; locally the one person's. One
-    // who signed in and was never judged yet is judged by the start's.
-    const gateOf = (personId: string): LocalGate => (mode.remote ? gates.get(personId) ?? first : latest);
+    // who signed in and was never judged yet is refused until they are: the
+    // start's judging is the local person's, and stands in for nobody else.
+    // A judging that threw is said as such: "try again" would be polled forever.
+    const judged = (personId: string): LocalGate => {
+      const gate = gates.get(personId);
+      if (gate !== undefined) return gate;
+      const failed = unjudgeable.get(personId);
+      if (failed !== undefined) throw new Refusal(`${personId}'s connections could not be judged: ${failed}`);
+      throw new Refusal(`${personId}'s connections are not ready yet; try again in a moment`);
+    };
+    const gateOf = (personId: string): LocalGate => (mode.remote ? judged(personId) : latest);
     const people = createPeoplePanel({
       store, mode, log: mode.remote ? log : personLog,
       gate: (personId) => {
@@ -1842,10 +1875,13 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
       const known = refreshers.get(person.id);
       if (known) return known;
       const theirs = person.id === local.id ? personLog : log.with(personFields(person));
+      // Remotely by their own judging alone: one not judged yet is refused,
+      // and the refresher skips its pass until they are.
+      const gateOfThem = (): LocalGate => (mode.remote ? judged(person.id) : gates.get(person.id) ?? latest);
       const made = connectionRefresher({
-        store, log: theirs, gate: () => gates.get(person.id) ?? latest,
-        ctx: person.id === local.id ? gateCtx : () => {
-          const gate = gates.get(person.id) ?? latest;
+        store, log: theirs, gate: gateOfThem,
+        ctx: person.id === local.id && !mode.remote ? gateCtx : () => {
+          const gate = gateOfThem();
           return { config: gate.local.loaded.config, secrets: gate.local.loaded.secretValues, signal: stop.signal, log: (event, data) => theirs(event as EventName, data), person };
         },
         live: () => roster.get(person.id)?.slot.current()?.secretValues ?? null,

@@ -3114,8 +3114,8 @@ export interface WorkspaceRuntime {
    */
   secretValues?: Map<string, string>;
   /**
-   * What each step's agent is doing, for the page's item panel: one log for
-   * the workspace, keyed by item, and the one every workflow's deps carry.
+   * What each step's agent is doing, for the page's item panel: this
+   * runtime's person's own log, keyed by item, and the one every workflow's deps carry.
    * Absent for a runtime built only to read, which writes nothing.
    */
   activity?: ActivityLog;

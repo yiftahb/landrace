@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, copyFile, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { buildWorkspaceRuntime, childServerCommand, localGate, runStart } from "#cli/start.js";
+import { buildChildTool } from "#cli/mcp.js";
 import { createLogger } from "#runner/events.js";
 import { runStatus } from "#cli/status.js";
 import { portCommand, readInstance, writeInstance } from "#cli/port.js";
@@ -277,7 +278,7 @@ describe("buildWorkspaceRuntime", () => {
   it("hands converge how to start its own item server, as this process on this workflow directory", async () => {
     const { dir } = await fixture();
     const rt = await buildMain(dir, {});
-    expect(rt.deps.childServer).toEqual(childServerCommand(dir, "main"));
+    expect(rt.deps.childServer).toEqual(childServerCommand(dir, "main", "local"));
   });
 
   /**
@@ -377,13 +378,13 @@ describe("buildWorkspaceRuntime", () => {
     const { dir } = await fixture();
     const rt = await buildMain(dir, {});
     rt.deps.activity?.record(ITEM, "spec", 1, { kind: "tool", text: `Bash curl -H "Authorization: Bearer ${TOKEN}"`, at: 1 });
-    const page = await createActivityLog(sandboxRoot(dir), (t) => t).read(ITEM, 0);
+    const page = await createActivityLog(sandboxRoot(dir), "local", (t) => t).read(ITEM, 0);
     expect(page).toMatchObject({ stage: "spec", round: 1, total: 1 });
     expect(JSON.stringify(page)).not.toContain(TOKEN);
   });
 
-  // The page's panel reads the workspace's one log, the one every workflow's steps write to.
-  it("hands the page the one activity log every workflow writes to", async () => {
+  // The page's panel reads the person's one log, the one every workflow's steps write to.
+  it("hands the page the person's one activity log every workflow writes to", async () => {
     const { dir } = await fixture();
     await withFast(dir);
     const rt = await buildWorkspaceRuntime(dir, {});
@@ -754,7 +755,7 @@ ${EXECUTOR}`);
     expect(rt.workflows.map((w) => w.id)).toEqual(["main", "fast"]);
     expect(rt.workflows[0]?.source).toBe(rt.workflows[1]?.source);
     expect(rt.preflights).toHaveLength(1);
-    expect(rt.workflows.map((w) => w.deps.childServer)).toEqual([childServerCommand(dir, "main"), childServerCommand(dir, "fast")]);
+    expect(rt.workflows.map((w) => w.deps.childServer)).toEqual([childServerCommand(dir, "main", "local"), childServerCommand(dir, "fast", "local")]);
 
     await mkdir(join(workflowIn(dir, "fast"), "steps"), { recursive: true });
     await writeFile(join(workflowIn(dir, "fast"), "steps", "build.md"), [
@@ -2824,6 +2825,190 @@ describe("runStart with people.oidc", () => {
       };
       expect(await itemsOf(await bearerOf(aliceCookie))).toEqual(["101"]);
       expect(await itemsOf(await bearerOf(bobCookie))).toEqual(["202"]);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  /*
+   * #208: alice's tracker lists #4242 and bob's #202, and each runs its
+   * items:create step. Each step's child server is started as its own
+   * person, so the child tool it serves reads that person's token — never
+   * the local person's, stored here too. Then both trackers list both
+   * items, and each person's panel shows only the lines their own run
+   * wrote: nothing of the other's item, which both now list.
+   */
+  it("files each person's sub-items with their own token, and shows each only their own activity for an item both list", async () => {
+    const [ALICE_TOKEN, BOB_TOKEN, LOCAL_TOKEN] = ["ghp_alice_pasted_token_long_enough", "ghp_bob_pasted_token_long_enough_x", "ghp_local_stored_token_long_enough"];
+    const { dir, record } = await fixture({
+      agent: "fake", agentKeys: "isolation: none", hookExtra: FORGE_CONNECTION, configExtra: REMOTE, workflow: stepped(true),
+      items: [{ id: ITEM, labels: ["lr:auto", "lr:stage:breakdown"] }, { id: "202", labels: ["lr:auto", "lr:stage:breakdown"] }],
+    });
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "steps", "breakdown.md"), breakdownStep("repo:read, items:create"));
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("secrets: { githubToken: $LR_TEST_TOKEN }", PER_PERSON_SECRET));
+    // Each tracker lists its person's own item, and both once `both` exists.
+    const both = join(dir, "both");
+    const hook = join(dir, "hooks", "fake.ts");
+    const theirs = `((ctx: { secrets: ReadonlyMap<string, string> }) => ({ nodes: graph.nodes.filter((n) => existsSync(${JSON.stringify(both)}) || ` +
+      `n.id === (ctx.secrets.get("forgeToken") === ${JSON.stringify(ALICE_TOKEN)} ? ${JSON.stringify(ITEM)} : "202")), relationships: [] }))`;
+    const source = (await readFile(hook, "utf8"))
+      .replace("list: async (): Promise<unknown> => {", "list: async (ctx: { secrets: ReadonlyMap<string, string> }): Promise<unknown> => {")
+      .replace("    return graph;\n", `    return ${theirs}(ctx);\n`)
+      .replace("read: async (): Promise<unknown> => graph,", `read: async (_id: string, ctx: { secrets: ReadonlyMap<string, string> }): Promise<unknown> => ${theirs}(ctx),`);
+    expect(source.split('ctx.secrets.get("forgeToken")').length - 1).toBe(2);
+    await writeFile(hook, source);
+    // The executor writes down the child server it was handed and says, on the panel, whose that server is;
+    // the operator writes down the token each child is created with.
+    await appendFile(join(dir, "hooks", "fake.ts"), `
+export const executor = brand("executor", {
+  id: "fake",
+  run: async (_prompt: string, o: { child?: { server?: { args: string[] } }; onActivity?: (e: unknown) => void }): Promise<{ text: string; sessionId: string | null }> => {
+    const args = o.child?.server?.args ?? [];
+    o.onActivity?.({ kind: "message", text: "ran as " + (args.find((a) => a.startsWith("--person=")) ?? "nobody"), at: 1 });
+    await appendFile(${JSON.stringify(record)}, JSON.stringify({ child: args }) + "\\n");
+    return { text: "", sessionId: null };
+  },
+});
+
+export const operator = brand("operator", {
+  id: "fake",
+  createItem: async (input: { title: string }, ctx: { secrets: ReadonlyMap<string, string> }): Promise<unknown> => {
+    await appendFile(${JSON.stringify(record)}, JSON.stringify({ createdWith: ctx.secrets.get("forgeToken") }) + "\\n");
+    return { id: "9", kind: "item", title: input.title, link: "u/9", closed: null, priority: null, origin: null, state: { labels: [], assignees: [] } };
+  },
+  updateItem: async (): Promise<unknown> => { throw new Error("not here"); },
+  relates: (): string[] => [],
+});
+
+// No child was ever made before the first round, so none is left to close.
+export const closer = brand("post", { id: "closer", handles: ["nodes.close"], satisfied: (): boolean => true, apply: async (): Promise<void> => {} });
+`);
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    const alice = { id: "sub-alice", email: "alice@example.invalid" };
+    const bob = { id: "sub-bob", email: "bob@example.invalid" };
+    for (const [person, token] of [[alice, ALICE_TOKEN], [bob, BOB_TOKEN], [{ id: "local" }, LOCAL_TOKEN]] as const) {
+      await credentials.put(person.id, person, "forge", { fields: { token }, source: "paste", connectedAt: new Date().toISOString() });
+    }
+    const { serve, drive, options } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    try {
+      const children = async (): Promise<string[][]> =>
+        (await applied(record)).flatMap((r) => ((r as { child?: string[] }).child ? [(r as { child: string[] }).child] : []));
+      await until(async () => (await children()).length === 2, "each person's step to run");
+      const byPerson = new Map((await children()).map((args) => [args.find((a) => a.startsWith("--person="))?.slice("--person=".length), args]));
+      expect([...byPerson.keys()].sort()).toEqual(["sub-alice", "sub-bob"]);
+
+      // Each child server, as its own command line says to build it.
+      for (const [person, token] of [["sub-alice", ALICE_TOKEN], ["sub-bob", BOB_TOKEN]] as const) {
+        const args = byPerson.get(person) ?? [];
+        const flag = (name: string): string => args[args.indexOf(name) + 1] ?? "";
+        const tool = await buildChildTool(flag("--workspace"), { parent: flag("--child"), stage: flag("--stage"), round: Number(flag("--round")) }, flag("--workflow"), person, credentials);
+        await tool.createChild({ title: "API" });
+        expect((await applied(record)).at(-1)).toEqual({ createdWith: token });
+      }
+
+      // Both trackers list both items now: each board shows both, once a pass has listed again.
+      const sessions = options().remote?.sessions;
+      if (!sessions) throw new Error("runStart handed a remote door no sessions");
+      const cookieOf = (person: typeof alice): string => sessions.issue(person).split(";")[0] ?? "";
+      await writeFile(both, "");
+      const rowsOf = async (person: typeof alice): Promise<string[]> => {
+        expect((await drive("/refresh", { method: "POST", headers: { cookie: cookieOf(person), "x-landrace-action": "refresh", origin: "https://landrace.example.org" } })).status).toBeLessThan(300);
+        const view = JSON.parse((await drive("/board.json", { headers: { cookie: cookieOf(person) } })).body) as { rows?: Array<{ id: string }> };
+        return (view.rows ?? []).map((r) => r.id).sort();
+      };
+      await until(async () => (await rowsOf(alice)).length === 2 && (await rowsOf(bob)).length === 2, "both boards to list both items");
+
+      // Each person's panel, by their own session.
+      const linesOf = async (person: typeof alice, item: string): Promise<string[]> => {
+        const res = await drive(`/items/${item}/activity`, { headers: { cookie: cookieOf(person) } });
+        expect(res.status).toBe(200);
+        return (JSON.parse(res.body) as { lines: Array<{ text: string }> }).lines.map((l) => l.text);
+      };
+      expect(await linesOf(alice, ITEM)).toEqual(["ran as --person=sub-alice"]);
+      expect(await linesOf(bob, "202")).toEqual(["ran as --person=sub-bob"]);
+      expect(await linesOf(bob, ITEM)).toEqual([]);
+      expect(await linesOf(alice, "202")).toEqual([]);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  /*
+   * #208: a session for someone the roster has not judged yet — here one
+   * issued without a sign-in, which nothing judges — asks for its
+   * Integrations tab. The start's own judging is the local person's, and
+   * must never answer for them.
+   */
+  it("refuses the Integrations tab of a person not judged yet, rather than answering with the local person's", async () => {
+    const { dir } = await fixture({ hookExtra: FORGE_CONNECTION, configExtra: REMOTE, items: [] });
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("secrets: { githubToken: $LR_TEST_TOKEN }", PER_PERSON_SECRET));
+    const credentials = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    await credentials.put("local", { id: "local" }, "forge", { fields: { token: "ghp_local_stored_token_long_enough" }, source: "paste", connectedAt: new Date().toISOString() });
+    const { serve, drive, options } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (): void => {};
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    try {
+      await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
+      const sessions = options().remote?.sessions;
+      if (!sessions) throw new Error("runStart handed a remote door no sessions");
+      const cookie = sessions.issue({ id: "sub-carol", email: "carol@example.invalid" }).split(";")[0] ?? "";
+      const me = await drive("/people/me", { headers: { cookie } });
+      expect([me.status, me.body]).toEqual([409, "sub-carol's connections are not ready yet; try again in a moment"]);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
+  /*
+   * A person whose judging threw has no gate either, but waiting will not
+   * give them one: their tab says it could not be judged, and why, rather
+   * than "try again in a moment" on every poll for as long as it keeps failing.
+   */
+  it("says a person's connections could not be judged, with the judging's error, when it threw", async () => {
+    const { dir } = await fixture({ hookExtra: FORGE_CONNECTION, configExtra: REMOTE, items: [] });
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace("secrets: { githubToken: $LR_TEST_TOKEN }", PER_PERSON_SECRET));
+    const store = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-start-")), "credentials"));
+    await store.put("local", { id: "local" }, "forge", { fields: { token: "ghp_local_stored_token_long_enough" }, source: "paste", connectedAt: new Date().toISOString() });
+    const carol = { id: "sub-carol", email: "carol@example.invalid" };
+    await store.remember(carol);
+    // Carol's file cannot be read, so every judging of her throws.
+    const credentials: typeof store = { ...store, read: async (id) => { if (id === carol.id) throw new Error("carol's file is unreadable near ghp_local_stored_token_long_enough"); return store.read(id); } };
+    const { serve, drive, options } = inProcessDoor();
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (line: unknown): void => { said.push(String(line)); };
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { interactive: false, credentials, serve });
+    try {
+      await until(() => said.some((l) => l.includes("people sign in at")), "the door to open");
+      await until(() => said.some((l) => l.includes("could not build their runtime")), `carol's judging to fail: ${said.join("\n")}`);
+      const sessions = options().remote?.sessions;
+      if (!sessions) throw new Error("runStart handed a remote door no sessions");
+      const cookie = sessions.issue(carol).split(";")[0] ?? "";
+      const me = await drive("/people/me", { headers: { cookie } });
+      expect(me.status).toBe(409);
+      expect(me.body).toContain("sub-carol's connections could not be judged");
+      expect(me.body).toContain("carol's file is unreadable");
+      expect(me.body).not.toContain("try again in a moment");
+      expect(me.body).not.toContain("ghp_local_stored_token_long_enough");
     } finally {
       process.emit("SIGINT");
       await running;
