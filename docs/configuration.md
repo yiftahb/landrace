@@ -36,6 +36,8 @@ Every key, with its default:
 | `vars.*` | `{}` | Values substituted into the workflow files — see [vars](#vars), or each person's own — see [Per-person keys](#per-person-keys) |
 | `people.local.email` | none | Your email, stamped on every event `landrace start` logs as `personEmail` — see [people](#people) |
 | `people.local.name` | none | Your name. Read and resolved, but stamped on nothing yet |
+| `people.oidc` | none | The OpenID Connect provider people sign in with. Set, the instance is remote — see [Remote mode](remote.md) |
+| `people.overrides` | none | By email, identity values pinned for a person a lookup cannot find — see [Remote mode](remote.md#identities) |
 | `notify.on` | none | The events to tell a person about. There is one: `needs-you` |
 | `notify.via` | none | Notifier ids, each registered by a hook with `defineNotifier`. The shipped one is `slack` |
 
@@ -127,9 +129,9 @@ serve:
   publicUrl: https://board.example.org/
 ```
 
-- **`host`** must be loopback: `127.0.0.1` or any `127.x.x.x`, `localhost`, or `::1`. Nothing asks who a caller is, so a door the network can reach hands anyone every item and the loop's controls. `validate` reports any other host, `0.0.0.0` included, as `serve.unauthenticated`, and `start` refuses it.
+- **`host`** must be loopback — `127.0.0.1` or any `127.x.x.x`, `localhost`, or `::1` — unless [`people.oidc`](#people) is set. Without it nothing asks who a caller is, so a door the network can reach hands anyone every item and the loop's controls. `validate` reports any other host, `0.0.0.0` included, as `serve.unauthenticated`, and `start` refuses it. With `people.oidc`, everyone signs in, and any host is allowed.
 - **`port`** is the port both are served on. `--ui-port` wins over it for one start.
-- **`publicUrl`** is where a person reaches the board through a proxy of their own that forwards to `host` and `port`. `start` prints it as the board's URL, a notification links to it, and the door answers its host name too. Landrace does not check who the proxy lets through.
+- **`publicUrl`** is where a person reaches the board through a proxy of their own that forwards to `host` and `port`. `start` prints it as the board's URL, a notification links to it, and the door answers its host name too. Without `people.oidc`, Landrace does not check who the proxy lets through. With it, `publicUrl` is required and must be `https` unless its host is loopback; `validate` reports either as `serve.public-url`, and `start` refuses it.
 
 Any other key under `serve` is refused. A step is kept from the door whatever these say: see [Security](security.md#the-front-door).
 
@@ -167,6 +169,25 @@ people:
 Each value is written literally or as a `$VAR` or `${VAR}` reference, resolved at load from `.env` first and then your shell, as [`agent.git`](#who-commits)'s is. Every event then carries `personEmail` as well. A reference set nowhere, or set to an empty value, is reported by `validate` under `people.local.email` (or `people.local.name`), naming the variable, and `landrace start`, `landrace status` and `landrace mcp` refuse to start over it. Without a `people` block, events carry `person` and no email. Any key other than `email` and `name` is refused.
 
 `landrace status` stamps its events the same way. `landrace mcp` stamps nothing.
+
+To run one instance for a team, set `people.oidc` to the provider everyone signs in with, and optionally `people.overrides`:
+
+```yaml
+people:
+  oidc:
+    issuer: https://id.example.org/realms/team
+    clientId: landrace
+    clientSecret: $LANDRACE_OIDC_SECRET
+  overrides:
+    bob@example.org:
+      github: { login: bob-gh }
+```
+
+- **`issuer`** is the provider's issuer URL: `https`, or `http` on loopback only.
+- **`clientId`** and **`clientSecret`** are what the provider issued this instance. Each may be a `$VAR`, resolved as `people.local`'s are; one that does not resolve is reported as `people.oidc.clientId` or `people.oidc.clientSecret`. The secret is kept out of every log line.
+- **`overrides`** maps an email to connection ids, each to the identity fields to store for that person.
+
+With `people.oidc` set, `people.local` is not used, and every event carries the signed-in person's id and email instead. Setup and behaviour are in [Remote mode](remote.md).
 
 ### vars
 
@@ -288,7 +309,7 @@ Telemetry is off by default. When it is on, every event — `tick.*`, `step.*`, 
 
 - The record's body and its `event.name` attribute are the event's name.
 - Every other field becomes an attribute prefixed `landrace.` (`landrace.item`; an agent's parsed output in `landrace.event`, and a line of it that was not JSON in `landrace.raw`), JSON-encoded unless it is a string, number or boolean.
-- Every event `landrace start` logs carries `landrace.person` (`local`), and `landrace.personEmail` when [`people.local.email`](#people) is set. A workflow's events carry `landrace.workflow` too.
+- Every event `landrace start` logs carries `landrace.person` (`local`, or on a remote instance the signed-in person's id), and `landrace.personEmail` when [`people.local.email`](#people) is set or the person signed in. A workflow's events carry `landrace.workflow` too.
 - `*.failed`, `*.denied`, `*.blocked`, `*.limited` and `lock.stolen` are `WARN`; everything else is `INFO`.
 
 Two events say a limit was hit:
@@ -301,6 +322,8 @@ Three are about a person's connections:
 - **`connection.expiring`** — `{ connection, expiresAt, daysLeft }`. A stored connection has 30 days or fewer left. `start` logs it at most once a day per connection, at the first tick of each UTC day. Not for a connection made by OAuth that holds a refresh token, which `start` renews before its end.
 - **`connection.failed`** — `{ item, workflow, stage, round }`. A step's agent refused the person's own stored login, such as a Claude token that has expired. The step is unavailable as before and writes no record; the connection is marked failed, `start` rebuilds its runtime, and nothing runs until it is connected again. With `{ connection, error }` instead, either marking it failed did not work, and why, or renewing an OAuth token failed: refused by the provider, when the connection is marked failed in the same way, or not answered, when the next minute's pass asks again — see [Connect with GitLab or GitHub](integrations.md#connect-with-gitlab-or-github).
 - **`connection.refreshed`** — `{ connection, expiresAt? }`. `start` renewed a token made by OAuth before its end, stored it, and handed it to the running hooks. Neither token is in the event.
+
+On a remote instance, `signin.ok`, `signin.refused` and `request.refused` record sign-ins and refused requests — see [Remote mode](remote.md#events).
 
 - Records carry the same redaction as the console. Traces and metrics are not exported.
 

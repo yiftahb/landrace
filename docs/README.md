@@ -8,5 +8,6 @@
 - [The board in a Claude Code pane](board-pane.md) — start here when you want the board beside a Claude Code chat: installing the plugin, its tabs and its status line.
 - [Integrations](integrations.md) — start here when you need to set up GitHub, GitLab, Jira, Notion, Slack, Claude Code or Codex: tokens, limits and live checks.
 - [Writing an integration](hooks.md) — start here when you need to connect a tracker, forge, docs site, notifier or coding agent Landrace does not ship.
+- [Remote mode](remote.md) — start here when you want one instance for a team: OpenID Connect sign-in, MCP clients signing in with OAuth, and serving beyond loopback.
 - [Security](security.md) — start here when you need to know what Landrace trusts, what it guards, and what to set up before letting it merge.
 - [Development](development.md) — start here when you need to work on Landrace itself: the toolchain, the gate, tests and code rules.

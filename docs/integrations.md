@@ -482,7 +482,7 @@ export const claude = new Claude();
 | GitHub | `githubConnection` (id `github`) | credential | `token` | Pasted: a personal access token, checked with `GET /user`. Or connected with GitHub, when the instance has a GitHub OAuth app — see [below](#connect-with-gitlab-or-github) |
 | GitLab | `gitlabConnection` (id `gitlab`) | credential | `token` | Pasted: a personal access token, checked with `GET /user` on `gitlabBaseUrl`, or gitlab.com. Or connected with GitLab, and renewed, when the instance has a GitLab OAuth application — see [below](#connect-with-gitlab-or-github) |
 
-An identity is looked up by [`people.local.email`](configuration.md#people), so set it. Each looked-up value shows, as plain text, in your own Integrations tab, so you can see whether the lookup matched your account. A forge token answers a [per-person key](configuration.md#per-person-keys) that names it, such as `githubToken: { perPerson: true, env: GITHUB_TOKEN, connection: github.token }`. Nothing else uses it yet. Notion and Codex define no connection.
+An identity is looked up by [`people.local.email`](configuration.md#people), so set it; on a [remote instance](remote.md#identities), by the email each person signed in with. Each looked-up value shows, as plain text, in your own Integrations tab, so you can see whether the lookup matched your account. A forge token answers a [per-person key](configuration.md#per-person-keys) that names it, such as `githubToken: { perPerson: true, env: GITHUB_TOKEN, connection: github.token }`. Nothing else uses it yet. Notion and Codex define no connection.
 
 ### Connect with GitLab or GitHub
 
