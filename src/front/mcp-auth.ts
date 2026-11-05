@@ -15,7 +15,7 @@ import type { IssuedAccess, McpAuth, Person, PendingConsent, RedactingLogger, Se
 /** A consent page's token, and the code it grants: each spent once, and worthless after this. */
 const CONSENT_TTL_MS = 10 * 60_000;
 const CODE_TTL_MS = 5 * 60_000;
-/** An access token lasts an hour; its refresh token, rotated on each use, thirty days. */
+/** An access token lasts an hour; its refresh token, rotated on each use, thirty days from the consent however often it is. */
 const ACCESS_TTL_S = 60 * 60;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60_000;
 /** Registered clients kept at most; one older than a day with no live refresh token is pruned first. */
@@ -115,6 +115,10 @@ async function readMap<T>(root: string, name: string): Promise<Map<string, T>> {
  * 0600, so a restart does not make every editor sign in again; a refresh
  * token is rotated on use, and the file never holds a token itself. Codes,
  * access tokens and consent tokens live in memory.
+ *
+ * Every grant is one `people.allow` still admits: a code, a refresh and each
+ * request's access token are refused for anyone it no longer does, and
+ * their refresh tokens are dropped from the file as it is read.
  */
 export function createMcpAuth(opts: {
   publicUrl: string;
@@ -123,6 +127,8 @@ export function createMcpAuth(opts: {
   /** The door's own origins: an approve from any other is refused. */
   origins: readonly string[];
   log: RedactingLogger;
+  /** Whether `people.allow` admits the person: asked of every stored grant, code, refresh and access token. */
+  admits: (person: Person) => boolean;
   now?: () => number;
 }): McpAuth {
   const now = opts.now ?? Date.now;
@@ -139,10 +145,17 @@ export function createMcpAuth(opts: {
     return next;
   };
 
-  const loaded = (async () => ({
-    clients: await readMap<OAuthClientInformationFull>(opts.root, MCP_CLIENTS_FILE),
-    refresh: await readMap<StoredRefresh>(opts.root, MCP_TOKENS_FILE),
-  }))();
+  // A refresh token of someone `people.allow` no longer admits is dropped as
+  // the files are read, and the file written without it: removing a person
+  // and restarting is the whole of revoking what their editors hold.
+  const loaded = (async () => {
+    const clients = await readMap<OAuthClientInformationFull>(opts.root, MCP_CLIENTS_FILE);
+    const refresh = await readMap<StoredRefresh>(opts.root, MCP_TOKENS_FILE);
+    const before = refresh.size;
+    for (const [hash, r] of refresh) if (!opts.admits(r.person)) refresh.delete(hash);
+    if (refresh.size !== before) await writeJson(opts.root, MCP_TOKENS_FILE, Object.fromEntries(refresh), ++written);
+    return { clients, refresh };
+  })();
   // Read as the door is built, and awaited only by the first MCP request: left
   // unhandled, a corrupt file would end `landrace start` in a stack trace just
   // after it binds. Said once here, and every MCP route answers with it.
@@ -169,7 +182,7 @@ export function createMcpAuth(opts: {
   };
 
   const consents = new Map<string, PendingConsent>();
-  const codes = new Map<string, { clientId: string; person: Person; challenge: string; redirectUri: string; resource?: string; expires: number }>();
+  const codes = new Map<string, { clientId: string; person: Person; challenge: string; redirectUri: string; resource?: string; expires: number; consentedAt: number }>();
   const access = new Map<string, IssuedAccess>();
 
   const prune = (): void => {
@@ -185,12 +198,17 @@ export function createMcpAuth(opts: {
     if (new URL(asked).href !== resource.href) throw new InvalidTargetError(`this server issues tokens for ${resource.href} alone`);
   };
 
-  const issue = async (clientId: string, person: Person, scopes: string[]): Promise<OAuthTokens> => {
+  /**
+   * A pair of tokens for a consent given at `consentedAt`. The refresh token
+   * lasts thirty days from the consent, never from its last rotation: an
+   * editor refreshing daily would otherwise hold its grant forever.
+   */
+  const issue = async (clientId: string, person: Person, scopes: string[], consentedAt: number): Promise<OAuthTokens> => {
     prune();
     const token = secret();
     const refreshToken = secret();
     access.set(token, { clientId, person, scopes, expiresAt: Math.floor(now() / 1000) + ACCESS_TTL_S });
-    (await loaded).refresh.set(hashOf(refreshToken), { clientId, person, scopes, expires: now() + REFRESH_TTL_MS });
+    (await loaded).refresh.set(hashOf(refreshToken), { clientId, person, scopes, expires: consentedAt + REFRESH_TTL_MS, consentedAt });
     await saveRefresh();
     return { access_token: token, token_type: "Bearer", expires_in: ACCESS_TTL_S, refresh_token: refreshToken, ...(scopes.length ? { scope: scopes.join(" ") } : {}) };
   };
@@ -257,8 +275,9 @@ export function createMcpAuth(opts: {
       codes.delete(code);
       if (held === undefined || held.clientId !== client.client_id || held.expires < now()) throw new InvalidGrantError("that code is not valid");
       if (redirectUri !== undefined && redirectUri !== held.redirectUri) throw new InvalidGrantError("that code was issued to another redirect URI");
+      if (!opts.admits(held.person)) throw new InvalidGrantError("that code is not valid");
       ownResource(asked ?? held.resource);
-      return issue(client.client_id, held.person, []);
+      return issue(client.client_id, held.person, [], held.consentedAt);
     },
     exchangeRefreshToken: async (client, refreshToken, _scopes, asked) => {
       ownResource(asked);
@@ -268,11 +287,18 @@ export function createMcpAuth(opts: {
       if (held === undefined || held.clientId !== client.client_id || held.expires < now()) throw new InvalidGrantError("that refresh token is not valid");
       // Rotated: the one just used is spent, whatever comes next.
       refresh.delete(hash);
-      return issue(client.client_id, held.person, held.scopes);
+      if (!opts.admits(held.person)) {
+        await saveRefresh();
+        throw new InvalidGrantError("that refresh token is not valid");
+      }
+      // A record from before `consentedAt` was kept lasts until its own end:
+      // the consent it implies is the one thirty days before that.
+      return issue(client.client_id, held.person, held.scopes, held.consentedAt ?? held.expires - REFRESH_TTL_MS);
     },
     verifyAccessToken: async (token) => {
       const held = access.get(token);
-      if (held === undefined || held.expiresAt * 1000 < now()) throw new InvalidTokenError("that token is not valid; sign in again");
+      if (held !== undefined && !opts.admits(held.person)) access.delete(token);
+      if (held === undefined || held.expiresAt * 1000 < now() || !opts.admits(held.person)) throw new InvalidTokenError("that token is not valid; sign in again");
       return { token, clientId: held.clientId, scopes: held.scopes, expiresAt: held.expiresAt, extra: { person: held.person } };
     },
     revokeToken: async (client, { token }) => {
@@ -311,7 +337,7 @@ export function createMcpAuth(opts: {
     const code = secret();
     codes.set(code, {
       clientId: held.clientId, person, challenge: held.params.codeChallenge, redirectUri: held.params.redirectUri,
-      ...(held.params.resource === undefined ? {} : { resource: held.params.resource }), expires: now() + CODE_TTL_MS,
+      ...(held.params.resource === undefined ? {} : { resource: held.params.resource }), expires: now() + CODE_TTL_MS, consentedAt: now(),
     });
     back.searchParams.set("code", code);
     res.set({ "cache-control": "no-store", "referrer-policy": "no-referrer" }).redirect(302, back.href);

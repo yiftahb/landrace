@@ -10,9 +10,12 @@ import { createMcpEndpoint } from "#front/mcp.js";
 import { MCP_CLIENTS_FILE, MCP_TOKENS_FILE } from "#front/mcp-auth.js";
 import { frontDoorListener } from "#front/server.js";
 import { createTools } from "#mcp/tools.js";
+import { loadConfig } from "#config/load.js";
+import { admits } from "#people/allow.js";
 import { createOidc } from "#people/oidc.js";
+import { createRoster } from "#people/roster.js";
 import { createSessions } from "#people/session.js";
-import { Refusal } from "#runner/errors.js";
+import { createCredentialStore } from "#people/store.js";
 import { createLogger } from "#runner/events.js";
 import { ANY, hooked, loaded } from "#tests/support/loaded.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
@@ -28,6 +31,11 @@ const PUBLIC = "https://landrace.example.org";
 const CLIENT_REDIRECT = "http://127.0.0.1:33418/callback";
 const ALICE = { sub: "sub-alice", email: "alice@example.invalid", email_verified: true };
 const BOB = { sub: "sub-bob", email: "bob@example.invalid", email_verified: true };
+/** Signed in at the provider, and on nobody's people.allow. */
+const CAROL = { sub: "sub-carol", email: "carol@example.org", email_verified: true };
+/** The door's cookies over https: `__Host-`, which a sibling subdomain cannot set. */
+const SESSION = "__Host-landrace_session";
+const LOGIN = "__Host-landrace_login";
 const ITEMS: Record<string, number> = { "sub-alice": 1, "sub-bob": 2 };
 const view = (id: string): BoardView => ({
   generatedAt: 1, rows: [], nextTickAt: null, folder: id, workspace: "/repo", workflows: [], needsYou: 0, listed: true,
@@ -41,12 +49,27 @@ const SECRET = "frontdoorsecret0123456789";
  * door is built. `signInSays`, when given, is what remembering a person who
  * signed in fails with. `secretFolder` puts SECRET in the folder's own path.
  */
-async function door(files: Record<string, string> = {}, o: { signInSays?: string; secretFolder?: boolean } = {}) {
+async function door(
+  files: Record<string, string> = {}, o: { signInSays?: string; secretFolder?: boolean; allow?: string[]; publicUrl?: string } = {},
+) {
   const idp = fakeOidc();
-  const sessions = createSessions({ secure: true });
+  // `people.allow`, as `start` hands it to the door: a test that empties it is a restart without them.
+  const allow = o.allow ?? [ALICE.email, BOB.email];
+  const admitted = (person: Person): boolean => admits(allow, person.email);
+  const publicUrl = o.publicUrl ?? `${PUBLIC}/`;
+  const sessions = createSessions({ secure: new URL(publicUrl).protocol === "https:", admits: admitted });
   const events: LandraceEvent[] = [];
   const log = createLogger({ redactValues: [SECRET], sink: (e) => { events.push(e); } });
   const signedIn: Person[] = [];
+  const store = createCredentialStore(join(await mkdtemp(join(tmpdir(), "lr-remote-store-")), "credentials"));
+  const configDir = join(await mkdtemp(join(tmpdir(), "lr-remote-config-")), ".landrace");
+  await mkdir(configDir, { recursive: true });
+  await writeFile(join(configDir, "landrace.yaml"), "version: 1\nagent: { adapter: claude }\n");
+  await writeFile(join(configDir, ".env"), "");
+  const roster = createRoster({
+    dir: ".", loaded: await loadConfig(configDir), registry: { connections: new Map() }, store, mode: { remote: true },
+    admits: admitted, log, build: async () => null,
+  });
   const trackers = { alice: createFakeTracker([{ number: 1 }]), bob: createFakeTracker([{ number: 2 }]) };
   const mcp = createMcpEndpoint({
     workflows: ["main"],
@@ -62,22 +85,22 @@ async function door(files: Record<string, string> = {}, o: { signInSays?: string
     await writeFile(join(authRoot, name), text);
   }
   const opts: FrontDoorOptions = {
-    host: "0.0.0.0", port: 4545, publicUrl: `${PUBLIC}/`, mcp,
+    host: "0.0.0.0", port: 4545, publicUrl, mcp,
     callerOf: (req) => sessions.personOf(req),
     board: { view: async () => view("nobody's") },
     boardFor: (caller) => ({ view: async () => view(caller.id), has: (item) => item === String(ITEMS[caller.id]) }),
     remote: {
-      oidc: createOidc({ oidc: { issuer: idp.issuer, clientId: idp.clientId, clientSecret: "client-secret-value" }, redirectUri: `${PUBLIC}/login/callback`, fetch: idp.fetch }),
-      sessions, authRoot, log,
+      oidc: createOidc({ oidc: { issuer: idp.issuer, clientId: idp.clientId, clientSecret: "client-secret-value" }, redirectUri: new URL("login/callback", publicUrl).href, fetch: idp.fetch }),
+      sessions, authRoot, log, admits: admitted,
       signIn: async (person) => {
-        if (person.id === "local") throw new Refusal('nobody signs in as "local"');
         if (o.signInSays !== undefined) throw new Error(o.signInSays);
+        await roster.signIn(person);
         signedIn.push(person);
       },
     },
   };
   const fetch = memoryFetch(frontDoorListener(opts, 4545));
-  return { fetch, idp, events, signedIn, authRoot };
+  return { fetch, idp, events, signedIn, authRoot, store, allow };
 }
 type Door = Awaited<ReturnType<typeof door>>;
 
@@ -92,11 +115,11 @@ async function signIn(d: Door, claims: Record<string, unknown>, returnTo = "/"):
   const code = d.idp.approve(to, claims);
   const state = new URL(to).searchParams.get("state") ?? "";
   return d.fetch(`${PUBLIC}/login/callback?code=${code}&state=${encodeURIComponent(state)}`, {
-    headers: { cookie: `landrace_login=${cookieIn(login, "landrace_login") ?? ""}` },
+    headers: { cookie: `${LOGIN}=${cookieIn(login, LOGIN) ?? ""}` },
   });
 }
 const sessionOf = async (d: Door, claims: Record<string, unknown>): Promise<string> =>
-  `landrace_session=${cookieIn(await signIn(d, claims), "landrace_session") ?? ""}`;
+  `${SESSION}=${cookieIn(await signIn(d, claims), SESSION) ?? ""}`;
 
 const verifier = randomBytes(32).toString("base64url");
 const challenge = createHash("sha256").update(verifier).digest("base64url");
@@ -153,6 +176,16 @@ async function tokenFor(d: Door, claims: Record<string, unknown>): Promise<{ acc
   return (await res.json()) as { access_token: string; refresh_token: string };
 }
 
+/** A refresh, by the client its record in the tokens file names. */
+async function refreshWith(d: Door, token: string): Promise<Response> {
+  const hash = createHash("sha256").update(token).digest("hex");
+  const held = (JSON.parse(await readFile(join(d.authRoot, MCP_TOKENS_FILE), "utf8")) as Record<string, { clientId: string }>)[hash];
+  return d.fetch(`${PUBLIC}/token`, {
+    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: token, client_id: held?.clientId ?? "" }).toString(),
+  });
+}
+
 describe("a remote door, before anyone signs in", () => {
   it("sends a browser asking for / to sign in and back, and answers a script 401, logging each as anonymous", async () => {
     const d = await door();
@@ -193,12 +226,13 @@ describe("signing in at the door", () => {
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("/#/integrations");
     const set = res.headers.get("set-cookie") ?? "";
-    const session = /landrace_session=[^,]*/.exec(set)?.[0] ?? "";
-    expect(session.split("; ")).toEqual(expect.arrayContaining(["HttpOnly", "SameSite=Lax", "Secure"]));
+    const session = new RegExp(`${SESSION}=[^,]*`).exec(set)?.[0] ?? "";
+    expect(session.split("; ")).toEqual(expect.arrayContaining(["HttpOnly", "SameSite=Lax", "Secure", "Path=/"]));
+    expect(session).not.toMatch(/Domain=/i);
     expect(d.signedIn).toEqual([{ id: "sub-alice", email: "alice@example.invalid" }]);
     expect(d.events).toEqual(expect.arrayContaining([expect.objectContaining({ name: "signin.ok", person: "sub-alice", personEmail: "alice@example.invalid" })]));
     // And then the board is theirs.
-    const board = await d.fetch(`${PUBLIC}/board.json`, { headers: { cookie: `landrace_session=${cookieIn(res, "landrace_session") ?? ""}` } });
+    const board = await d.fetch(`${PUBLIC}/board.json`, { headers: { cookie: `${SESSION}=${cookieIn(res, SESSION) ?? ""}` } });
     expect(((await board.json()) as BoardView).folder).toBe("sub-alice");
   });
 
@@ -206,7 +240,7 @@ describe("signing in at the door", () => {
     const d = await door();
     const res = await signIn(d, { ...ALICE, email_verified: false });
     expect(res.status).toBe(403);
-    expect(cookieIn(res, "landrace_session")).toBeUndefined();
+    expect(cookieIn(res, SESSION)).toBeUndefined();
     expect(d.signedIn).toEqual([]);
     expect(d.events).toEqual(expect.arrayContaining([expect.objectContaining({ name: "signin.refused", reason: expect.stringMatching(/not verified/) })]));
   });
@@ -220,7 +254,90 @@ describe("signing in at the door", () => {
     const d = await door();
     const res = await signIn(d, { ...ALICE, sub: "local" });
     expect(res.status).toBe(403);
-    expect(cookieIn(res, "landrace_session")).toBeUndefined();
+    expect(cookieIn(res, SESSION)).toBeUndefined();
+  });
+
+  // #204: the door's signIn is a real roster's, over a real store.
+  it("turns away an email people.allow does not admit 403, naming it, with no session and nothing stored", async () => {
+    const d = await door();
+    const res = await signIn(d, CAROL);
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe("carol@example.org is not admitted to this instance");
+    expect(cookieIn(res, SESSION)).toBeUndefined();
+    expect(await d.store.list()).toEqual([]);
+    expect(d.events).toEqual(expect.arrayContaining([expect.objectContaining({ name: "signin.refused", personEmail: "carol@example.org" })]));
+  });
+
+  it("sets both of its cookies under __Host- names, Secure, HttpOnly, SameSite=Lax and Path=/, with no Domain", async () => {
+    const d = await door();
+    const login = await d.fetch(`${PUBLIC}/login`);
+    const set = login.headers.get("set-cookie") ?? "";
+    expect(set).toMatch(/^__Host-landrace_login=/);
+    expect(set.split("; ")).toEqual(expect.arrayContaining(["Secure", "HttpOnly", "SameSite=Lax", "Path=/"]));
+    expect(set).not.toMatch(/Domain=/i);
+  });
+
+  it("over loopback http, keeps the old cookie names, with no Secure", async () => {
+    const d = await door({}, { publicUrl: "http://127.0.0.1:4545/" });
+    const login = await d.fetch("http://127.0.0.1:4545/login");
+    const set = login.headers.get("set-cookie") ?? "";
+    expect(set).toMatch(/^landrace_login=.*Path=\/login/);
+    expect(set.split("; ")).not.toContain("Secure");
+  });
+
+  it("answers a request carrying two session cookies as nobody", async () => {
+    const d = await door();
+    const alice = await sessionOf(d, ALICE);
+    const bob = await sessionOf(d, BOB);
+    expect((await d.fetch(`${PUBLIC}/board.json`, { headers: { cookie: `${alice}; ${bob}` } })).status).toBe(401);
+  });
+});
+
+/*
+ * #204: removing someone is taking them off people.allow and restarting.
+ * Here the list is changed under a door already built — what a restart
+ * hands the new one — so each grant they already hold is asked again.
+ */
+describe("someone people.allow no longer admits", () => {
+  it("is sent to sign in by their session, and answered 401 by a script", async () => {
+    const d = await door();
+    const cookie = await sessionOf(d, ALICE);
+    d.allow.splice(0, d.allow.length, BOB.email);
+    const page = await d.fetch(`${PUBLIC}/`, { headers: { cookie } });
+    expect([page.status, page.headers.get("location")]).toEqual([302, "/login?return=%2F"]);
+    expect((await d.fetch(`${PUBLIC}/board.json`, { headers: { cookie } })).status).toBe(401);
+  });
+
+  it("is answered 401 at /mcp with an access token issued before", async () => {
+    const d = await door();
+    const { access_token } = await tokenFor(d, ALICE);
+    d.allow.splice(0, d.allow.length, BOB.email);
+    const res = await d.fetch(`${PUBLIC}/mcp`, { method: "POST", headers: { authorization: `Bearer ${access_token}`, "content-type": "application/json" }, body: "{}" });
+    expect(res.status).toBe(401);
+  });
+
+  it("is refused a refresh as invalid_grant, and the refresh token is gone from the file", async () => {
+    const d = await door();
+    const issued = await tokenFor(d, ALICE);
+    d.allow.splice(0, d.allow.length, BOB.email);
+    const res = await refreshWith(d, issued.refresh_token);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_grant");
+    expect(await readFile(join(d.authRoot, MCP_TOKENS_FILE), "utf8")).toBe("{}\n");
+  });
+
+  it("loses their stored refresh tokens when a door is built over the file, and keeps everyone else's", async () => {
+    const at = Date.now();
+    const tokens = {
+      a: { clientId: "c1", person: { id: "sub-alice", email: ALICE.email }, scopes: [], expires: at + 60_000, consentedAt: at },
+      b: { clientId: "c2", person: { id: "sub-bob", email: BOB.email }, scopes: [], expires: at + 60_000, consentedAt: at },
+      n: { clientId: "c3", person: { id: "sub-nobody" }, scopes: [], expires: at + 60_000, consentedAt: at },
+    };
+    const d = await door({ [MCP_TOKENS_FILE]: JSON.stringify(tokens) }, { allow: [BOB.email] });
+    // Any MCP route waits on the files' reading, which writes the file without them.
+    await d.fetch(`${PUBLIC}/.well-known/oauth-authorization-server`);
+    await d.fetch(`${PUBLIC}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(Object.keys(JSON.parse(await readFile(join(d.authRoot, MCP_TOKENS_FILE), "utf8")) as object)).toEqual(["b"]);
   });
 });
 
@@ -275,7 +392,7 @@ describe("signing out at the door", () => {
     expect(res.headers.get("location")).toBeNull();
     expect(res.headers.get("content-type")).toMatch(/^text\/html/);
     expect(res.headers.get("cache-control")).toBe("no-store");
-    expect(cookieIn(res, "landrace_session")).toBe("");
+    expect(cookieIn(res, SESSION)).toBe("");
     const html = await res.text();
     expect(html).not.toContain(new URL(d.idp.issuer).host);
     expect(html).not.toMatch(/http-equiv="refresh"|<script/i);
@@ -436,7 +553,7 @@ describe("registering MCP clients", () => {
 
   it("first prunes clients older than 24 hours that hold no refresh token, keeping one that does", async () => {
     const old = nowS() - 25 * HOUR_S;
-    const tokens = { hash: { clientId: "old1", person: { id: "sub-alice" }, scopes: [], expires: Date.now() + 60_000 } };
+    const tokens = { hash: { clientId: "old1", person: { id: "sub-alice", email: ALICE.email }, scopes: [], expires: Date.now() + 60_000 } };
     const d = await door({
       [MCP_CLIENTS_FILE]: JSON.stringify({ ...clientsOf(998, nowS() - 23 * HOUR_S), ...clientsOf(2, old, "old") }),
       [MCP_TOKENS_FILE]: JSON.stringify(tokens),
@@ -488,6 +605,48 @@ describe("an MCP client with a person's token", () => {
     });
     expect((await refresh(issued.refresh_token)).status).toBe(200);
     expect((await refresh(issued.refresh_token)).status).toBe(400);
+  });
+
+  // #204: rotation once renewed the thirty days, so an editor refreshing daily held its grant forever.
+  describe("a refresh token's thirty days", () => {
+    const DAY = 24 * 60 * 60_000;
+    let clock = 0;
+    beforeEach(() => {
+      clock = Date.UTC(2026, 0, 1);
+      jest.spyOn(Date, "now").mockImplementation(() => clock);
+    });
+    afterEach(() => { jest.restoreAllMocks(); });
+
+    it("rotated daily, fails thirty days after the consent", async () => {
+      const d = await door();
+      let { refresh_token: token } = await tokenFor(d, ALICE);
+      for (let day = 1; day <= 30; day++) {
+        clock += DAY;
+        const res = await refreshWith(d, token);
+        expect([day, res.status]).toEqual([day, 200]);
+        token = ((await res.json()) as { refresh_token: string }).refresh_token;
+      }
+      clock += 60_000;
+      const late = await refreshWith(d, token);
+      expect(late.status).toBe(400);
+      expect(((await late.json()) as { error: string }).error).toBe("invalid_grant");
+    });
+
+    it("from a record kept before consentedAt was, fails at the record's own end", async () => {
+      const token = "legacy-refresh-token-0123456789";
+      const client = { client_id: "c1", client_id_issued_at: Math.floor(clock / 1000), redirect_uris: [CLIENT_REDIRECT], token_endpoint_auth_method: "none" };
+      const record = { clientId: "c1", person: { id: "sub-alice", email: ALICE.email }, scopes: [], expires: clock + 5 * DAY };
+      const d = await door({
+        [MCP_CLIENTS_FILE]: JSON.stringify({ c1: client }),
+        [MCP_TOKENS_FILE]: JSON.stringify({ [createHash("sha256").update(token).digest("hex")]: record }),
+      });
+      clock += 4 * DAY;
+      const res = await refreshWith(d, token);
+      expect(res.status).toBe(200);
+      const next = ((await res.json()) as { refresh_token: string }).refresh_token;
+      clock += DAY + 60_000;
+      expect((await refreshWith(d, next)).status).toBe(400);
+    });
   });
 
   it("answers a token it never issued 401", async () => {

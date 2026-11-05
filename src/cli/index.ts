@@ -4,7 +4,7 @@ import { messageOf } from "#runner/errors.js";
 import { resolveLandraceToSelf } from "#hooks/load.js";
 import { reexec, shouldReexec, STRIP_TYPES } from "#cli/reexec.js";
 import { runInit } from "#cli/init.js";
-import { runValidate } from "#cli/validate.js";
+import { reportValidate, runValidate } from "#cli/validate.js";
 import { runNext } from "#cli/next.js";
 import { runChildMcp, runMcp } from "#cli/mcp.js";
 import { runStart, startCommand } from "#cli/start.js";
@@ -84,16 +84,9 @@ program
   // not to report the workflow as broken.
   .action(async (dir: string) => {
     await loadingHooks("validate", async () => {
-      const { ok, problems, people } = await runValidate(dir);
-      // Each person's own, on a remote instance: printed, and never the exit code.
-      for (const line of people) console.log(`  ${line}`);
-      if (ok) {
-        console.log(`${dir}: valid${people.length ? `; ${people.length} problem(s) above are people's own, for them to mend in the Integrations tab` : ""}`);
-        return;
-      }
-      for (const p of problems) console.error(`  ${p.rule}: ${p.message}`);
-      console.error(`\n${problems.length} problem(s)`);
-      process.exitCode = 1;
+      // Warnings and each person's own problems are printed, and never the exit code.
+      const code = reportValidate(dir, await runValidate(dir), { out: (line) => console.log(line), err: (line) => console.error(line) });
+      if (code !== 0) process.exitCode = code;
     });
   });
 

@@ -16,11 +16,9 @@ You need:
 - **A host name** for the instance, such as `landrace.example.org`, that points at the machine `start` runs on.
 - **A TLS proxy on the same machine**, which terminates `https` for that host name and forwards to Landrace. [A proxy example](#a-proxy-example) shows one.
 - **The repository, checked out** where `landrace start` runs, with its `.landrace/` folder. Every person's steps cut their worktrees from this one checkout.
-- **A way to limit who signs in, at the provider.** Landrace admits anyone your provider signs in for its client: see [Who can sign in](#who-can-sign-in).
+- **The list of who may sign in**: each person's email, or a whole email domain. See [Who can sign in](#who-can-sign-in).
 
 ## Set it up
-
-Landrace has no list of who may sign in. Anyone the provider signs in for this client, with a verified email, gets a board and runs steps on this machine. With a public provider, such as Google, and no restriction there, that is anyone with an account. Limit it at the provider before you start: see [Who can sign in](#who-can-sign-in).
 
 1. **Register Landrace at the provider** as a confidential client using the authorization-code flow. Set its redirect URI to your public URL followed by `login/callback`, for example `https://landrace.example.org/login/callback`. It asks for the `openid email profile` scopes.
 2. **Put a TLS proxy in front.** It terminates `https` for your host name and forwards to `serve.host` and `serve.port`. The MCP authorization server rate-limits by client address, and takes the address from `X-Forwarded-For` only when the proxy connects from loopback.
@@ -36,9 +34,12 @@ Landrace has no list of who may sign in. Anyone the provider signs in for this c
        issuer: https://id.example.org/realms/team
        clientId: landrace
        clientSecret: $LANDRACE_OIDC_SECRET
+     allow:
+       - ann@example.com
+       - "@example.com"
    ```
 
-   Set `LANDRACE_OIDC_SECRET` in `.landrace/.env` to the secret the provider issued. What `validate` refuses here is listed in [validate](validate.md#loading).
+   Set `LANDRACE_OIDC_SECRET` in `.landrace/.env` to the secret the provider issued. `people.allow` lists who may sign in ([Who can sign in](#who-can-sign-in)). What `validate` refuses here is listed under [Loading](validate.md#loading); what it warns of opens [that page](validate.md).
 4. **Start it** with `landrace start`. It prints `people sign in at <publicUrl>; <n> have before`. A remote instance always serves the board, so `--headless` and `--once` are refused.
 
 An `http://` issuer is accepted only on loopback, for a provider you run on the same machine to try this out.
@@ -65,9 +66,18 @@ With the proxy on the same machine, you can set `serve.host: 127.0.0.1` in place
 
 ## Who can sign in
 
-Today Landrace admits anyone the provider signs in for this client, as long as the provider says their email is verified. There is no allow-list in `landrace.yaml`. Everyone admitted gets their own board and runs steps on this machine ([Security](security.md#remote-mode)).
+Landrace admits a person only when `people.allow` lists them. Each entry is one of two forms:
 
-So limit access at the provider. For example:
+- **An email**, such as `ann@example.com`. It admits that email alone.
+- **`@` and a domain**, such as `@example.com`. It admits every email whose text after its last `@` is that domain. It does not admit a subdomain: `a@sub.example.com` needs `@sub.example.com`.
+
+Both are compared ignoring case, so `@example.com` admits `ANN@Example.com`. Anything else, such as `*`, a bare `@` or a bare `example.com`, fails `validate`. A remote instance with no `people.allow`, or an empty one, admits nobody: `validate` reports it as `people.allow`, and `start` refuses to run.
+
+A person must also have an email. A provider that sends none, or does not mark it verified, is refused. Everyone admitted gets their own board and runs steps on this machine ([Security](security.md#remote-mode)).
+
+`start` reads the list when it begins. To add or remove someone, edit `people.allow` and restart `start`: see [Removing a person](#removing-a-person).
+
+You can limit access at the provider as well. For example:
 
 - **Keycloak:** a realm of its own for the team, or a client role that a user must hold before the client signs them in.
 - **Google Workspace:** an OAuth consent screen of type "Internal", so only accounts in your Workspace organization can sign in.
@@ -80,7 +90,7 @@ How to set each of these up is in your provider's own documentation.
 A person opens the public URL.
 
 1. Nobody is signed in, so the board sends them to `/login`, which sends them to the provider.
-2. The provider sends them back to `/login/callback`. Landrace checks the answer and sets a `landrace_session` cookie: `HttpOnly`, `SameSite=Lax`, and `Secure` when `serve.publicUrl` is `https`.
+2. The provider sends them back to `/login/callback`. Landrace checks the answer and sets a session cookie: `__Host-landrace_session` when `serve.publicUrl` is `https`, and `landrace_session` on a loopback `http` URL. It is `HttpOnly` and `SameSite=Lax`, with `Path=/` and no `Domain`, and `Secure` over `https`.
 3. They land on the page they asked for. Until their connections are ready, that is the Integrations tab; then it is their own board. In the moment before Landrace has judged their connections, the tab answers "not ready yet; try again in a moment", and the page asks again on its next poll. If judging them failed, the tab says their connections "could not be judged" and gives the error, with secrets removed. Waiting does not fix that: the operator reads the same error in the log, as "could not build their runtime".
 
 Their connections are ready when every connection their steps need is connected and none they stored has expired or failed. On a remote instance that means:
@@ -94,10 +104,12 @@ While any of these is missing, nothing runs for that person: no tick lists their
 What Landrace checks:
 
 - The provider must say the email is verified (`email_verified: true`). Otherwise sign-in is refused with `403`, no cookie is set, and `signin.refused` is logged.
-- The sign-in must finish in the browser that began it, within ten minutes, and only once. A short-lived `landrace_login` cookie carries the binding.
+- `people.allow` must admit the email. Otherwise sign-in is refused with `403` and `<email> is not admitted to this instance`, no cookie is set, `signin.refused` is logged with their email, and nothing is stored for them.
+- The sign-in must finish in the browser that began it, within ten minutes, and only once. A short-lived cookie carries the binding: `__Host-landrace_login` over `https`, with `Path=/`, and `landrace_login` on loopback `http`, sent only under `/login`.
+- A request that carries the session cookie twice, as a browser does when a cookie set for another host shadows this one's, is answered as nobody signed in.
 - Where a person goes afterwards must be a path on this instance. Anything else, such as `//evil.example`, becomes `/`.
 
-A person is known by the provider's subject (`sub`). Their credentials file is named after it. Sessions live in memory for 12 hours: a restart signs everyone out, and they sign in again. `/logout` ends a session and shows a signed-out page. It does not sign the person out of the identity provider: on a shared computer, sign out there too. Signing in again takes a click on that page.
+A person is known by the provider's subject (`sub`). Their credentials file is named after it. Sessions live in memory for 12 hours: a restart signs everyone out, and they sign in again. `/logout` ends a session and shows a signed-out page. It leaves the person's MCP clients signed in: their tokens end with the 30 days below, or when `people.allow` stops admitting them. It does not sign the person out of the identity provider: on a shared computer, sign out there too. Signing in again takes a click on that page.
 
 Before signing in, a page request is redirected to `/login?return=<path>`, and any other request is answered `401`. Each is logged as `request.refused` with `person: "anonymous"`.
 
@@ -165,11 +177,11 @@ Registration is open, which is why consent is asked every time. How the consent 
 
 Registration is also bounded. Before each one, Landrace removes every client that registered more than 24 hours ago and holds no live refresh token. Past 1,000 stored clients, `/register` answers `400`, saying the instance holds too many registered clients. Each person keeps at most 16 open MCP sessions: opening a 17th closes their oldest, and that client initializes a new one.
 
-Registered clients are kept in `~/.landrace/credentials/mcp/mcp-clients.json`. Refresh tokens are kept only as hashes in `mcp-tokens.json` beside it. Both files are `0600`. A refresh token lasts 30 days and works once: using it returns a new one. Access tokens, codes and consent pages live in memory, so after a restart a client refreshes its token. If either file cannot be read or does not hold a JSON object, `start` logs it once and keeps running. The board still works, but `/mcp` and the sign-in routes answer `503` with the file's name until you fix or remove the file and restart. A file that is not JSON is named as such, and nothing from inside it is quoted.
+Registered clients are kept in `~/.landrace/credentials/mcp/mcp-clients.json`. Refresh tokens are kept only as hashes in `mcp-tokens.json` beside it. Both files are `0600`. A refresh token works once: using it returns a new one. Every token in that chain ends 30 days after the person approved the client, however often it is used, and then they approve it again. A refresh token stored by an earlier version, which did not keep the approval's time, ends at the end it was stored with. Every code, refresh and access token is refused for a person `people.allow` no longer admits. Access tokens, codes and consent pages live in memory, so after a restart a client refreshes its token. If either file cannot be read or does not hold a JSON object, `start` logs it once and keeps running. The board still works, but `/mcp` and the sign-in routes answer `503` with the file's name until you fix or remove the file and restart. A file that is not JSON is named as such, and nothing from inside it is quoted.
 
 ## Checking people
 
-On a remote instance, [`landrace validate`](validate.md) also judges every person who has signed in, by the email they signed in with:
+On a remote instance, [`landrace validate`](validate.md) also judges every person who has signed in and whom `people.allow` admits, by the email they signed in with:
 
 ```text
   bob@example.org: connection.missing: secrets entry "forgeToken" has no value: ...
@@ -189,7 +201,7 @@ Everything a person connects is under `~/.landrace/credentials/`, in the home fo
 | `~/.landrace/credentials/mcp/mcp-clients.json` | Every MCP client that registered | `0600` |
 | `~/.landrace/credentials/mcp/mcp-tokens.json` | Each MCP refresh token, as a hash, with the client and the person it was issued to, and when it ends | `0600` |
 
-The roster, the people `start` runs for, is every person's file but `local.json`. `start` reads it once, when it begins. A person who signs in for the first time joins it then.
+The roster, the people `start` runs for, is every person's file but `local.json`, for each person `people.allow` admits. `start` reads it once, when it begins. A person who signs in for the first time joins it then.
 
 **Backups.** Back up the whole `~/.landrace/credentials/` folder, and keep the copy as safe as the credentials in it: it holds every person's tokens. Back up `.landrace/.env` too, for `LANDRACE_OIDC_SECRET`. What is lost without each part:
 
@@ -202,32 +214,16 @@ How the files are written, and how a step is kept from reading them, is in [Stor
 
 ## Removing a person
 
-No single action ends a person's access. Each of these ends one part of it:
+To remove someone, take them off `people.allow` and restart `start`:
 
-| Step | What it ends | What it leaves |
-|---|---|---|
-| Remove them at the provider, or take away what lets them sign in to this client | Every new sign-in | A session they already hold lasts its 12 hours. Signing them out at the provider alone ends nothing on Landrace, since Landrace does not ask the provider again |
-| Restart `start` | Every session and MCP access token, for everyone | Their refresh tokens, which still issue access tokens. Their file, which keeps them in the roster |
-| Remove their refresh tokens from `mcp-tokens.json`, while `start` is stopped | Their MCP clients' way back in | An edit while `start` runs is lost: `start` holds the entries in memory, and its next write of the file puts them back |
-| Delete their file in `~/.landrace/credentials/`, named after their id URL-encoded, while `start` is stopped | Their place in the roster, and every connection they stored | Their worktree folder and their activity log folder, which Landrace does not remove |
+1. Remove their email from `people.allow`. If a domain entry such as `@example.com` admits them, it still does: list the people at that domain one by one in its place.
+2. Restart `start`.
 
-To remove someone completely, do all four, in this order:
+The restarted `start` holds no runtime for them, so nothing runs as them. Every session ends with the restart, and a sign-in of theirs is refused with `403`. Their refresh tokens are removed from `mcp-tokens.json` as `start` opens the door, and any token or code they still hold is refused.
 
-1. Remove them at the provider.
-2. Stop `start`.
-3. Delete their credentials file. Their id is the `person` field of their `signin.ok` events. The file's name is that id URL-encoded, so a `sub` such as `auth0|abc` names `auth0%7Cabc.json`.
-4. Remove their refresh tokens. With [jq](https://jqlang.org/), replace `<person id>` with their id as the `person` field gives it, not the file's name:
+Editing `people.allow` without a restart changes nothing: `start` keeps the list it read when it began.
 
-   ```bash
-   cd ~/.landrace/credentials/mcp
-   jq --arg id '<person id>' 'with_entries(select(.value.person.id != $id))' mcp-tokens.json > mcp-tokens.json.new
-   chmod 600 mcp-tokens.json.new
-   mv mcp-tokens.json.new mcp-tokens.json
-   ```
-
-5. Start `start` again.
-
-Skip the first step, and they sign in again: Landrace makes them a new file, and they connect again. Skip the rest, and a session they hold, or an MCP client's refresh token, keeps working.
+Their file in `~/.landrace/credentials/` stays, with every connection they stored. Put them back on the list and restart, and they find their connections where they left them. To remove those as well, delete the file while `start` is stopped. It is named after their id URL-encoded: their id is the `person` field of their `signin.ok` events, so a `sub` such as `auth0|abc` names `auth0%7Cabc.json`. Their worktree folder and activity log folder are not removed either.
 
 The tokens they connected are still valid at each system that issued them: their Claude Code token, and their forge tokens. Revoke those at each system too.
 
@@ -259,8 +255,8 @@ Then they sign in through OAuth: see [Connecting an MCP client](#connecting-an-m
   - MCP OAuth from a real editor.
   - Connect with GitLab or GitHub against the real forges ([Limits](integrations.md#connect-with-gitlab-or-github)).
   - A step refused another person's worktree on a real run.
-- **No allow-list.** Landrace admits anyone your provider signs in with a verified email: see [Who can sign in](#who-can-sign-in).
-- **No single way to remove a person.** See [Removing a person](#removing-a-person).
+- **Removing a person takes a restart.** `start` keeps the `people.allow` it read when it began: see [Removing a person](#removing-a-person).
+- **No subdomains.** `@example.com` does not admit `a@sub.example.com`; list each domain.
 - **Sessions live in memory.** A restart signs everyone out, and ends every MCP access token.
 - **Registration is open.** Any MCP client can register, so every token waits on a signed-in person's consent ([Security](security.md#remote-mode)). Someone who registers 1,000 clients within a day fills the instance, and nobody else can register until those clients age out, or until you clear `mcp-clients.json` while `start` is stopped.
 - **The roster is read at start.** A person's file deleted while `start` runs keeps them in the roster until the next start.
@@ -271,7 +267,7 @@ Then they sign in through OAuth: see [Connecting an MCP client](#connecting-an-m
 | Event | Fields | When |
 |---|---|---|
 | `signin.ok` | `person`, `personEmail` | A person signed in. |
-| `signin.refused` | `person: "anonymous"`, `reason`, sometimes `personEmail` | A sign-in was refused. |
+| `signin.refused` | `person: "anonymous"`, `reason`, sometimes `personEmail` | A sign-in was refused, such as an email `people.allow` does not admit. |
 | `request.refused` | `person`, `path`, `status`, sometimes `reason` | A request from nobody signed in, or a consent approval refused. |
 | `item.ambiguous` | `item`, `people` | Two people's runtimes claim one item, so neither works it. |
 | `source.failed` | `people`, `reason` | A tick could not list these people's items, so no one's claims were judged. |
