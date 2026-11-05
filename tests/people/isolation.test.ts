@@ -48,7 +48,10 @@ describe("denyForPerson", () => {
 
   // The local person's worktrees are the folder's own entries: denying what is there would deny them their own.
   it("lists nothing it found for a person without a folder of their own", () => {
-    expect(denyForPerson({ id: "local" }, [], { ...where, present: ["12.write", "bob"] }).people).toEqual([]);
+    expect(denyForPerson({ id: "local" }, [], { ...where, present: ["12.write", "bob"] })).toStrictEqual({
+      always: [CREDENTIALS_ROOT, ENV],
+      people: [],
+    });
   });
 });
 
