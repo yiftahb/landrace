@@ -4,7 +4,7 @@ import {
 import { claimItems, eligibilityOfNode, gotoTargetsOf, locateNode, writesNothing } from "#core/index.js";
 import { BLOCKED_NOTE, engineNoteOf, laneOf, oneLine, SCREENED_NOTE, statusRows } from "#runner/status.js";
 import { admitRoute, haltOf, readRoute, writeRoute } from "#runner/route.js";
-import { turnedAway } from "#runner/tick.js";
+import { claimedByPeople, turnedAway } from "#runner/tick.js";
 import { chatFor } from "#ui/chat.js";
 import { systemOf } from "#ui/systems.js";
 import type {
@@ -377,6 +377,10 @@ export function boardView(input: {
     // stale event claims: it never asks for you, and never opens a parent —
     // and its note says it is closed, not "blocked: needs a human" from a
     // label nobody took off.
+    // But one more than one person's `closed: run` stage claims is the news:
+    // none of them runs it until one alone has it.
+    const people = claims.ambiguous?.get(node.id);
+    if (node.closed !== null && people) return { ...item, badge: "needs-you", stage: null, note: oneLine(claimedByPeople(people)) };
     if (node.closed !== null) {
       return { ...item, badge: "discharged", note: node.closed === "done" ? "closed" : "dropped", retry: closedRetry(node) };
     }
@@ -636,6 +640,9 @@ export function createBoard(opts: {
       if (!listing) return unlisted(item);
       return readRoute(listing, item) ?? { refused: `#${item} is not an item the last tick listed` };
     },
+    // Before the first listing nothing is anyone's, so nothing is told
+    // apart: every write is refused as not listed yet.
+    has: (item) => listing === null || graph.nodes.some((n) => n.id === item && n.kind === ITEM_KIND && n.placeholder !== true),
     async view(): Promise<BoardView> {
       // Open items only: nothing else can be held, and a closed item's
       // badge ignores the lock anyway.

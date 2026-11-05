@@ -347,11 +347,13 @@ async function sweepKept(runtime: WorkspaceRuntime, listing: WorkspaceListing, l
     const at = workflow === undefined ? null : seenAt(workflow, node);
     return at !== null && workflow?.deps.workflow.stages.find((s) => s.id === at.stage)?.terminal === true;
   };
-  for (const root of new Set(runtime.workflows.flatMap((w) => w.deps.sandbox?.root ?? []))) {
-    const kept = await keptItems(root).catch(() => []);
+  // One sandbox a runtime's workflows share, each in its person's folder of it.
+  const sandboxes = new Map(runtime.workflows.flatMap((w) => (w.deps.sandbox ? [[`${w.deps.sandbox.root}\0${w.deps.sandbox.scope ?? ""}`, w.deps.sandbox]] as const : [])));
+  for (const { root, scope } of sandboxes.values()) {
+    const kept = await keptItems(root, scope).catch(() => []);
     for (const item of kept.filter((i) => itemIdProblem(i) === null && finished(i))) {
       // Held is skipped: the run holding it removes its own, or the next tick does.
-      await withLock(item, "tick", () => removeWorktree(item, root, keptSlot(item)), lock).catch(() => undefined);
+      await withLock(item, "tick", () => removeWorktree(item, root, keptSlot(item), scope), lock).catch(() => undefined);
     }
   }
 }

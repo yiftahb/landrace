@@ -9,6 +9,7 @@ import {
   copyProblems,
   ensureWorktree,
   keptSlot,
+  pathFor,
   prepareWorktree,
   releaseWorktree,
   removeWorktree,
@@ -982,6 +983,38 @@ describe("a worktree in its own slot", () => {
     expect(await worktreeOf("6.pair", root)).toBeNull();
     const paired = await ensureWorktree("6", root, undefined, "6.pair");
     expect(await worktreeOf("6.pair", root)).toBe(paired);
+  });
+});
+
+/*
+ * #185: a person's worktrees, remotely, in a folder of their own under the
+ * sandbox root, so two people's checkouts of one item never meet. The local
+ * person names no folder, and their paths are where they always were.
+ */
+describe("a person's own folder of worktrees", () => {
+  it("puts #7 under the person's folder with a scope, and where it always was without one", async () => {
+    const root = await repo();
+    const plain = await pathFor("7", root);
+    expect(await pathFor("7", root, "alice")).toBe(join(dirname(plain), "alice", "7"));
+    expect(basename(plain)).toBe("7");
+  });
+
+  it("cuts, finds and removes alice's #7 beside bob's, each in their own folder", async () => {
+    const root = await repo();
+    const alice = await ensureWorktree("7", root, undefined, "7", { scope: "alice" });
+    const bob = await ensureWorktree("7", root, undefined, "7", { scope: "bob" });
+    expect(alice).not.toBe(bob);
+    expect(await worktreeOf("7", root, "alice")).toBe(alice);
+    expect(await worktreeOf("7", root)).toBeNull();
+
+    await removeWorktree("7", root, "7", "alice");
+    expect(existsSync(alice)).toBe(false);
+    expect(existsSync(bob)).toBe(true);
+  });
+
+  it.each(["", ".", "..", "a/b", "7.write"])("refuses %j as a person's folder", async (scope) => {
+    const root = await repo();
+    await expect(pathFor("7", root, scope)).rejects.toThrow(/not an encoded person id/);
   });
 });
 

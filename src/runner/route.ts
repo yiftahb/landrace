@@ -3,7 +3,7 @@ import { eligibilityOfNode } from "#core/index.js";
 import type {
   AdmitRoute, Claims, EditRoute, Graph, ListedWorkflow, Node, Ownership, PreHook, ReadRoute, Workflow, WorkspaceListing,
 } from "#namespace.js";
-import { andList, claimedBy, claimsOf, listingFailures, reportedBy, turnedAway } from "#runner/tick.js";
+import { andList, claimedBy, claimedByPeople, claimsOf, listingFailures, reportedBy, turnedAway } from "#runner/tick.js";
 
 /*
  * Which workflow an action on an item by id goes through, judged from a
@@ -18,6 +18,8 @@ import { andList, claimedBy, claimsOf, listingFailures, reportedBy, turnedAway }
  * settle, in the tick's own words; null for any other item.
  */
 export function haltOf(claims: Claims, item: string): string | null {
+  const people = claims.ambiguous?.get(item);
+  if (people) return claimedByPeople(people);
   const conflict = claims.conflicts.get(item);
   if (conflict) return claimedBy(conflict);
   const clash = claims.clashes.get(item);
@@ -42,6 +44,9 @@ export function unownedWhy(claims: Claims, item: string): string | null {
 function ownership(claims: Claims, item: string): Ownership | null {
   const owner = claims.owner.get(item);
   if (owner !== undefined) return { workflow: owner };
+  // Open or closed: the last tick found more than one person holding it.
+  const people = claims.ambiguous?.get(item);
+  if (people) return { refused: `#${item} is ${claimedByPeople(people)}; act on it after one person alone has it` };
   const clash = claims.clashes.get(item);
   if (clash) return { refused: `#${item} is ${reportedBy(clash)}; act on it after one source alone reports it` };
   const why = unownedWhy(claims, item);
