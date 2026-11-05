@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import { gitlabConnection } from "landrace/integrations/gitlab";
 import { runtimeConfigSchema } from "#config/schema.js";
 import { defineConnection } from "#hooks/contracts.js";
 import { allowedHosts, frontDoorOrigins } from "#front/hosts.js";
@@ -22,15 +23,16 @@ const TOKEN = "ghp_pasted_token_long_enough";
 const ME = { id: "local" };
 const empty: BoardView = { generatedAt: 1, rows: [], nextTickAt: null, folder: "landrace", workspace: "/repo/landrace", workflows: [], needsYou: 0, listed: true };
 
-function drive(opts: UiOptions, path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<{ status: number; body: string }> {
+function drive(opts: UiOptions, path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Promise<{ status: number; body: string; headers: Record<string, string> }> {
   return new Promise((resolve) => {
     const req = Object.assign(Readable.from(init.body === undefined ? [] : [Buffer.from(init.body)]), {
       method: init.method ?? "GET", url: path, headers: { host: `127.0.0.1:${PORT}`, ...init.headers },
     });
     let status = 0;
+    let headers: Record<string, string> = {};
     const res = {
-      writeHead(s: number) { status = s; return res; },
-      end(b?: string) { resolve({ status, body: String(b ?? "") }); },
+      writeHead(s: number, h?: Record<string, string>) { status = s; headers = h ?? {}; return res; },
+      end(b?: string) { resolve({ status, body: String(b ?? ""), headers }); },
     };
     boardListener(opts)(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   });
@@ -213,5 +215,123 @@ describe("the board while the person is not ready", () => {
     const { ui } = await world();
     expect((await drive(ui, "/")).status).toBe(200);
     expect((await drive(ui, "/app.js")).status).toBe(200);
+  });
+});
+
+/*
+ * Connect with GitLab, through the server's own listener over the real panel
+ * and GitLab's own connection: its `oauth` reads the client id and secret out
+ * of the instance's secrets, and its check asks GET /user as a paste's does.
+ * One fetch stands in for gitlab.com, the token endpoint and the API both.
+ */
+describe("the Integrations tab's OAuth routes", () => {
+  const ACCESS = "glo-oauth-access-token-0123456789";
+  const REFRESH = "glr-oauth-refresh-token-0123456789";
+  const CLIENT_SECRET = "gloas-client-secret-0123456789";
+  const saved = globalThis.fetch;
+  let asked: string[] = [];
+  let userStatus = 200;
+  beforeEach(() => {
+    asked = [];
+    userStatus = 200;
+    globalThis.fetch = (async (url: string | URL) => {
+      asked.push(String(url));
+      if (String(url) === "https://gitlab.com/oauth/token") {
+        return new Response(JSON.stringify({ access_token: ACCESS, refresh_token: REFRESH, expires_in: 7200 }), { status: 200 });
+      }
+      if (String(url) === "https://gitlab.com/api/v4/user") {
+        return new Response(JSON.stringify(userStatus === 200 ? { id: 7, username: "dev1" } : { message: "401 Unauthorized" }), { status: userStatus });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+  });
+  afterEach(() => { globalThis.fetch = saved; });
+
+  async function oauthWorld(secrets: Record<string, string>) {
+    const root = join(await mkdtemp(join(tmpdir(), "lr-oauth-routes-")), "credentials");
+    const store = createCredentialStore(root);
+    const printed: string[] = [];
+    const log = createLogger({ sink: (e) => printed.push(JSON.stringify(e)) });
+    log.redact([CLIENT_SECRET]);
+    const glConfig = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "claude" }, secrets: { gitlabToken: { perPerson: true, connection: "gitlab.token" } } });
+    const glLoaded: LoadedConfig = { ...loaded, config: glConfig };
+    const ctx = { config: glConfig, secrets: new Map(Object.entries(secrets)), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+    let reloads = 0;
+    const panel = createPeoplePanel({
+      store, gate: () => ({ registry: { connections: new Map([["gitlab", gitlabConnection]]) }, loaded: glLoaded, ctx }), mode: { remote: false }, log,
+      onChange: async () => { reloads++; },
+      door: () => `http://127.0.0.1:${PORT}/`,
+    });
+    const ui: UiOptions = { ...DOOR, view: async () => empty, people: { panel, caller: () => ME }, ready: () => false };
+    return { ui, store, printed, reloads: () => reloads };
+  }
+
+  const APP = { gitlabOauthClientId: "client-123", gitlabOauthClientSecret: CLIENT_SECRET };
+  const stateOf = (location: string | undefined): string => new URL(location ?? "").searchParams.get("state") ?? "";
+
+  it("offers the paste form for gitlab without a client id, and the Connect link with both", async () => {
+    const without = await oauthWorld({ gitlabOauthClientSecret: CLIENT_SECRET });
+    const pasted = JSON.parse((await drive(without.ui, "/people/me")).body) as { oauth: Record<string, string>; fields: Record<string, string[]> };
+    expect(pasted.oauth).toEqual({});
+    expect(pasted.fields["gitlab"]).toEqual(["token"]);
+    expect((await drive(without.ui, "/connect/gitlab/start")).status).toBe(409);
+
+    const withApp = await oauthWorld(APP);
+    const me = JSON.parse((await drive(withApp.ui, "/people/me")).body) as { oauth: Record<string, string> };
+    expect(me.oauth).toEqual({ gitlab: "/connect/gitlab/start" });
+  });
+
+  it("sends the person to GitLab, and the callback stores the checked token and answers 302 /#/integrations", async () => {
+    const { ui, store, printed, reloads } = await oauthWorld(APP);
+    const start = await drive(ui, "/connect/gitlab/start");
+    expect(start.status).toBe(302);
+    const consent = new URL(start.headers["location"] ?? "");
+    expect(consent.origin + consent.pathname).toBe("https://gitlab.com/oauth/authorize");
+    expect(consent.searchParams.get("redirect_uri")).toBe(`http://127.0.0.1:${PORT}/connect/gitlab/callback`);
+    expect(consent.searchParams.get("scope")).toBe("api");
+    const state = stateOf(start.headers["location"]);
+
+    const back = await drive(ui, `/connect/gitlab/callback?code=the-code&state=${encodeURIComponent(state)}`);
+    expect([back.status, back.headers["location"]]).toEqual([302, "/#/integrations"]);
+    expect((await store.read("local")).connections["gitlab"]).toMatchObject({
+      fields: { token: ACCESS }, source: "oauth", refresh: { token: REFRESH }, expiresAt: expect.any(String),
+    });
+    expect(asked).toEqual(["https://gitlab.com/oauth/token", "https://gitlab.com/api/v4/user"]);
+    expect(reloads()).toBe(1);
+    expect(printed.some((l) => l.includes("person.connected"))).toBe(true);
+    expect(printed.join("\n")).not.toContain(ACCESS);
+    expect(printed.join("\n")).not.toContain(REFRESH);
+
+    // Spent: the same redirect again is refused.
+    expect((await drive(ui, `/connect/gitlab/callback?code=the-code&state=${encodeURIComponent(state)}`)).status).toBe(409);
+  });
+
+  it("refuses with 409 and stores nothing when GitLab's check refuses the token", async () => {
+    const { ui, store } = await oauthWorld(APP);
+    userStatus = 401;
+    const state = stateOf((await drive(ui, "/connect/gitlab/start")).headers["location"]);
+    const back = await drive(ui, `/connect/gitlab/callback?code=c&state=${state}`);
+    expect(back.status).toBe(409);
+    expect(back.body).toMatch(/"gitlab" does not work: token was rejected by GitLab \(401\)/);
+    expect(back.body).not.toContain(ACCESS);
+    expect((await store.read("local")).connections).toEqual({});
+  });
+
+  it("refuses GitLab's own error, and a state it never issued, storing nothing", async () => {
+    const { ui, store } = await oauthWorld(APP);
+    const state = stateOf((await drive(ui, "/connect/gitlab/start")).headers["location"]);
+    const denied = await drive(ui, `/connect/gitlab/callback?error=access_denied&error_description=denied+by+you&state=${state}`);
+    expect([denied.status, denied.body]).toEqual([409, "GitLab did not connect: access_denied: denied by you"]);
+    expect((await drive(ui, "/connect/gitlab/callback?code=c&state=forged")).status).toBe(409);
+    expect(asked).toEqual([]);
+    expect((await store.read("local")).connections).toEqual({});
+  });
+
+  it("refuses a start another site asked for, a POST to either route, and a connection that is not there", async () => {
+    const { ui } = await oauthWorld(APP);
+    expect((await drive(ui, "/connect/gitlab/start", { headers: { "sec-fetch-site": "cross-site" } })).status).toBe(403);
+    expect((await drive(ui, "/connect/gitlab/start", { method: "POST" })).status).toBe(405);
+    expect((await drive(ui, "/connect/gitlab/callback", { method: "POST" })).status).toBe(405);
+    expect((await drive(ui, "/connect/nope/start")).status).toBe(409);
   });
 });

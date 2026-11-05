@@ -187,3 +187,37 @@ describe("the people panel", () => {
     expect((await panel.me(ME)).ready).toBe(true);
   });
 });
+
+describe("the people panel's OAuth connect", () => {
+  const app = (): ReturnType<NonNullable<ConnectionDef["oauth"]>> => ({
+    authorizeUrl: "https://forge.example.invalid/oauth/authorize", tokenUrl: "https://forge.example.invalid/oauth/token",
+    clientId: "client-123", clientSecret: "client-secret-0123456789", scope: "api",
+  });
+
+  it("refuses to begin before the door knows its own URL, and offers no identity", async () => {
+    const root = join(await mkdtemp(join(tmpdir(), "lr-panel-")), "credentials");
+    const ctx = { config, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+    const withApp = defineConnection({ ...forge(), oauth: app });
+    const who = defineConnection({ id: "who", label: "Who", kind: "identity", fields: ["user"], oauth: app });
+    const panel = createPeoplePanel({
+      store: createCredentialStore(root), mode: { remote: false }, log: createLogger({ sink: () => {} }), onChange: async () => {},
+      gate: () => ({ registry: { connections: new Map([["forge", withApp], ["who", who]]) }, loaded, ctx }), door: () => null,
+    });
+    expect((await panel.me(ME)).oauth).toEqual({ forge: "/connect/forge/start" });
+    await expect(panel.begin(ME, "forge")).rejects.toThrow(/does not know its own address/);
+    await expect(panel.begin(ME, "forge")).rejects.toThrow(Refusal);
+  });
+
+  it("sends the provider back to the door's callback, whether or not the door's URL ends in a slash", async () => {
+    const root = join(await mkdtemp(join(tmpdir(), "lr-panel-")), "credentials");
+    const ctx = { config, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+    for (const door of ["https://landrace.acme.example", "https://landrace.acme.example/"]) {
+      const panel = createPeoplePanel({
+        store: createCredentialStore(root), mode: { remote: false }, log: createLogger({ sink: () => {} }), onChange: async () => {},
+        gate: () => ({ registry: { connections: new Map([["forge", defineConnection({ ...forge(), oauth: app })]]) }, loaded, ctx }), door: () => door,
+      });
+      const url = new URL(await panel.begin(ME, "forge"));
+      expect(url.searchParams.get("redirect_uri")).toBe("https://landrace.acme.example/connect/forge/callback");
+    }
+  });
+});

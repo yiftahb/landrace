@@ -1453,8 +1453,10 @@ function integrationsLink(selected) {
 // states, hints and field names for it. An identity is looked up, so it has
 // nothing to paste; its looked-up fields are sent to, and shown as text for,
 // their own person only, so they can spot a lookup that matched the wrong
-// account.
-function integrationRow(conn, hint, fields, identity) {
+// account. A credential the instance has an OAuth app for is connected by a
+// link to the provider, which sends the person back to this tab; it has no
+// paste form.
+function integrationRow(conn, hint, fields, identity, oauth) {
   const muted = "text-xs text-neutral-500 dark:text-neutral-400";
   const li = el("li", "flex flex-col gap-2 py-3");
   li.setAttribute("data-key", "integration:" + conn.id);
@@ -1474,7 +1476,11 @@ function integrationRow(conn, hint, fields, identity) {
     for (const [field, value] of Object.entries(identity || {})) li.append(el("p", "font-mono " + muted, field + ": " + value));
     return li;
   }
-  if (!good) {
+  if (!good && oauth) {
+    const link = el("a", CONNECT_BUTTON + " self-start", "Connect with " + conn.label);
+    link.href = oauth;
+    li.append(link);
+  } else if (!good) {
     const form = el("form", "flex flex-col gap-2");
     form.setAttribute("data-connect", conn.id);
     if (hint) form.append(el("p", muted, hint));
@@ -1524,7 +1530,7 @@ async function loadMe() {
       : "Landrace runs nothing until each connection it needs is made.";
     document.getElementById("integrations-list").replaceChildren(
       ...(me.connections.length
-        ? me.connections.map((c) => integrationRow(c, me.hints[c.id] || "", me.fields[c.id] || [], (me.identities || {})[c.id]))
+        ? me.connections.map((c) => integrationRow(c, me.hints[c.id] || "", me.fields[c.id] || [], (me.identities || {})[c.id], (me.oauth || {})[c.id]))
         : [el("li", "py-3 text-sm italic text-neutral-400 dark:text-neutral-600", "No hook defines a connection")]),
     );
   } catch (e) {

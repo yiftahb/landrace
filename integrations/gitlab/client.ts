@@ -19,7 +19,8 @@ export const PER_PAGE = 100;
 export interface GitLabClientOptions {
   /** The project's full path, "group/app" or "group/subgroup/app". */
   project: string;
-  token: string;
+  /** The token, or where to read it on each request: one connected with GitLab is renewed every two hours under a client that is kept. */
+  token: string | (() => string);
   /** `https://host[:port]`; gitlab.com when absent. */
   baseUrl?: string | undefined;
   fetchImpl?: typeof fetch | undefined;
@@ -27,7 +28,8 @@ export interface GitLabClientOptions {
   onLimit?: ((where: string, limit: HttpLimit) => void) | undefined;
 }
 
-const BASE_URL = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?\/?$/;
+/** `https://host[:port]` and nothing more: the token never crosses cleartext, nor a path or credentials the base could smuggle in. */
+export const BASE_URL = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?\/?$/;
 
 /** Segments that never start with a dot, so no ".." can retarget a request after URL normalisation. */
 const PROJECT_PATH = /^[A-Za-z0-9_][A-Za-z0-9._-]*(?:\/[A-Za-z0-9_][A-Za-z0-9._-]*)+$/;
@@ -42,7 +44,9 @@ export function tokenRejected(e: unknown): Error | null {
 export const statusOf = (e: unknown): unknown => (e as { status?: unknown } | null)?.status;
 
 export function createClient(opts: GitLabClientOptions) {
-  const { project, token } = opts;
+  const { project } = opts;
+  const given = opts.token;
+  const tokenNow = typeof given === "string" ? (): string => given : given;
   const raw = opts.baseUrl ?? DEFAULT_BASE_URL;
   if (!BASE_URL.test(raw)) throw new Error(`gitlabBaseUrl must be https://host[:port] and nothing more, got "${raw}"`);
   if (!PROJECT_PATH.test(project)) throw new Error(`the GitLab project must be its full path, "group/app", got "${project}"`);
@@ -53,11 +57,11 @@ export function createClient(opts: GitLabClientOptions) {
   // The status rides on the error, so a caller asks "is this a 404?" of a
   // number rather than of text that may quote a path. The message names the
   // path below the API and GitLab's answer, never a header.
-  async function request<T>(method: string, path: string, body?: unknown, as: "json" | "text" = "json"): Promise<T> {
-    const res = await doFetch(`${baseUrl}/api/v4${path}`, {
+  async function request<T>(method: string, path: string, body?: unknown, as: "json" | "text" = "json", root = `${baseUrl}/api/v4`): Promise<T> {
+    const res = await doFetch(`${root}${path}`, {
       method,
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${tokenNow()}`,
         Accept: as === "text" ? "text/plain" : "application/json",
         "User-Agent": "landrace",
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -92,17 +96,34 @@ export function createClient(opts: GitLabClientOptions) {
   return {
     project,
     baseUrl,
-    /** For the one place it goes besides a request: the push's own header, and scrubbing it from what git says. */
-    token,
+    /** For the one place it goes besides a request: the push's own header, and scrubbing it from what git says. The one held now. */
+    get token(): string {
+      return tokenNow();
+    },
 
     /** The token's own user: its id, the login we post as, and whether it administers the instance. */
     user,
     login: async (): Promise<string> => (await user()).username,
 
-    /** The scopes the token itself holds — a personal, project or group access token's. */
+    /**
+     * The scopes the token itself holds — a personal, project or group access
+     * token's. One connected with GitLab is an OAuth token, which that
+     * endpoint knows nothing of: its scopes are GitLab's token info instead.
+     */
     scopes: async (): Promise<string[]> => {
-      const self = await request<{ scopes?: unknown } | null>("GET", "/personal_access_tokens/self");
-      return Array.isArray(self?.scopes) ? self.scopes.filter((s): s is string => typeof s === "string") : [];
+      const strings = (list: unknown): string[] => (Array.isArray(list) ? list.filter((s): s is string => typeof s === "string") : []);
+      let refused: unknown;
+      try {
+        const self = await request<{ scopes?: unknown } | null>("GET", "/personal_access_tokens/self");
+        return strings(self?.scopes);
+      } catch (e) {
+        if (statusOf(e) !== 404 && statusOf(e) !== 403) throw e;
+        refused = e;
+      }
+      // Not an OAuth token either: what GitLab said of it first is the reason.
+      const info = await request<{ scope?: unknown; scopes?: unknown } | null>("GET", "/token/info", undefined, "json", `${baseUrl}/oauth`)
+        .catch(() => { throw refused; });
+      return strings(info?.scopes ?? info?.scope);
     },
 
     /** Below the project: `get("/merge_requests/3")`. */
@@ -152,8 +173,9 @@ export function clientFor(ctx: RuntimeContext, project: string, fetchImpl?: type
   const token = ctx.secrets.get("gitlabToken");
   if (!token) throw new Error('the GitLab integration needs a "gitlabToken" secret declared in landrace.yaml');
   // An empty value is an unset one: the variable it names was blank.
+  // Read again on every request: a renewed token is written into the live secrets, and this client outlives it.
   const client = createClient({
-    project, token, baseUrl: ctx.secrets.get("gitlabBaseUrl") || undefined, fetchImpl,
+    project, token: () => ctx.secrets.get("gitlabToken") || token, baseUrl: ctx.secrets.get("gitlabBaseUrl") || undefined, fetchImpl,
     onLimit: (where, limit) => ctx.log("integration.limited", { integration: "gitlab", where, ...limit }),
   });
   byProject.set(project, client);

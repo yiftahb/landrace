@@ -1,3 +1,4 @@
+import { beginConnect, createPendingConnects, finishConnect, oauthOf } from "#people/oauth.js";
 import { connectionStatus, resolvePerson } from "#people/resolve.js";
 import { messageOf, Refusal } from "#runner/errors.js";
 import type {
@@ -19,6 +20,12 @@ const byId = (a: ConnectionDef, b: ConnectionDef): number => (a.id < b.id ? -1 :
  * stored and rejects with why, since the paste itself was good. `lookups` is
  * why each identity the gate could not look up is missing, for the one
  * person it judged: another caller's rows say nothing of it.
+ *
+ * `door` is the front door's own URL — `serve.publicUrl`, else the address
+ * it bound — which an OAuth provider sends the person back to, at
+ * `/connect/<id>/callback`; null while the door is not up, and a Connect
+ * link then refuses. A connection made by OAuth is checked, stored and
+ * reloaded exactly as a paste is.
  */
 export function createPeoplePanel(opts: {
   store: CredentialStore;
@@ -30,8 +37,11 @@ export function createPeoplePanel(opts: {
   onChange: (personId: string) => Promise<void>;
   log: RedactingLogger;
   now?: () => Date;
+  door?: () => string | null;
+  fetch?: typeof fetch;
 }): PeoplePanel {
   const now = opts.now ?? (() => new Date());
+  const pending = createPendingConnects();
   const defOf = (registry: Pick<Registry, "connections">, id: string): ConnectionDef => {
     const def = registry.connections.get(id);
     if (def === undefined) {
@@ -43,7 +53,7 @@ export function createPeoplePanel(opts: {
 
   return {
     me: async (caller): Promise<MeView> => {
-      const { registry, loaded, lookups } = opts.gate();
+      const { registry, loaded, lookups, ctx } = opts.gate();
       const creds = await opts.store.read(caller.id);
       const at = now();
       const reasons = lookups?.person === caller.id ? lookups.reasons : new Map<string, string>();
@@ -51,6 +61,7 @@ export function createPeoplePanel(opts: {
       const hints: Record<string, string> = {};
       const fields: Record<string, string[]> = {};
       const identities: Record<string, Record<string, string>> = {};
+      const oauth: Record<string, string> = {};
       const connections = defs.map((def) => connectionStatus(def, creds, at.getTime(), reasons));
       for (const def of defs) {
         // Who a lookup matched, shown to that person alone — this read is
@@ -63,6 +74,7 @@ export function createPeoplePanel(opts: {
         if (def.kind !== "credential") continue;
         fields[def.id] = [...def.fields];
         if (def.paste) hints[def.id] = def.paste.hint;
+        if (oauthOf(def, ctx) !== null) oauth[def.id] = `/connect/${encodeURIComponent(def.id)}/start`;
       }
       return {
         person: caller,
@@ -71,8 +83,8 @@ export function createPeoplePanel(opts: {
         hints,
         fields,
         identities,
+        oauth,
       };
-
     },
 
     connect: async (caller: Person, id: string, fields: Record<string, string>): Promise<ConnectionStatus> => {
@@ -88,22 +100,33 @@ export function createPeoplePanel(opts: {
       }
       const empty = wanted.filter((f) => typeof fields[f] !== "string" || (fields[f] ?? "").trim() === "");
       if (empty.length) throw new Refusal(`"${id}": ${empty.join(", ")} ${empty.length === 1 ? "is" : "are"} empty`);
-      const values = wanted.map((f) => fields[f] ?? "");
-      // Before check runs: a hook that logs what it was handed, or a vendor
-      // whose error quotes the token, must not put it on a line.
-      opts.log.redact(values);
       const value: ConnectionValue = { fields: Object.fromEntries(wanted.map((f) => [f, fields[f] ?? ""])), source: "paste", connectedAt: now().toISOString() };
-      let problem: string | null = null;
+      return keep(caller, def, value, ctx);
+    },
+
+    begin: async (caller, id) => {
+      const { registry, ctx } = opts.gate();
+      const def = defOf(registry, id);
+      const door = opts.door?.() ?? null;
+      if (door === null) throw new Refusal(`"${id}" cannot be connected yet: Landrace does not know its own address until the board is up`);
+      const redirectUri = new URL(`connect/${encodeURIComponent(id)}/callback`, door.endsWith("/") ? door : `${door}/`).toString();
+      return beginConnect(def, ctx, { person: caller.id, redirectUri, pending, now: () => now().getTime() });
+    },
+
+    finish: async (caller, id, callback) => {
+      const { registry, ctx } = opts.gate();
+      const def = defOf(registry, id);
+      let value: ConnectionValue;
       try {
-        problem = def.check ? await def.check(value, ctx) : null;
+        value = await finishConnect(def, ctx, {
+          person: caller.id, connection: id, callback, pending, now: () => now().getTime(), ...(opts.fetch ? { fetch: opts.fetch } : {}),
+        });
       } catch (e) {
-        throw new Error(opts.log.scrub(`checking "${id}" failed: ${messageOf(e)}`, values));
+        // A provider's error text can quote what it was sent, the app's secret among it.
+        const message = opts.log.scrub(messageOf(e));
+        throw e instanceof Refusal ? new Refusal(message) : new Error(`connecting "${id}" failed: ${message}`);
       }
-      if (problem !== null) throw new Refusal(opts.log.scrub(`"${id}" does not work: ${problem}`, values));
-      await opts.store.put(caller.id, caller, id, value);
-      opts.log("person.connected", { connection: id });
-      await reload(caller.id, `"${id}" is connected`, values);
-      return connectionStatus(def, await opts.store.read(caller.id), now().getTime());
+      return keep(caller, def, value, ctx);
     },
 
     disconnect: async (caller, id) => {
@@ -113,6 +136,28 @@ export function createPeoplePanel(opts: {
       await reload(caller.id, `"${id}" is disconnected`);
     },
   };
+
+  /**
+   * A value made — pasted, or by OAuth — checked, stored and reloaded with.
+   * Its secrets are redacted before check runs: a hook that logs what it was
+   * handed, or a vendor whose error quotes the token, must not put it on a line.
+   */
+  async function keep(caller: Person, def: ConnectionDef, value: ConnectionValue, ctx: RuntimeContext): Promise<ConnectionStatus> {
+    const { id } = def;
+    const values = [...Object.values(value.fields), ...(value.refresh === undefined ? [] : [value.refresh.token])];
+    opts.log.redact(values);
+    let problem: string | null = null;
+    try {
+      problem = def.check ? await def.check(value, ctx) : null;
+    } catch (e) {
+      throw new Error(opts.log.scrub(`checking "${id}" failed: ${messageOf(e)}`, values));
+    }
+    if (problem !== null) throw new Refusal(opts.log.scrub(`"${id}" does not work: ${problem}`, values));
+    await opts.store.put(caller.id, caller, id, value);
+    opts.log("person.connected", { connection: id });
+    await reload(caller.id, `"${id}" is connected`, values);
+    return connectionStatus(def, await opts.store.read(caller.id), now().getTime());
+  }
 
   /** The reload after a change, its failure said with what was changed and every secret taken out. */
   async function reload(personId: string, done: string, values: readonly string[] = []): Promise<void> {

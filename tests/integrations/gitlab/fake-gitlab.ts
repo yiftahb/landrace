@@ -119,6 +119,10 @@ export interface FakeSettings {
   defaultBranch: string;
   /** Whether the token's user administers the instance: GitLab names no membership for one. */
   admin: boolean;
+  /** The one token GitLab takes; a renewed OAuth token replaces it. */
+  token: string;
+  /** An OAuth token: `/personal_access_tokens/self` knows nothing of it, and `/oauth/token/info` says its scopes. */
+  oauth: boolean;
 }
 
 export interface FakeGitLab {
@@ -175,7 +179,7 @@ function sides(patch: string): Map<number, number | null> {
 }
 
 export function createFakeGitLab(): FakeGitLab {
-  const settings: FakeSettings = { scopes: ["api"], access: 30, visible: true, defaultBranch: "main", admin: false };
+  const settings: FakeSettings = { scopes: ["api"], access: 30, visible: true, defaultBranch: "main", admin: false, token: TOKEN, oauth: false };
   let broken: { match: (r: { method: string; path: string }) => boolean; status: number } | null = null;
   const mrs = new Map<number, FakeMr>();
   const commits = new Map<string, string[]>();
@@ -272,6 +276,13 @@ export function createFakeGitLab(): FakeGitLab {
     const url = new URL(String(input));
     const method = init?.method ?? "GET";
     const body = init?.body === undefined ? {} : (JSON.parse(String(init.body)) as Record<string, unknown>);
+    if (url.href === `${BASE}/oauth/token/info`) {
+      requests.push({ method, path: "/oauth/token/info", query: url.searchParams, body });
+      if (!settings.oauth || new Headers(init?.headers).get("authorization") !== `Bearer ${settings.token}`) {
+        return json({ error: "invalid_token", error_description: "The access token is invalid" }, 401);
+      }
+      return json({ resource_owner_id: 7, scope: settings.scopes, scopes: settings.scopes, expires_in: 7000, application: { uid: "client-123" }, created_at: 1 });
+    }
     if (!url.href.startsWith(`${BASE}/api/v4/`)) return new Response("not this GitLab", { status: 404 });
     const path = url.pathname.slice("/api/v4".length);
     requests.push({ method, path, query: url.searchParams, body });
@@ -283,10 +294,11 @@ export function createFakeGitLab(): FakeGitLab {
     }
 
     const auth = new Headers(init?.headers).get("authorization");
-    if (auth !== `Bearer ${TOKEN}`) return json({ message: "401 Unauthorized" }, 401);
+    if (auth !== `Bearer ${settings.token}`) return json({ message: "401 Unauthorized" }, 401);
 
     if (path === "/user" && method === "GET") return json({ id: 7, username: BOT, ...(settings.admin ? { is_admin: true } : {}) });
     if (path === "/personal_access_tokens/self" && method === "GET") {
+      if (settings.oauth) return json({ message: "404 Not Found" }, 404);
       return json({ id: 3, name: "landrace", active: true, revoked: false, scopes: settings.scopes });
     }
 

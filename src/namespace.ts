@@ -1788,7 +1788,7 @@ export type EventName =
   | "notify.sent" | "notify.failed"
   | "agent.limited" | "integration.limited"
   | "person.connected" | "person.disconnected"
-  | "connection.expiring" | "connection.failed";
+  | "connection.expiring" | "connection.failed" | "connection.refreshed";
 
 export interface LandraceEvent {
   name: EventName;
@@ -1885,6 +1885,49 @@ export interface ConnectionDef {
   lifetimeDays?: number;
   resolve?(email: string, ctx: RuntimeContext): Promise<Record<string, string> | null>;
   check?(value: ConnectionValue, ctx: RuntimeContext): Promise<string | null>;
+  /**
+   * The provider's OAuth app for this connection, out of the instance's own
+   * secrets: a function of `ctx`, since where the app lives can be a secret
+   * too. Offered only for a credential of one field, and only when both
+   * `clientId` and `clientSecret` are non-empty; otherwise the paste form.
+   */
+  oauth?(ctx: RuntimeContext): OAuthSpec;
+}
+
+/**
+ * One provider's OAuth app, as a connection's `oauth` answers it: where a
+ * person consents, where a code and a refresh token are exchanged, the
+ * app's own id and secret, and the scope asked for, space-separated.
+ */
+export interface OAuthSpec {
+  authorizeUrl: string;
+  tokenUrl: string;
+  clientId: string;
+  clientSecret: string;
+  scope: string;
+}
+
+/**
+ * OAuth flows begun and not yet finished, by their `state`: whose, for which
+ * connection, the PKCE verifier and the redirect URI the code is bound to,
+ * and when it stops being accepted, epoch ms. In memory only: a restart
+ * forgets them, and a person begins again.
+ */
+export type PendingConnects = Map<string, { person: string; connection: string; verifier: string; redirectUri: string; expires: number }>;
+
+/** A token endpoint's answer once it holds an access token: the rest is the provider's to send or leave out, and checked where it is read. */
+export interface OAuthTokenAnswer {
+  access_token: string;
+  refresh_token?: unknown;
+  expires_in?: unknown;
+}
+
+/** What a provider's redirect back carries in its query: a code and the state, or why it gave none. */
+export interface ConnectCallback {
+  state?: string | undefined;
+  code?: string | undefined;
+  error?: string | undefined;
+  errorDescription?: string | undefined;
 }
 
 /**
@@ -1985,6 +2028,12 @@ export interface MeView {
   hints: Record<string, string>;
   fields: Record<string, string[]>;
   identities: Record<string, Record<string, string>>;
+  /**
+   * Each credential this instance has an OAuth app for, by connection id:
+   * where its Connect link starts the flow, `/connect/<id>/start`. A row
+   * here gets the link in place of its paste form.
+   */
+  oauth: Record<string, string>;
 }
 
 /**
@@ -1997,6 +2046,15 @@ export interface PeoplePanel {
   me(caller: Person): Promise<MeView>;
   connect(caller: Person, id: string, fields: Record<string, string>): Promise<ConnectionStatus>;
   disconnect(caller: Person, id: string): Promise<void>;
+  /** The provider's consent URL for a credential connected by OAuth; a `Refusal` when it offers none, or the door's URL is not known yet. */
+  begin(caller: Person, id: string): Promise<string>;
+  /**
+   * The provider's redirect back: the state spent, the code exchanged, then
+   * the token checked, stored and reloaded as a paste is. A `Refusal` —
+   * a state that does not hold, the provider's error, a failing check —
+   * stores nothing.
+   */
+  finish(caller: Person, id: string, callback: ConnectCallback): Promise<ConnectionStatus>;
 }
 
 /**
@@ -2792,6 +2850,13 @@ export interface WorkspaceRuntime {
   log: RedactingLogger;
   ctx: RuntimeContext;
   /**
+   * The map behind `ctx.secrets`, and every hook context made from it: what
+   * `start`'s refresher writes a renewed OAuth token into, so the runs it
+   * already started and the clients they keep send the new one.
+   * `buildWorkspaceRuntime` always sets it; a runtime a test builds by hand may not.
+   */
+  secretValues?: Map<string, string>;
+  /**
    * What each step's agent is doing, for the page's item panel: one log for
    * the workspace, keyed by item, and the one every workflow's deps carry.
    * Absent for a runtime built only to read, which writes nothing.
@@ -2852,6 +2917,8 @@ export interface StartOptions {
   credentials?: CredentialStore;
   /** Serves the front door. Default `serveFrontDoor`; a test passes one that binds nothing and drives the listener itself. */
   serve?: (opts: FrontDoorOptions) => Promise<UiServer>;
+  /** The OAuth refresher's pass, every 60 s by default, and what it and a callback reach a token endpoint with; a test passes a stub. */
+  oauth?: { everyMs?: number; fetch?: typeof fetch };
 }
 
 /**
