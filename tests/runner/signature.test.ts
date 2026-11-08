@@ -24,7 +24,7 @@ const spec: Step = {
 };
 
 const run = (text: string, over: Partial<Parameters<typeof runStep>[0]> = {}, said: Partial<ExecutorAnswer> = { model: "claude-opus-5-5", effort: "medium" }) =>
-  runStep({ item: "1", step: spec, stageId: "spec", round: 2, snapshot, executor: answering(text, said), signal: new AbortController().signal, ...over }) as Promise<Ok>;
+  runStep({ controls: null, item: "1", step: spec, stageId: "spec", round: 2, snapshot, executor: answering(text, said), signal: new AbortController().signal, ...over }) as Promise<Ok>;
 
 const bodyOf = (e: Effect | undefined): string => String(e?.body);
 

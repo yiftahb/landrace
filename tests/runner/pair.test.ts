@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { lstat, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { markOf } from "#agent/screen.js";
 import { worktreeState } from "#agent/worktree.js";
@@ -322,6 +324,52 @@ describe("starting a pairing", () => {
     await startPair(spec.deps, "29", "spec");
     await finishPair(spec.deps, "29");
     expect(b.runs[0]?.denyWrite).toBeUndefined();
+  });
+
+  // A Linux sandbox denies only the control paths that exist: one the closing turn makes is judged
+  // once it ends, however it ends, and recorded as the hand-in's refusal.
+  it.each(["answers", "throws", "is aborted"] as const)(
+    "refuses a write step's hand-in that leaves <common>/commondir holding something and %s, recording it",
+    async (end) => {
+      const planted = join(realpathSync(join(repo, ".git")), "commondir");
+      const abort = new AbortController();
+      const planter: Executor = {
+        ...agent(BUILT).executor,
+        run: async () => {
+          await writeFile(planted, "/elsewhere\n");
+          if (end === "answers") return { text: BUILT, sessionId: "sid-fork" };
+          if (end === "is aborted") abort.abort();
+          throw new Error("the agent stopped");
+        },
+      };
+      const w = built(planter);
+      const deps = { ...w.deps, ctx: { ...w.deps.ctx, signal: abort.signal } };
+      await startPair(w.deps, "29", "build");
+      try {
+        await expect(finishPair(deps, "29")).rejects.toThrow(planted);
+        expect(records(w.tracker, "refused")).toHaveLength(1);
+      } finally {
+        await rm(planted, { force: true });
+        await releasePair(w.deps, "29").catch(() => undefined);
+      }
+    },
+  );
+
+  it("refuses a write step's hand-in on Linux while extensions.worktreeConfig is on, naming it, and never runs it", async () => {
+    const a = agent(BUILT);
+    const { deps } = built(a.executor);
+    await startPair(deps, "29", "build");
+    await promisify(execFile)("git", ["config", "extensions.worktreeConfig", "true"], { cwd: repo });
+    const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      await expect(finishPair(deps, "29")).rejects.toThrow(/extensions\.worktreeConfig/);
+    } finally {
+      Object.defineProperty(process, "platform", was);
+      await promisify(execFile)("git", ["config", "--unset", "extensions.worktreeConfig"], { cwd: repo });
+      await releasePair(deps, "29").catch(() => undefined);
+    }
+    expect(a.runs).toEqual([]);
   });
 
   it("refuses a second pairing on another stage while one is open, and writes nothing", async () => {

@@ -180,6 +180,33 @@ function killGroup(child: ChildProcess): void {
   }
 }
 
+/** How long a killed group may take to be gone before the run says it is not. */
+const GROUP_EXIT_MS = 5_000;
+
+/**
+ * Resolves once no process is left in the child's group, so what the run's
+ * caller checks next — the control paths a write step was kept from — cannot
+ * be changed under it by something the agent left running. Rejects naming
+ * what is left when the group outlasts `GROUP_EXIT_MS`. A process that left
+ * the group (`setsid`) is past this, which `docs/security.md` states.
+ */
+async function groupGone(child: ChildProcess): Promise<void> {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  const until = Date.now() + GROUP_EXIT_MS;
+  for (;;) {
+    try {
+      process.kill(-pid, 0);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ESRCH") return;
+    }
+    if (Date.now() > until) {
+      throw new Error(`processes the agent started in group ${pid} were still running ${GROUP_EXIT_MS}ms after they were killed`);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 /** A path as the item panel shows it: relative to where the agent runs, when it is under it. */
 export const shortPath = (path: string, cwd: string): string => (path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path);
 
@@ -1102,23 +1129,22 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
           for (const a of reading.activity ?? []) onActivity({ kind: a.kind, text: a.text, at: Date.now() });
         };
 
+        // Every way out, a normal close too, kills the group and settles only
+        // once it is gone: a process the agent left behind could otherwise
+        // plant a control path after the check that follows the run, or swap
+        // one for a FIFO under it.
         const finish = (fn: () => void) => {
           if (settled) return;
           settled = true;
           clearTimeout(timer);
           signal.removeEventListener("abort", onAbort);
-          fn();
+          killGroup(child);
+          groupGone(child).then(fn, reject);
         };
         // The step's own limit when it named one, as with its model.
         const limit = stepTimeoutMs ?? timeoutMs;
-        const timer = setTimeout(() => {
-          killGroup(child);
-          finish(() => reject(new Error(`agent exceeded ${limit}ms`)));
-        }, limit);
-        const onAbort = () => {
-          killGroup(child);
-          finish(() => reject(new Error("agent aborted")));
-        };
+        const timer = setTimeout(() => finish(() => reject(new Error(`agent exceeded ${limit}ms`))), limit);
+        const onAbort = () => finish(() => reject(new Error("agent aborted")));
         signal.addEventListener("abort", onAbort, { once: true });
 
         // A prompt over ~64KB (an issue body plus a diff is the normal case,
@@ -1144,7 +1170,6 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
           // The cap is on the one line still being written: a runaway that
           // never ends a line is killed here rather than grown without bound.
           if (pending.length > MAX_OUTPUT_BYTES) {
-            killGroup(child);
             finish(() => reject(new Error(`agent produced more than ${MAX_OUTPUT_BYTES} bytes of output`)));
             return;
           }
@@ -1165,7 +1190,6 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
           // handler — which, like the EPIPE above, would crash the process
           // rather than reject the promise.
           if (err.length + d.length > MAX_OUTPUT_BYTES) {
-            killGroup(child);
             finish(() => reject(new Error(`agent produced more than ${MAX_OUTPUT_BYTES} bytes of stderr`)));
             return;
           }

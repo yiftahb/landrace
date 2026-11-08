@@ -28,14 +28,17 @@
  *
  * Then the git write rules (#206), with one more paid turn: a write step in a
  * worktree the engine's own `ensureWorktree` cuts, on an item branch, beside
- * a local bare `origin` that has moved on. It is handed `gitControlPaths` —
- * the engine's own list, imported from the source — and told to write each
+ * a local bare `origin` that has moved on. It is handed `gitControlPaths`'s
+ * `deny` — the engine's own list, imported from the source: every control
+ * path on macOS, those that exist on Linux — and told to write each
  * one, one plain command per Bash call and with its Write tool, then to
  * fetch, merge `origin/main`, commit and `git push origin HEAD`. Its tool
  * calls must name every path both ways, and two canaries off the list, one
  * written each way, must change: a held command fails instead of passing.
- * Every control path must read as it did before the run, and origin's branch
- * must hold the step's commit with origin's main merged in.
+ * Every control path must read as it did before the run, each one missing as
+ * it started must still be missing — on Linux, a sandbox that made a stub for
+ * a path it was told to deny broke every git in the checkout (#232) — and
+ * origin's branch must hold the step's commit with origin's main merged in.
  *
  * Each check prints `ok` or `FAIL` with what it saw. Exits 1 on any failure,
  * and when nothing passed: nothing checked is not a pass.
@@ -193,6 +196,16 @@ function stateOf(path) {
   return lstatSync(path).isDirectory() ? `dir:${readdirSync(path).sort().join(",")}` : `file:${readFileSync(path, "utf8")}`;
 }
 
+/** Whether anything is at `path`, a link that leads nowhere included. */
+function existsOrLink(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Back to what `stateOf` read: the file's text, a folder without the `planted` it may have gained, or absent. */
 function restore(path, was) {
   if (stateOf(path) === was) return;
@@ -226,7 +239,7 @@ async function gitWriteRules() {
     git(root, "push", "-q", "origin", "main");
     const moved = git(root, "rev-parse", "main");
 
-    const denyWrite = await gitControlPaths(path, root);
+    const { deny: denyWrite, absent } = await gitControlPaths(path, root);
     const before = new Map(denyWrite.map((p) => [p, stateOf(p)]));
     const targetOf = (p) => (existsSync(p) && lstatSync(p).isDirectory() ? join(p, "planted") : p);
     // Two paths off the list, one per way of writing: each must change, so a
@@ -292,9 +305,14 @@ async function gitWriteRules() {
       await check(`write step: could not write ${p}`, async () =>
         expect(stateOf(p) === before.get(p), `${p} changed: ${JSON.stringify(stateOf(p))}`));
     }
+    for (const p of absent) {
+      await check(`write step: left ${p}, missing as it started, missing`, async () =>
+        expect(!existsOrLink(p), `${p} is there now: ${JSON.stringify(stateOf(p))}`));
+    }
     // Put back whatever a write the sandbox let through changed, as the prompt
     // promised, so the worktree's removal below runs on the repository git made.
     for (const [p, was] of before) restore(p, was);
+    for (const p of absent) rmSync(p, { recursive: true, force: true });
     await check("write step: fetched, merged origin/main, committed and pushed its branch", async () => {
       const pushed = git(origin, "rev-parse", `refs/heads/${branch}`);
       expect(git(origin, "show", `${pushed}:live.txt`) === "live", "origin's branch has no live.txt");

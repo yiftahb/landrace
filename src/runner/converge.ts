@@ -4,7 +4,7 @@ import {
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
 import { ENTRY_KIND, GOTO_TRIGGER, isEffectRefused, MALFORMED_KIND, mayWriteRepo, OUTPUT_KIND, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
-  AgentActivity, ConvergeDeps, ConvergeResult, Decision, Dispatcher, Effect, Snapshot, StepResult, StepSandbox, WorktreeBranch,
+  AgentActivity, ControlPaths, ConvergeDeps, ConvergeResult, Decision, Dispatcher, Effect, Snapshot, StepResult, StepSandbox, WorktreeBranch,
 } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { scrubberOf } from "#runner/events.js";
@@ -423,10 +423,10 @@ async function converging(
       // the step can write, and a failure halts as a worktree that could not
       // be made does: a write run without them is one the agent could use to
       // plant a hook the engine's git runs.
-      let denyWrite: string[] | undefined;
+      let controls: ControlPaths | null = null;
       if (mayWriteRepo(step.capabilities)) {
         try {
-          denyWrite = sandbox
+          controls = sandbox
             ? await gitControlPaths(sandbox.path, sandbox.root)
             : await checkoutControlPaths([process.cwd(), ...(deps.workspace === undefined ? [] : [deps.workspace])]);
         } catch (e) {
@@ -455,7 +455,7 @@ async function converging(
           readGraph: () => deps.source.read(item, deps.ctx),
           ...(deps.screen ? { screen: deps.screen } : {}),
           ...(sandbox ? { sandbox } : {}),
-          ...(denyWrite === undefined ? {} : { denyWrite }),
+          controls,
           ...(deps.stepTimeoutMs === undefined ? {} : { defaultTimeoutMs: deps.stepTimeoutMs }),
           ...(deps.childServer ? { childServer: deps.childServer } : {}),
           ...(deps.activity ? { onActivity: (e: AgentActivity) => deps.activity?.record(item, stage.id, round, e) } : {}),
@@ -475,7 +475,12 @@ async function converging(
       // anybody still wants, and a screener killed mid-verdict refused
       // nothing. Nothing written leaves the round owed, so it runs again if
       // the item comes back.
-      if (deps.ctx.signal.aborted) return { passes: pass, settled: "halt", why: "the run was aborted" };
+      //
+      // Bar one: a run that left a git control path holding something is
+      // recorded however it ended. Unrecorded, the path is simply there when
+      // the next run's list is made, and nothing judges it again.
+      const aborted = deps.ctx.signal.aborted;
+      if (aborted && (result.ok || result.planted !== true)) return { passes: pass, settled: "halt", why: "the run was aborted" };
 
       if (!result.ok) {
         deps.log("step.rejected", { item, stage: stage.id, round, kind: result.kind, reason: result.reason });
@@ -531,9 +536,11 @@ async function converging(
         // workflow that wants a person to see a security refusal as one —
         // rather than as an agent that could not follow a format — routes on
         // run.lastRefused, which is read back from this kind.
+        // An aborted run's signal would stop the write; only a planted refusal gets here aborted.
+        const recording = aborted ? { ...deps, ctx: { ...deps.ctx, signal: new AbortController().signal } } : deps;
         const posted = await tryApply(
           [{ ...malformedEffect(stage.id, round, result.reason, scrub, result.kind === "refused" ? REFUSED_KIND : MALFORMED_KIND), ...started }],
-          item, snapshot, deps,
+          item, snapshot, recording,
         );
         if (!posted.ok) deps.log("effect.failed", { item, reason: posted.reason });
         return { passes: pass, settled: "halt", why: result.reason };

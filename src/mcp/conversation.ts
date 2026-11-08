@@ -1,6 +1,6 @@
 import { extractJsonBlock } from "#agent/json-block.js";
 import { screenPrompt } from "#agent/screen.js";
-import { checkoutControlPaths, ensureWorktree, gitControlPaths, removeWorktree } from "#agent/worktree.js";
+import { checkoutControlPaths, ensureWorktree, gitControlPaths, plantedControlPaths, removeWorktree } from "#agent/worktree.js";
 import {
   CAPABILITIES,
   CONVERSATION_KIND,
@@ -286,9 +286,10 @@ export function createConversation(deps: ConversationDeps): Conversation {
             if (!start.ok) throw new Error(`cannot ask: ${start.reason}`);
 
             // A turn on a step that may write is denied the git control paths
-            // the step is, worktree or none: see `gitControlPaths`.
-            const denyWrite = !mayWriteRepo(step.capabilities)
-              ? []
+            // the step is, worktree or none, and judged on them after: see
+            // `gitControlPaths`.
+            const controls = !mayWriteRepo(step.capabilities)
+              ? null
               : sandbox
                 ? await gitControlPaths(sandbox.path, sandbox.root)
                 : await checkoutControlPaths([process.cwd(), ...(deps.workspace === undefined ? [] : [deps.workspace])]);
@@ -300,9 +301,9 @@ export function createConversation(deps: ConversationDeps): Conversation {
             // would otherwise read back as control state we wrote.
             await say(item, snapshot, neutraliseMarkers(message));
 
-            let answer: ExecutorAnswer;
+            let ran: { ok: true; answer: ExecutorAnswer } | { ok: false; error: unknown };
             try {
-              answer = await deps.executor.run(turn, {
+              ran = { ok: true, answer: await deps.executor.run(turn, {
                 round,
                 resume: session,
                 // The step's own declaration, both halves of it. A turn is an
@@ -330,7 +331,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
                 // never reads timeoutMs still stops.
                 timeoutMs: turnTimeoutMs,
                 ...(sandbox ? { cwd: sandbox.path } : {}),
-                ...(denyWrite.length ? { denyWrite } : {}),
+                ...(controls === null ? {} : { denyWrite: controls.deny }),
                 // Beside the step's own lines, under the round it joined, so
                 // the panel shows an Ask's progress without wiping the step's.
                 ...(deps.activity
@@ -342,16 +343,28 @@ export function createConversation(deps: ConversationDeps): Conversation {
                 // lock's release rather than holding that item for the rest
                 // of the run.
                 signal: turnSignal,
-              });
+              }) };
             } catch (e) {
+              ran = { ok: false, error: e };
+            }
+
+            // However the turn ended, and before any git runs there: runStep's
+            // check, for the same reason. A turn records nothing, so the
+            // person asking is told which path to remove.
+            if (controls !== null) {
+              const planted = await plantedControlPaths(controls.absent);
+              if (planted !== null) throw new Error(`this conversation turn was refused: ${planted}`);
+            }
+            if (!ran.ok) {
               // Said as the limit, not as whatever the executor said when the
               // abort reached it — the same reason runStep does this: "aborted"
               // reads like a disconnect, and this was the cap.
               if (turnLimit.aborted && !callerSignal.aborted) {
                 throw new Error(`the agent ran past its ${turnTimeoutMs}ms limit`);
               }
-              throw e;
+              throw ran.error;
             }
+            const answer = ran.answer;
 
             // Asked of the file system, not of the flags we passed — the same
             // check, for the same reason, as the one after a step. A refused

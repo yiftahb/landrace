@@ -2485,6 +2485,12 @@ export type StepResult =
      * screener's reading of untrusted text — is what is judged for one.
      */
     outage?: string;
+    /**
+     * A refusal because a write run left a git control path holding
+     * something that was not there as it started (`plantedControlPaths`):
+     * recorded even when the run was aborted, which otherwise writes nothing.
+     */
+    planted?: true;
   };
 
 export interface ConvergeDeps {
@@ -3488,6 +3494,19 @@ export interface BuildOptions {
 export interface WorktreeState {
   head: string;
   changes: string[];
+}
+
+/**
+ * The git paths a write run's agent may not write (`gitControlPaths`), in
+ * two lists. `deny` goes to the executor as `denyWrite`: every one on macOS,
+ * only those that exist on Linux, where bwrap makes each missing path it
+ * denies as an empty file git then reads. `absent` is every one missing as
+ * the run starts, on every platform: one holding something after the run is
+ * refused, before the engine's git runs there (`plantedControlPaths`).
+ */
+export interface ControlPaths {
+  deny: string[];
+  absent: string[];
 }
 
 /**
