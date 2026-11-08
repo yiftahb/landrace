@@ -6,7 +6,7 @@ import { createSlotPool } from "#runner/pool.js";
 import { createRuntimeSlot } from "#runner/slot.js";
 import { excludeAmbiguous, listingFailures, listWorkspace, retireRuntime, tickWorkspace } from "#runner/tick.js";
 import type {
-  Board, BoardView, Person, PersonJudged, PersonRuntime, Roster, RosterOptions, WorkspaceListing, WorkspaceRuntime,
+  Board, BoardView, PausePath, Person, PersonJudged, PersonRuntime, Roster, RosterOptions, WorkspaceListing, WorkspaceRuntime,
 } from "#namespace.js";
 
 /**
@@ -62,6 +62,20 @@ function currentBoard(current: () => Board | undefined): Board {
       return board === undefined ? false : board.has?.(item) ?? true;
     },
     view: (): Promise<BoardView> => current()?.view() ?? Promise.reject(new Error(NOT_RUNNING)),
+  };
+}
+
+/**
+ * The board's Pause / Resume my runs for `person` alone: whoever the request
+ * came from, it is their own runs it pauses. A resume wakes the loop.
+ */
+export function pausePath(roster: Pick<Roster, "pause" | "paused">, person: Person, wake: () => unknown): PausePath {
+  return {
+    paused: () => roster.paused(person.id),
+    set: async (paused) => {
+      await roster.pause(person, paused);
+      if (!paused) wake();
+    },
   };
 }
 

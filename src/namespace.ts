@@ -2336,6 +2336,16 @@ export interface Roster {
   ambiguous(): ReadonlyMap<string, string[]>;
 }
 
+/**
+ * One person's Pause / Resume my runs, as the board asks it: whether their
+ * file says they paused, and the pause or resume itself, which wakes the
+ * loop on a resume so the next tick picks their items up now.
+ */
+export interface PausePath {
+  paused(): Promise<boolean>;
+  set(paused: boolean): Promise<void>;
+}
+
 /** What one judging of a person found: how they resolve, and what `start` keeps of it. */
 export interface PersonJudged {
   resolution: PersonResolution;
@@ -3893,6 +3903,13 @@ export interface BoardView {
   rows: BoardRow[];
   /** When the next scheduled tick is due, epoch ms; null when nothing is scheduled. */
   nextTickAt: number | null;
+  /**
+   * Whether the person reading the board paused their runs: the header's
+   * Paused chip, and the cog menu's Resume. Added by the server from its
+   * `pause`, on `/board.json` and on its `{ ready: false }` alike; absent from
+   * a view the board itself builds.
+   */
+  paused?: boolean;
   /** The repository checkout's own name — the header chip. `basename(workspace)`. */
   folder: string;
   /** The absolute path of the repository checkout landrace is running in. */
@@ -4034,6 +4051,13 @@ export interface UiOptions {
    * route is 404. Absent, it is.
    */
   pairing?: boolean;
+  /**
+   * The caller's own Pause / Resume my runs: `POST /pause` and `POST /resume`,
+   * each under its own action header, and whether `/tick` is refused and
+   * `/board.json` says `paused`. Bound to one caller, so no route names a
+   * person. Absent, both routes are 404.
+   */
+  pause?: PausePath;
   /**
    * Whether the board has a runtime behind it. False, `/board.json` answers
    * `{ ready: false }` and every write but the Integrations tab's is refused
