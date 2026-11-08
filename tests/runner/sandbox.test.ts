@@ -1148,6 +1148,28 @@ describe("a write run that leaves a git control path holding something", () => {
       }
     });
 
+    it.each([["in a worktree", true], ["with no worktree", false]])(
+      "refuses a write step %s on Linux while extensions.worktreeConfig is on, naming it, and never runs it",
+      async (_where, worktree) => {
+        const root = await repo();
+        await exec("git", ["config", "extensions.worktreeConfig", "true"], { cwd: root });
+        let ran = false;
+        const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+        Object.defineProperty(process, "platform", { value: "linux" });
+        try {
+          const r = await converge("1", deps(world(), {
+            executor: { id: "never", run: async () => { ran = true; return { text: OK, sessionId: null }; } },
+            steps: writes, ...(worktree ? { sandbox: { root } } : { workspace: root }),
+          }));
+          expect(r.settled).toBe("halt");
+          expect(r.why).toMatch(/extensions\.worktreeConfig is on .*turn it off/);
+        } finally {
+          Object.defineProperty(process, "platform", was);
+        }
+        expect(ran).toBe(false);
+      },
+    );
+
     it("halts the item when a run with no worktree plants one in the workspace", async () => {
       const workspace = await repo();
       const planted = join(commonOf(workspace), "commondir");
