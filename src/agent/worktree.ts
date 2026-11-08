@@ -225,6 +225,14 @@ async function holdsSomething(path: string): Promise<boolean> {
   return true;
 }
 
+/** Whether anything is at `path`, whatever it holds; one that cannot be looked at throws. */
+async function exists(path: string): Promise<boolean> {
+  return lstat(path).then(() => true, (e: unknown) => {
+    if (MISSING.has((e as NodeJS.ErrnoException).code ?? "")) return false;
+    throw e;
+  });
+}
+
 /**
  * Where the engine's git finds a step's worktree: its admin folder by lookup,
  * the common directory as the operator's checkout answers it — never the
@@ -416,7 +424,11 @@ export async function plantedControlPaths(absent: readonly string[]): Promise<st
   const unreadable: string[] = [];
   for (const path of absent) {
     try {
-      if (await holdsSomething(path)) planted.push(path);
+      // A `commondir` is judged by being there at all, not by what it holds:
+      // every engine git refuses one in the common directory that exists
+      // (`commonDirIntact`), so one left empty would pass here and stop the
+      // next snapshot instead, with the run unrecorded and paid for again.
+      if (basename(path) === "commondir" ? await exists(path) : await holdsSomething(path)) planted.push(path);
     } catch (e) {
       unreadable.push(`${path} (${messageOf(e)})`);
     }

@@ -9,7 +9,7 @@ import {
   worktreeIntact, worktreeState,
 } from "#agent/worktree.js";
 import { GIT_GUARD_ARGS } from "#conventions.js";
-import { branchHeads, fetchBranch, gitIn, ownGit, pushBranch } from "#kit/git.js";
+import { branchHeads, commonDirIntact, fetchBranch, gitIn, ownGit, pushBranch } from "#kit/git.js";
 import { commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 
 /*
@@ -554,10 +554,27 @@ describe("plantedControlPaths", () => {
     ["a whitespace-only file", async (p: string) => writeFile(p, "  \n")],
     ["an empty folder", async (p: string) => mkdir(p)],
   ])("passes %s, which is what a Linux sandbox leaves and sets nothing", async (_what, make) => {
-    const { common, admin, absent } = await setup();
-    await make(join(common, "commondir"));
+    const { admin, absent } = await setup();
     await make(join(admin, "config.worktree"));
     await expect(plantedControlPaths(absent)).resolves.toBeNull();
+  });
+
+  // Every engine git refuses a `<common>/commondir` that exists at all
+  // (`commonDirIntact`), so one left empty is judged here, where it is
+  // recorded, rather than at the next snapshot, where it fails unrecorded.
+  it.each([
+    ["an empty file", async (p: string) => writeFile(p, "")],
+    ["a whitespace-only file", async (p: string) => writeFile(p, "  \n")],
+    ["an empty folder", async (p: string) => mkdir(p)],
+  ])("refuses %s at <common>/commondir, which stops every engine git", async (_what, make) => {
+    const { common, absent } = await setup();
+    const planted = join(common, "commondir");
+    expect(absent).toContain(planted);
+    await make(planted);
+    expect(() => commonDirIntact(common)).toThrow(planted);
+    const reason = await plantedControlPaths(absent);
+    expect(reason).toContain(planted);
+    expect(reason).toMatch(/a step that may write could have put it there/);
   });
 
   it.each([
