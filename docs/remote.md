@@ -105,6 +105,7 @@ While any of these is missing, nothing runs for that person: no tick lists their
 What Landrace checks:
 
 - The provider must say the email is verified (`email_verified: true`). Otherwise sign-in is refused with `403`, no cookie is set, and `signin.refused` is logged.
+- When the ID token has no `email` or no `email_verified`, Landrace asks the provider's userinfo endpoint for the missing value. Some providers, such as Okta's org authorization server, send them only there. The ID token's own values still win. Userinfo's `email_verified` counts only for the email userinfo names. A userinfo answer about another subject (`sub`), or a failed userinfo request, is refused with `502`.
 - `people.allow` must admit the email. Otherwise sign-in is refused with `403` and `<email> is not admitted to this instance`, no cookie is set, `signin.refused` is logged with their email, and nothing is stored for them.
 - The sign-in must finish in the browser that began it, within ten minutes, and only once. A short-lived cookie carries the binding: `__Host-landrace_login` over `https`, with `Path=/`, and `landrace_login` on loopback `http`, sent only under `/login`.
 - A request that carries the session cookie twice, as a browser does when a cookie set for another host shadows this one's, is answered as nobody signed in.

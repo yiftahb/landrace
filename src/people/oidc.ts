@@ -37,7 +37,8 @@ export function returnPath(asked: string | null | undefined): string {
  * would otherwise sign the clicker in as them. Then the code is exchanged,
  * the ID token checked by the library, and an email the provider does not
  * say is verified refused — who a person is on every system is looked up
- * by it.
+ * by it. An ID token without `email` or `email_verified` has userinfo asked
+ * for what it lacks.
  *
  * Discovery is asked once, on the first sign-in; one that fails is asked
  * again on the next.
@@ -92,21 +93,35 @@ export function createOidc(opts: { oidc: OidcConfig; redirectUri: string; fetch?
       const error = callback.searchParams.get("error");
       if (error !== null) return { refused: `the provider did not sign you in: ${oneLine(error).slice(0, 200)}`, status: 403 };
       let claims: client.IDToken | undefined;
+      let userinfo: client.UserInfoResponse | undefined;
       try {
         // Rebuilt on the instance's own callback URL: behind a proxy, the
         // request's URL is the proxy's view of it, not what the provider was told.
         const current = new URL(opts.redirectUri);
         current.search = callback.search;
-        const tokens = await client.authorizationCodeGrant(await configuration(), current, {
+        const config = await configuration();
+        const tokens = await client.authorizationCodeGrant(config, current, {
           pkceCodeVerifier: held.verifier, expectedState: state, expectedNonce: held.nonce, idTokenExpected: true,
         });
         claims = tokens.claims();
+        // #220: a thin ID token — Okta's org server issues one for this flow,
+        // with no setting to change it — leaves email and email_verified to
+        // userinfo. The expected subject refuses an answer about anyone else.
+        if (claims !== undefined && (claims["email"] === undefined || claims["email_verified"] === undefined)) {
+          userinfo = await client.fetchUserInfo(config, tokens.access_token, claims.sub);
+        }
       } catch (e) {
         return { refused: `the provider's answer could not be accepted: ${oneLine(messageOf(e)).slice(0, 300)}`, status: 502 };
       }
-      const email = typeof claims?.["email"] === "string" ? claims["email"].trim() : "";
-      if (claims === undefined || email === "") return { refused: "the provider sent no email for you, and Landrace knows people by theirs", status: 403 };
-      if (claims["email_verified"] !== true) {
+      if (claims === undefined) return { refused: "the provider sent no email for you, and Landrace knows people by theirs", status: 403 };
+      const trimmed = (v: unknown): string => typeof v === "string" ? v.trim() : "";
+      // The ID token's values win; userinfo fills only what it lacks.
+      const email = trimmed(claims["email"] ?? userinfo?.email);
+      if (email === "") return { refused: "the provider sent no email for you, and Landrace knows people by theirs", status: 403 };
+      // Userinfo's email_verified is about userinfo's email: it vouches for
+      // no other address the ID token named.
+      const verified = claims["email_verified"] ?? (trimmed(userinfo?.email).toLowerCase() === email.toLowerCase() ? userinfo?.email_verified : undefined);
+      if (verified !== true) {
         return { refused: `your email, ${email}, is not verified at the provider; verify it there and sign in again`, status: 403 };
       }
       const name = typeof claims["name"] === "string" && claims["name"].trim() !== "" ? claims["name"].trim() : undefined;
