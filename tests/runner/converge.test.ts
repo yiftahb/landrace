@@ -1140,6 +1140,133 @@ describe("converge", () => {
   });
 });
 
+/*
+ * #231: a pause lets a step already going finish, and starts no next one. The
+ * slot is asked before every step, so one already held can still say no.
+ */
+describe("the agent slot, asked before every step", () => {
+  const answering = (kind: string): Step => ({
+    prompt: `${kind} #{node.id}`,
+    output: { discriminator: "kind", shapes: { [kind]: {} }, routes: [{ when: { kind }, effect: { type: "tracker.comment", marker: `${kind}:{round}` } }] },
+  });
+  const twoSteps: Workflow = {
+    version: 1, name: "t", description: "test",
+    stages: [
+      { id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.status", value: "spec" }] },
+      { id: "plan", step: "plan", triggers: [{ when: { "run.outputs.spec": { $exists: true } } }], on_enter: [{ type: "tracker.status", value: "plan" }] },
+      { id: "done", terminal: true, triggers: [{ when: { "run.outputs.plan": { $exists: true } } }], on_enter: [{ type: "tracker.status", value: "done" }] },
+    ],
+  };
+
+  it("runs the first step, then stops before the second when the slot it holds says no, and gives it back once", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: [] }] });
+    const ran: string[] = [];
+    const answers: Array<string | null> = [null, "alice paused their runs"];
+    let asked = 0;
+    let given = 0;
+    const executor: Executor = {
+      id: "e",
+      run: async (prompt) => {
+        const kind = prompt.trim().split(" #")[0] ?? "";
+        ran.push(kind);
+        return { text: "```json\n" + JSON.stringify({ kind }) + "\n```", sessionId: null };
+      },
+    };
+    const r = await converge("1", {
+      workflow: twoSteps, steps: new Map([["spec", answering("spec")], ["plan", answering("plan")]]),
+      source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), executor,
+      ctx: { item: "1", config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
+      log: createLogger({ sink: () => {} }),
+      slot: { take: async () => answers[asked++] ?? null, give: () => { given += 1; }, paused: () => null },
+    });
+
+    expect(ran).toEqual(["spec"]);
+    expect(asked).toBe(2);
+    expect(r).toEqual(expect.objectContaining({ settled: "wait", why: "alice paused their runs" }));
+    expect(state.stage("1")).toBe("plan");
+    expect(given).toBe(1);
+  });
+
+  /*
+   * Review of #231: a pause asked only before the next step let the same call
+   * decide the transition after the running one and apply its `on_enter` — a
+   * paused person's tracker written to. Paused while its step runs, the run
+   * records that step's answer and writes nothing more.
+   */
+  it("paused while its step runs, records that step's answer and enters no next stage", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: [] }] });
+    let paused: string | null = null;
+    const executor: Executor = {
+      id: "e",
+      run: async () => {
+        paused = "alice paused their runs";
+        return { text: "```json\n" + JSON.stringify({ kind: "spec" }) + "\n```", sessionId: null };
+      },
+    };
+    const events: string[] = [];
+    const r = await converge("1", {
+      workflow: twoSteps, steps: new Map([["spec", answering("spec")], ["plan", answering("plan")]]),
+      source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), executor,
+      ctx: { item: "1", config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
+      log: createLogger({ sink: (e) => { if (e.name === "effect.applied" && paused !== null) events.push(String(e.type)); } }),
+      slot: { take: async () => paused, give: () => {}, paused: () => paused },
+    });
+
+    expect(r).toEqual(expect.objectContaining({ settled: "wait", why: "alice paused their runs" }));
+    expect(state.stage("1")).toBe("spec");
+    expect(state.entriesOf("1").some((e) => e.stage === "spec" && e.kind === "output")).toBe(true);
+    // The record of its answer is the one write after the pause.
+    expect(events).toEqual(["tracker.comment"]);
+  });
+
+  // The same cause before any step: a run going through stages with no step
+  // when the pause lands enters no further one.
+  it("paused between two passes that run no step, enters no further stage", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: [] }] });
+    const chain: Workflow = {
+      version: 1, name: "t", description: "test",
+      stages: [
+        { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.status", value: "a" }] },
+        { id: "b", triggers: [{ when: { "run.stage": "a" } }], on_enter: [{ type: "tracker.status", value: "b" }] },
+        { id: "done", terminal: true, triggers: [{ when: { "run.stage": "b" } }], on_enter: [{ type: "tracker.status", value: "done" }] },
+      ],
+    };
+    let paused: string | null = null;
+    const r = await converge("1", {
+      workflow: chain, steps: new Map(),
+      source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]),
+      executor: { id: "e", run: async () => ({ text: "", sessionId: null }) },
+      ctx: { item: "1", config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
+      log: createLogger({ sink: (e) => { if (e.name === "effect.applied") paused = "alice paused their runs"; } }),
+      slot: { take: async () => paused, give: () => {}, paused: () => paused },
+    });
+
+    expect(r).toEqual(expect.objectContaining({ settled: "wait", why: "alice paused their runs" }));
+    expect(state.stage("1")).toBe("a");
+  });
+
+  it("not paused, runs the same chain to its end", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: [] }] });
+    const chain: Workflow = {
+      version: 1, name: "t", description: "test",
+      stages: [
+        { id: "a", entry: true, triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.status", value: "a" }] },
+        { id: "done", terminal: true, triggers: [{ when: { "run.stage": "a" } }], on_enter: [{ type: "tracker.status", value: "done" }] },
+      ],
+    };
+    const r = await converge("1", {
+      workflow: chain, steps: new Map(),
+      source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]),
+      executor: { id: "e", run: async () => ({ text: "", sessionId: null }) },
+      ctx: { item: "1", config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
+      log: createLogger({ sink: () => {} }),
+      slot: { take: async () => null, give: () => {}, paused: () => null },
+    });
+    expect(r.settled).toBe("terminal");
+    expect(state.stage("1")).toBe("done");
+  });
+});
+
 /**
  * A briefing is fetched for an invocation, not for a pass.
  *

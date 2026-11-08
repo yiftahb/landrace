@@ -89,7 +89,7 @@ flowchart LR
 
 What each person has of their own:
 
-- **A runtime**, built only once their connections are ready. A person whose connections are missing or expired, or whose credentials file does not read, has none, and their board shows only the Integrations tab. That does not stop anyone else's runtime.
+- **A runtime**, built only once their connections are ready. A person whose connections are missing or expired, or whose credentials file does not read, has none, and their board shows only the Integrations tab. A person who paused their runs keeps theirs: each tick lists their items and works none ([Pausing your runs](cli.md#pausing-your-runs)). Neither stops anyone else's runtime.
 - **A board and MCP sessions.** Each request to the front door is someone's. A person's board shows their items only. An MCP session belongs to whoever opened it. Remotely, once a person's runtime has listed, an item route for an item not on their board answers 404, and pairing is off.
 - **Events.** Every event a person's runtime logs names them, as `person`. Events of the process itself name nobody.
 

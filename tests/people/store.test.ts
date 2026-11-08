@@ -52,6 +52,33 @@ describe("the credential store", () => {
     expect(await store.read(alice.id)).toEqual({ person: { ...alice, name: "Alice" }, connections: { github } });
   });
 
+  it("keeps a pause beside the person's connections, from a fresh store too, and clears it", async () => {
+    const dir = await root();
+    const store = createCredentialStore(dir);
+    await store.put("local", ME, "github", github);
+
+    await store.pause(ME, "2026-11-08T10:00:00.000Z");
+
+    // Another store over the same root: what a restart reads.
+    const again = createCredentialStore(dir);
+    expect(await again.read("local")).toEqual({ person: ME, connections: { github }, paused: { at: "2026-11-08T10:00:00.000Z" } });
+    await again.pause(ME, null);
+    expect(await store.read("local")).toEqual({ person: ME, connections: { github } });
+  });
+
+  it("pauses a person who has no file yet, making one with no connections", async () => {
+    const store = createCredentialStore(await root());
+    await store.pause(ME, "2026-11-08T10:00:00.000Z");
+    expect(await store.read("local")).toEqual({ person: ME, connections: {}, paused: { at: "2026-11-08T10:00:00.000Z" } });
+  });
+
+  it("reads a pause whose time is not one as a problem", async () => {
+    const dir = await root();
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "local.json"), JSON.stringify({ person: { id: "local" }, connections: {}, paused: { at: "soon" } }));
+    expect((await createCredentialStore(dir).read("local")).problem).toMatch(/paused\.at: must be an ISO 8601 time/);
+  });
+
   it("refuses to store one person under another's id", async () => {
     await expect(createCredentialStore(await root()).put("other", ME, "github", github)).rejects.toThrow(/"local".*"other"/);
   });

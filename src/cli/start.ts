@@ -17,7 +17,7 @@ import {
 } from "#people/resolve.js";
 import { createCredentialStore, credentialValues, defaultCredentialsRoot, readingStore } from "#people/store.js";
 import { localPerson, personFields } from "#people/person.js";
-import { createRoster } from "#people/roster.js";
+import { createRoster, pausePath } from "#people/roster.js";
 import { admits, allowProblems } from "#people/allow.js";
 import { denyForPerson, scopeOf, worktreeFolders } from "#people/isolation.js";
 import { createSlotPool } from "#runner/pool.js";
@@ -1993,6 +1993,8 @@ export async function runStart(dir: string, opts: StartOptions): Promise<void> {
         // listing showed is still read through the one source, as it always was.
         ...(mode.remote ? { has: (item: string) => roster.get(caller.id)?.board.has?.(item) ?? false, pairing: false } : {}),
         people: { panel: people, caller: () => caller },
+        // Their own runs, whoever else the runner holds: locally the one runtime.
+        pause: pausePath(roster, caller, schedule.wake),
         goto: {
           send: (item, target, o) => {
             const now = theirs();

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Pause my runs, in the board's cog menu.** A person can stop Landrace working for them without removing anyone, disconnecting a connection or stopping `start`. While paused, their runtime starts no step, takes no lock and writes nothing, and each tick still lists their items. A step already running finishes. The board, the Integrations tab and their MCP keep working. The header shows **Paused** in place of the countdown, and **Run next tick now** is disabled. On a remote instance it pauses only the person who chose it. The pause is kept in their credentials file, so it survives a restart, and it logs `person.paused` and `person.resumed`. See [Pausing your runs](docs/cli.md#pausing-your-runs).
+
 ### Fixed
 
 - **One identity can answer a per-person var and a per-person secret.** A remote person whose `vars.me` and `secrets.jiraAssignee` both name `jira.accountId` signed in, saw every connection made, and nothing ran for them: their runtime was refused because the var "resolves to the same value as a secret", which only the log said. Now a var and a secret that are both per-person keys answered by a connection of `kind: identity` are let through, and both carry the looked-up value. A var that shares a credential's value, or a value its variable gave, is still refused. When it is a per-person key's, the refusal is `connection.failed`, judged once the hooks load. The Integrations tab shows it on the row of the connection that answered the key, and the log still records it. See [Per-person keys](docs/configuration.md#per-person-keys).

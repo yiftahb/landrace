@@ -1655,14 +1655,16 @@ describe("the page", () => {
     const inner = (id: string): string => new RegExp(`id="${id}"[^>]*>([\\s\\S]*?)</(a|button)>`).exec(menu)?.[1] ?? "";
     const words = (id: string): string => inner(id).replace(/<[^>]+>/g, "").trim();
 
-    it("holds Integrations, Run next tick now and the theme toggle, with no divider and no Source code", () => {
+    it("holds Integrations, Run next tick now, Pause my runs and the theme toggle, with no divider and no Source code", () => {
       const entries = [...menu.matchAll(/<(a|button|hr)\b([^>]*)>/g)].map((m) => [m[1], /id="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? null, /role="([^"]*)"/.exec(m[2] ?? "")?.[1] ?? null]);
       expect(entries).toEqual([
         ["a", "board-integrations", "menuitem"],
         ["button", "board-tick", "menuitem"],
+        ["button", "board-pause", "menuitem"],
         ["button", "theme-toggle", "menuitem"],
       ]);
-      expect([words("board-integrations"), words("board-tick"), words("theme-toggle")]).toEqual(["Integrations", "Run next tick now", "Dark mode"]);
+      expect([words("board-integrations"), words("board-tick"), words("board-pause"), words("theme-toggle")])
+        .toEqual(["Integrations", "Run next tick now", "Pause my runs", "Dark mode"]);
       expect(PAGE_HTML).not.toContain("board-source");
       expect(PAGE_HTML).not.toContain("Source code");
       expect(APP_JS).not.toContain("board-source");
@@ -1672,6 +1674,7 @@ describe("the page", () => {
       const shapes = [
         ["board-integrations", "<span>Integrations</span>"],
         ["board-tick", '<span id="board-tick-label">Run next tick now</span>'],
+        ["board-pause", '<span id="board-pause-label">Pause my runs</span>'],
         ["theme-toggle", '<span id="theme-label">Dark mode</span>'],
       ] as const;
       for (const [id, span] of shapes) {
@@ -1686,6 +1689,14 @@ describe("the page", () => {
       expect(inner("board-integrations").match(/<svg /g)).toHaveLength(1);
       expect(inner("board-tick").match(/<svg /g)).toHaveLength(1);
       expect(inner("board-tick")).toMatch(/<polygon points="[^"]+"/);
+      // Two bars while running, a play in a circle while paused, the second hidden to start.
+      expect(inner("board-pause").match(/<svg [^>]*>/g)).toEqual([
+        expect.stringMatching(/^<svg id="board-pause-icon" /), expect.stringMatching(/^<svg id="board-resume-icon" hidden /),
+      ]);
+    });
+
+    it("puts the Paused chip beside the countdown, hidden until a poll says paused", () => {
+      expect(header).toMatch(/<span id="paused" hidden [^>]*>Paused<\/span>\n<div id="schedule"/);
     });
 
     it("keeps the theme toggle in the menu alone, never loose in the top bar", () => {
@@ -1789,12 +1800,84 @@ describe("the page", () => {
     it("writes its words into the label span, so the icon stays through every state", () => {
       const label = { textContent: "Run next tick now" };
       const button = { textContent: "<svg>Run next tick now", disabled: false };
-      const c: Record<string, unknown> = { tickButton: button, tickLabel: label };
+      const c: Record<string, unknown> = { tickButton: button, tickLabel: label, paused: false, tickBusy: false };
       runInNewContext(fnSource("setTickButton"), c);
       for (const [text, disabled] of [["starting…", true], ["queued", true], ["failed", true], ["Run next tick now", false]] as const) {
         runInNewContext(`setTickButton(${JSON.stringify(text)}, ${disabled})`, c);
         expect([label.textContent, button.disabled, button.textContent]).toEqual([text, disabled, "<svg>Run next tick now"]);
       }
+      // Paused, an answer coming back never enables it.
+      c["paused"] = true;
+      runInNewContext('setTickButton("Run next tick now", false)', c);
+      expect(button.disabled).toBe(true);
+    });
+
+    /*
+     * #231: Pause my runs' state, as every poll of /board.json says it — the
+     * first one after a reload included: the entry's words and icon, the
+     * Paused chip in place of the countdown, and the tick entry disabled.
+     */
+    const pauseWorld = (paused: boolean, tickBusy = false) => {
+      const ids = ["paused", "next", "board-pause-label", "board-pause-icon", "board-resume-icon"];
+      const els: Record<string, { hidden: boolean; textContent: string }> = Object.fromEntries(ids.map((id) => [id, { hidden: false, textContent: "" }]));
+      const tickButton = { disabled: false };
+      const c: Record<string, unknown> = { paused, tickBusy, tickButton, document: { getElementById: (id: string) => els[id] } };
+      runInNewContext(fnSource("syncPaused"), c);
+      return { c, els, tickButton };
+    };
+    const shownOf = (w: ReturnType<typeof pauseWorld>) => ({
+      chip: !w.els["paused"]?.hidden, countdown: !w.els["next"]?.hidden, label: w.els["board-pause-label"]?.textContent,
+      pauseIcon: !w.els["board-pause-icon"]?.hidden, resumeIcon: !w.els["board-resume-icon"]?.hidden, tickDisabled: w.tickButton.disabled,
+    });
+
+    it("shows Resume my runs, the Paused chip in place of the countdown, and the tick disabled while paused", () => {
+      const w = pauseWorld(true);
+      runInNewContext("syncPaused()", w.c);
+      expect(shownOf(w)).toEqual({ chip: true, countdown: false, label: "Resume my runs", pauseIcon: false, resumeIcon: true, tickDisabled: true });
+    });
+
+    it("shows Pause my runs and the countdown, no chip, and the tick enabled while running — unless it is mid-answer", () => {
+      const w = pauseWorld(false);
+      runInNewContext("syncPaused()", w.c);
+      expect(shownOf(w)).toEqual({ chip: false, countdown: true, label: "Pause my runs", pauseIcon: true, resumeIcon: false, tickDisabled: false });
+      const busy = pauseWorld(false, true);
+      runInNewContext("syncPaused()", busy.c);
+      expect(busy.tickButton.disabled).toBe(true);
+    });
+
+    it.each([
+      ["the board", { ready: true }, false],
+      ["the board, paused", { ready: true, paused: true }, true],
+      ["the Integrations tab, paused", { ready: false, paused: true }, true],
+      ["the Integrations tab", { ready: false }, false],
+    ] as const)("takes the state from the first poll after a reload, on %s", async (_, view, expected) => {
+      const w = pauseWorld(!expected);
+      const c = w.c;
+      Object.assign(c, {
+        fetch: async () => ({ ok: true, json: async () => view }), showUnready: () => {}, boardReady: true,
+        onIntegrationsRoute: () => false, render: () => {}, withMoves: (v: unknown) => v, moves: new Map(), bellStep: () => ({ arrived: [], now: new Set() }),
+        lastView: null, neededYou: new Set(), notifyOf: () => {},
+      });
+      (c["document"] as Record<string, unknown>)["getElementById"] = (id: string) => w.els[id] ?? { textContent: "", hidden: false };
+      runInNewContext(fnSource("pollOnce"), c);
+      await runInNewContext("pollOnce()", c);
+      expect([c["paused"], shownOf(w).chip, shownOf(w).label]).toEqual([expected, expected, expected ? "Resume my runs" : "Pause my runs"]);
+    });
+
+    it("posts the action the state calls for, under its own header, and shows the new state once it is taken", async () => {
+      const w = pauseWorld(false);
+      let polls = 0;
+      const button = { disabled: true };
+      Object.assign(w.c, { pauseButton: button, schedulePoll: () => { polls++; }, setTimeout: () => {} });
+      runInNewContext(fnSource("pauseAnswered"), w.c);
+      runInNewContext('pauseAnswered("pause", true)', w.c);
+      expect([w.c["paused"], shownOf(w).label, button.disabled, polls]).toEqual([true, "Resume my runs", false, 1]);
+      // Refused: the state stays, the entry says failed for a moment.
+      runInNewContext('pauseAnswered("resume", false)', w.c);
+      expect([w.c["paused"], shownOf(w).label, polls]).toEqual([true, "failed", 1]);
+      // The click itself: the action its state calls for, with the board's header.
+      expect(APP_JS).toContain('const action = paused ? "resume" : "pause";');
+      expect(APP_JS).toContain('fetch("/" + action, { method: "POST", headers: { "x-landrace-action": action } })');
       expect(APP_JS).toContain('const tickLabel = document.getElementById("board-tick-label");\nconst TICK_LABEL = tickLabel.textContent;');
     });
   });
@@ -1900,8 +1983,9 @@ describe("the page", () => {
     // Ctrl/⌘+Enter. And the Integrations tab's: one submit and one click, each
     // on its list, and its Back.
     // And an artifact row's copy-link (defined once, in copyLinkFor) (#199).
+    // And the board menu's Pause my runs (#231).
     const listeners = APP_JS.match(/addEventListener/g) ?? [];
-    expect(listeners).toHaveLength(36);
+    expect(listeners).toHaveLength(37);
   });
 
   it("opens the same menu — Claude Code, Claude Code (CLI), Cursor, Codex, a divider, Copy prompt — from either action button", () => {

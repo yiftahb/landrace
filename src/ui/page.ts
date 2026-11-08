@@ -108,6 +108,9 @@ const strokeIcon = (shapes: string): string =>
 const COG_ICON = strokeIcon('<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>');
 const PLUG_ICON = strokeIcon('<path d="M12 22v-5"></path><path d="M9 8V2"></path><path d="M15 8V2"></path><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z"></path>');
 const PLAY_ICON = strokeIcon('<polygon points="6 3 20 12 6 21 6 3"></polygon>');
+/** Pause my runs' two bars, and Resume my runs' play in a circle: one shown at a time, like the theme's moon and sun. */
+const PAUSE_ICON = strokeIcon('<rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect>').replace("<svg ", '<svg id="board-pause-icon" ');
+const RESUME_ICON = strokeIcon('<circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon>').replace("<svg ", '<svg id="board-resume-icon" hidden ');
 
 export const PAGE_HTML = `<!doctype html>
 <html lang="en" class="scroll-pt-[var(--header-h)]" aria-busy="true">
@@ -132,6 +135,7 @@ ${MARK}
 <span id="meta" class="hidden text-xs text-neutral-400 dark:text-neutral-500 lg:inline"></span>
 </div>
 <div class="flex flex-wrap items-center gap-2">
+<span id="paused" hidden class="rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">Paused</span>
 <div id="schedule" class="flex flex-wrap items-center gap-2">
 <span id="next" class="rounded-full border border-neutral-200 px-3 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">No tick scheduled</span>
 </div>
@@ -144,6 +148,8 @@ ${MARK}
 <span>Integrations</span></a>
 <button id="board-tick" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">${PLAY_ICON}
 <span id="board-tick-label">Run next tick now</span></button>
+<button id="board-pause" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">${PAUSE_ICON}${RESUME_ICON}
+<span id="board-pause-label">Pause my runs</span></button>
 <button id="theme-toggle" type="button" role="menuitem" class="${MENU_ITEM} disabled:cursor-not-allowed disabled:opacity-50">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 dark:hidden" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="hidden h-4 w-4 dark:block" aria-hidden="true"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
@@ -1829,6 +1835,9 @@ async function pollOnce() {
     const res = await fetch("/board.json", { cache: "no-store" });
     if (!res.ok) throw new Error(String(res.status));
     const view = await res.json();
+    // On both answers: Resume is offered on the Integrations tab too.
+    paused = view.paused === true;
+    syncPaused();
     if (view.ready === false) return showUnready();
     if (!boardReady) {
       boardReady = true;
@@ -1862,11 +1871,49 @@ const tickButton = document.getElementById("board-tick");
 const tickLabel = document.getElementById("board-tick-label");
 const TICK_LABEL = tickLabel.textContent;
 let restoreTimer = null;
+// Whether the tick entry is busy saying an answer: a resume must not enable it mid-answer.
+let tickBusy = false;
 
 function setTickButton(text, disabled) {
   tickLabel.textContent = text;
-  tickButton.disabled = disabled;
+  tickBusy = disabled;
+  tickButton.disabled = disabled || paused;
 }
+
+// Pause my runs, and the state it shows: the menu entry's words and icon, the
+// header's Paused chip in place of the countdown, and Run next tick now
+// disabled — a tick would run nothing of theirs. Set from every poll, so a
+// reload shows what the person's file says.
+let paused = false;
+const pauseButton = document.getElementById("board-pause");
+
+function syncPaused() {
+  document.getElementById("paused").hidden = !paused;
+  document.getElementById("next").hidden = paused;
+  document.getElementById("board-pause-label").textContent = paused ? "Resume my runs" : "Pause my runs";
+  document.getElementById("board-pause-icon").hidden = paused;
+  document.getElementById("board-resume-icon").hidden = !paused;
+  tickButton.disabled = tickBusy || paused;
+}
+
+// Like the tick entry, the menu stays open so its answer is seen where it was
+// asked: the new state, or "failed" for a moment before the state comes back.
+function pauseAnswered(action, ok) {
+  pauseButton.disabled = false;
+  if (ok) paused = action === "pause";
+  syncPaused();
+  if (ok) return schedulePoll(0);
+  document.getElementById("board-pause-label").textContent = "failed";
+  setTimeout(syncPaused, 3000);
+}
+
+pauseButton.addEventListener("click", () => {
+  const action = paused ? "resume" : "pause";
+  pauseButton.disabled = true;
+  fetch("/" + action, { method: "POST", headers: { "x-landrace-action": action } })
+    .then((res) => pauseAnswered(action, res.ok))
+    .catch(() => pauseAnswered(action, false));
+});
 
 function restoreAfter(ms) {
   if (restoreTimer !== null) clearTimeout(restoreTimer);

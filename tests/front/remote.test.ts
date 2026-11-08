@@ -14,7 +14,7 @@ import { createTools } from "#mcp/tools.js";
 import { loadConfig } from "#config/load.js";
 import { admits } from "#people/allow.js";
 import { createOidc } from "#people/oidc.js";
-import { createRoster } from "#people/roster.js";
+import { createRoster, pausePath } from "#people/roster.js";
 import { createSessions } from "#people/session.js";
 import { createCredentialStore } from "#people/store.js";
 import { createLogger } from "#runner/events.js";
@@ -89,7 +89,10 @@ async function door(
     host: "0.0.0.0", port: 4545, publicUrl, mcp,
     callerOf: (req) => sessions.personOf(req),
     board: { view: async () => view("nobody's") },
-    boardFor: (caller) => ({ view: async () => view(caller.id), has: (item) => item === String(ITEMS[caller.id]) }),
+    // Each caller's pause bound as `start` binds it: to them, and no one the request could name.
+    boardFor: (caller) => ({
+      view: async () => view(caller.id), has: (item) => item === String(ITEMS[caller.id]), pause: pausePath(roster, caller, () => {}),
+    }),
     remote: {
       oidc: createOidc({ oidc: { issuer: idp.issuer, clientId: idp.clientId, clientSecret: "client-secret-value" }, redirectUri: new URL("login/callback", publicUrl).href, fetch: idp.fetch }),
       sessions, authFiles: createSealedFiles(dirname(authRoot), o.key ?? null), log, admits: admitted,
@@ -101,7 +104,7 @@ async function door(
     },
   };
   const fetch = memoryFetch(frontDoorListener(opts, 4545));
-  return { fetch, idp, events, signedIn, authRoot, store, allow };
+  return { fetch, idp, events, signedIn, authRoot, store, allow, roster };
 }
 type Door = Awaited<ReturnType<typeof door>>;
 
@@ -309,6 +312,58 @@ describe("signing in at the door", () => {
     const alice = await sessionOf(d, ALICE);
     const bob = await sessionOf(d, BOB);
     expect((await d.fetch(`${PUBLIC}/board.json`, { headers: { cookie: `${alice}; ${bob}` } })).status).toBe(401);
+  });
+});
+
+/*
+ * #231: Pause my runs at a remote door is the signed-in person's own, behind
+ * the board's action header like every other write.
+ */
+describe("pausing my runs at the door", () => {
+  const pause = (d: Door, cookie: string | null, headers: Record<string, string> = { "x-landrace-action": "pause", origin: PUBLIC }): Promise<Response> =>
+    d.fetch(`${PUBLIC}/pause`, { method: "POST", headers: { ...headers, ...(cookie === null ? {} : { cookie }) } });
+  const pausedOn = async (d: Door, cookie: string): Promise<unknown> =>
+    ((await (await d.fetch(`${PUBLIC}/board.json`, { headers: { cookie } })).json()) as BoardView).paused;
+
+  it("pauses alice alone, from her session: bob's board and his file still say he runs", async () => {
+    const d = await door();
+    const alice = await sessionOf(d, ALICE);
+    const bob = await sessionOf(d, BOB);
+
+    const res = await pause(d, alice);
+
+    expect([res.status, await res.text()]).toEqual([200, "paused"]);
+    expect([await pausedOn(d, alice), await pausedOn(d, bob)]).toEqual([true, false]);
+    expect([await d.roster.paused("sub-alice"), await d.roster.paused("sub-bob")]).toEqual([true, false]);
+    expect(d.events.filter((e) => e.name === "person.paused")).toEqual([
+      expect.objectContaining({ person: "sub-alice", personEmail: "alice@example.invalid" }),
+    ]);
+  });
+
+  it("answers a pause with no session 401, and pauses nobody", async () => {
+    const d = await door();
+    await sessionOf(d, ALICE);
+    expect((await pause(d, null)).status).toBe(401);
+    expect(await d.roster.paused("sub-alice")).toBe(false);
+  });
+
+  it("refuses alice's session without the board's action header 403", async () => {
+    const d = await door();
+    const alice = await sessionOf(d, ALICE);
+    expect((await pause(d, alice, { origin: PUBLIC })).status).toBe(403);
+    expect(await d.roster.paused("sub-alice")).toBe(false);
+  });
+
+  it("keeps alice's MCP answering while she is paused", async () => {
+    const d = await door();
+    const { access_token } = await tokenFor(d, ALICE);
+    await pause(d, await sessionOf(d, ALICE));
+    const c = new Client({ name: "test", version: "0" });
+    const fetch: typeof globalThis.fetch = (input, init) =>
+      d.fetch(input, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), authorization: `Bearer ${access_token}` } });
+    await c.connect(new StreamableHTTPClientTransport(new URL(`${PUBLIC}/mcp`), { fetch }) as unknown as Transport);
+    const listed = await c.callTool({ name: "landrace_items", arguments: {} });
+    expect((listed as { content: Array<{ text: string }> }).content[0]?.text).toContain('"1"');
   });
 });
 

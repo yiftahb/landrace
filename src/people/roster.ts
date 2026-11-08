@@ -1,12 +1,12 @@
 import { compareIds, LOCAL_PERSON_ID } from "#conventions.js";
-import { localPerson } from "#people/person.js";
+import { localPerson, personFields } from "#people/person.js";
 import { resolvePerson } from "#people/resolve.js";
 import { messageOf, Refusal } from "#runner/errors.js";
 import { createSlotPool } from "#runner/pool.js";
 import { createRuntimeSlot } from "#runner/slot.js";
 import { excludeAmbiguous, listingFailures, listWorkspace, retireRuntime, tickWorkspace } from "#runner/tick.js";
 import type {
-  Board, BoardView, Person, PersonJudged, PersonRuntime, Roster, RosterOptions, WorkspaceListing, WorkspaceRuntime,
+  Board, BoardView, PausePath, Person, PersonJudged, PersonRuntime, Roster, RosterOptions, WorkspaceListing, WorkspaceRuntime,
 } from "#namespace.js";
 
 /**
@@ -62,6 +62,20 @@ function currentBoard(current: () => Board | undefined): Board {
       return board === undefined ? false : board.has?.(item) ?? true;
     },
     view: (): Promise<BoardView> => current()?.view() ?? Promise.reject(new Error(NOT_RUNNING)),
+  };
+}
+
+/**
+ * The board's Pause / Resume my runs for `person` alone: whoever the request
+ * came from, it is their own runs it pauses. A resume wakes the loop.
+ */
+export function pausePath(roster: Pick<Roster, "pause" | "paused">, person: Person, wake: () => unknown): PausePath {
+  return {
+    paused: () => roster.paused(person.id),
+    set: async (paused) => {
+      await roster.pause(person, paused);
+      if (!paused) wake();
+    },
   };
 }
 
@@ -223,6 +237,41 @@ export function createRoster(opts: RosterOptions): Roster {
     }
   };
 
+  /**
+   * Why the person's runtime works nothing now, read from their file before
+   * every tick: their pause, or the file not reading — which leaves whether
+   * they paused unknown, so nothing runs for them rather than guessing.
+   */
+  const whyIdle = async (personId: string): Promise<string | undefined> => {
+    const creds = await opts.store.read(personId);
+    if (creds.problem !== undefined) return `whether ${personId} paused their runs is unknown: ${opts.log.scrub(creds.problem)}`;
+    return creds.paused === undefined ? undefined : `${personId} paused their runs`;
+  };
+
+  // How many pauses and resumes each person's runtime has been given, so a
+  // read of their file that one overtook is not applied over it.
+  const pauses = new Map<string, number>();
+
+  /**
+   * Each runtime's pause, as its person's file says now — unless a pause or
+   * resume landed while the file was read: what it set is newer than the
+   * read. Applied regardless, a read begun before `/pause` wrote undid it,
+   * and the tick worked every item of a person whose board said Paused.
+   */
+  const markIdle = async (running: ReadonlyArray<{ entry: PersonRuntime; rt: WorkspaceRuntime }>): Promise<void> => {
+    await Promise.all(running.map(async ({ entry, rt }) => {
+      const at = pauses.get(entry.person.id) ?? 0;
+      const why = await whyIdle(entry.person.id);
+      if ((pauses.get(entry.person.id) ?? 0) !== at) return;
+      if (why === undefined) delete rt.paused;
+      else rt.paused = why;
+    }));
+  };
+
+  // One pause or resume at a time, each reading the file afresh: two at once
+  // would each find the old state, and both log a change.
+  let pausing: Promise<unknown> = Promise.resolve();
+
   const ready = (): Array<{ entry: PersonRuntime; rt: WorkspaceRuntime }> =>
     [...entries.values()].flatMap((entry) => {
       const rt = entry.slot.current();
@@ -269,9 +318,36 @@ export function createRoster(opts: RosterOptions): Roster {
       // Judged — every identity not stored looked up, then its clash checked — and built.
       await reloadQuietly(entry);
     },
+    paused: async (personId) => (await opts.store.read(personId)).paused !== undefined,
+    pause: (person, paused) => {
+      const next = pausing.then(async () => {
+        const before = await opts.store.read(person.id);
+        if (before.problem !== undefined) throw new Error(`could not read ${person.id}'s credentials file: ${opts.log.scrub(before.problem)}`);
+        if ((before.paused !== undefined) !== paused) {
+          await opts.store.pause(person, paused ? new Date().toISOString() : null);
+          opts.log(paused ? "person.paused" : "person.resumed", personFields(person));
+        }
+        // At once, not at the next tick: a check going now starts no step,
+        // and a slot freed starts nothing for them.
+        pauses.set(person.id, (pauses.get(person.id) ?? 0) + 1);
+        const rt = entries.get(person.id)?.slot.current() ?? null;
+        if (rt === null) return;
+        if (paused) {
+          rt.paused = `${person.id} paused their runs`;
+          rt.turnedAway = [];
+        } else {
+          delete rt.paused;
+        }
+      });
+      pausing = next.catch(() => {});
+      return next;
+    },
     tick: async () => {
       const order = pool.order(ready().map((r) => r.entry.person.id));
       const running = ready().sort((a, b) => order.indexOf(a.entry.person.id) - order.indexOf(b.entry.person.id));
+      // Each person's file, read again: the pause is theirs to set from any
+      // board, and a restart keeps it.
+      await markIdle(running);
       const failures: string[] = [];
       const said = (rt: WorkspaceRuntime, listing: WorkspaceListing): void => {
         for (const f of listingFailures(listing)) failures.push(rt.log.scrub(f));

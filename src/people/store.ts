@@ -26,6 +26,7 @@ const fileSchema = z
         })
         .strict(),
     ),
+    paused: z.object({ at: time }).strict().optional(),
   })
   .strict();
 
@@ -124,6 +125,11 @@ export function createCredentialStore(
     // The person as they signed in, their connections untouched: a file with none is still someone the runner runs for.
     remember: (person) => change(person.id, (c) => { c.person = person; }),
     remove: (personId, connId) => change(personId, (c) => { delete c.connections[connId]; }),
+    pause: (person, at) => change(person.id, (c) => {
+      c.person = person;
+      if (at === null) delete c.paused;
+      else c.paused = { at };
+    }),
     list: async () => {
       const names = await readdir(root).catch((e: unknown) => {
         if ((e as { code?: unknown } | null)?.code === "ENOENT") return [] as string[];

@@ -382,6 +382,32 @@ function serveOAuth(opts: UiOptions, req: IncomingMessage, res: ServerResponse, 
   }).then(() => redirect(res, INTEGRATIONS_TAB), failed);
 }
 
+/** What /tick answers while the caller's runs are paused. */
+const PAUSED = "refused: your runs are paused; resume them to run a tick";
+
+/**
+ * The cog menu's Pause my runs and Resume my runs, for the caller alone —
+ * no path names a person. Ahead of the board's routes, like the
+ * Integrations tab: a person with no runtime yet may still pause, and the
+ * pause is kept for when they have one. Each under its own action header.
+ */
+function servePause(opts: UiOptions, req: IncomingMessage, res: ServerResponse, action: "pause" | "resume"): void {
+  const text = "text/plain; charset=utf-8";
+  const pause = opts.pause;
+  if (!pause) return send(res, 404, text, "not found");
+  if (req.method !== "POST") return send(res, 405, text, "method not allowed");
+  const foreign = foreignWrite(req, action, opts.origins);
+  if (foreign) return send(res, 403, text, foreign);
+  pause.set(action === "pause").then(
+    () => send(res, 200, text, action === "pause" ? "paused" : "resumed"),
+    (e: unknown) => {
+      if (e instanceof Refusal) return send(res, 409, text, oneLine(e.message));
+      console.error(`landrace: ${action === "pause" ? "pausing" : "resuming"} failed: ${oneLine(messageOf(e))}`);
+      send(res, 502, text, `could not ${action}; the landrace log says why`);
+    },
+  );
+}
+
 /** What every board write answers while no runtime stands behind it: the page shows it beside the control. */
 const UNREADY = "refused: Landrace is not running yet; connect what the Integrations tab lists first";
 
@@ -412,6 +438,10 @@ export function boardListener(opts: UiOptions): (req: IncomingMessage, res: Serv
     const oauth = OAUTH_PATH.exec(path);
     if (oauth) {
       serveOAuth(opts, req, res, oauth[1] ?? "", oauth[2] ?? "");
+      return;
+    }
+    if (path === "/pause" || path === "/resume") {
+      servePause(opts, req, res, path === "/pause" ? "pause" : "resume");
       return;
     }
 
@@ -462,9 +492,19 @@ export function boardListener(opts: UiOptions): (req: IncomingMessage, res: Serv
         send(res, 403, "text/plain; charset=utf-8", foreign);
         return;
       }
-      const woke = opts.tick();
-      if (woke === "stopped") send(res, 503, "text/plain; charset=utf-8", "landrace is stopping");
-      else send(res, 202, "text/plain; charset=utf-8", `tick ${woke}`);
+      const tick = opts.tick;
+      const wake = (): void => {
+        const woke = tick();
+        if (woke === "stopped") send(res, 503, "text/plain; charset=utf-8", "landrace is stopping");
+        else send(res, 202, "text/plain; charset=utf-8", `tick ${woke}`);
+      };
+      if (!opts.pause) return wake();
+      // Paused, the person asked for nothing of theirs to run: refused, as
+      // the page's disabled menu item says, rather than woken to do nothing.
+      opts.pause.paused().then(
+        (paused) => (paused ? send(res, 409, "text/plain; charset=utf-8", PAUSED) : wake()),
+        () => send(res, 502, "text/plain; charset=utf-8", "could not tell whether your runs are paused; the landrace log says why"),
+      );
       return;
     }
 
@@ -598,13 +638,20 @@ export function boardListener(opts: UiOptions): (req: IncomingMessage, res: Serv
       return;
     }
     if (path === "/board.json") {
+      // The caller's pause rides on both answers: the cog menu offers Resume
+      // on the Integrations tab too.
+      const paused = (): Promise<{ paused?: boolean }> =>
+        opts.pause ? opts.pause.paused().then((p) => ({ paused: p })) : Promise.resolve({});
       // The page shows only the Integrations tab on this.
       if (unready) {
-        send(res, 200, "application/json; charset=utf-8", JSON.stringify({ ready: false }));
+        paused().then(
+          (p) => send(res, 200, "application/json; charset=utf-8", JSON.stringify({ ready: false, ...p })),
+          () => send(res, 500, "text/plain; charset=utf-8", "the board could not be built"),
+        );
         return;
       }
-      opts.view().then(
-        (view) => send(res, 200, "application/json; charset=utf-8", JSON.stringify(view)),
+      Promise.all([opts.view(), paused()]).then(
+        ([view, p]) => send(res, 200, "application/json; charset=utf-8", JSON.stringify({ ...view, ...p })),
         // Fixed text: the error may quote tracker content, and this page is
         // not the place an operator reads a stack trace.
         () => send(res, 500, "text/plain; charset=utf-8", "the board could not be built"),

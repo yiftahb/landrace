@@ -1847,7 +1847,7 @@ export type EventName =
   | "wake.failed"
   | "notify.sent" | "notify.failed"
   | "agent.limited" | "integration.limited"
-  | "person.connected" | "person.disconnected"
+  | "person.connected" | "person.disconnected" | "person.paused" | "person.resumed"
   | "connection.expiring" | "connection.failed" | "connection.refreshed"
   | "signin.ok" | "signin.refused" | "request.refused";
 
@@ -2016,6 +2016,8 @@ export interface ConnectionValue {
 export interface PersonCredentials {
   person: Person;
   connections: Record<string, ConnectionValue>;
+  /** Set while the person has paused their runs from the board, since when: their runtime's ticks still list their items, and work none. */
+  paused?: { at: string };
   problem?: string;
 }
 
@@ -2106,6 +2108,8 @@ export interface CredentialStore {
   /** Writes who the person is, keeping what they connected; makes their file when there is none. */
   remember(person: Person): Promise<void>;
   remove(personId: string, connId: string): Promise<void>;
+  /** Writes who the person is and their pause — since `at`, or none for null — keeping what they connected; makes their file when there is none. */
+  pause(person: Person, at: string | null): Promise<void>;
   /** Every person with a file, readable or not — one that is not, by its id alone. */
   list(): Promise<Person[]>;
 }
@@ -2319,8 +2323,27 @@ export interface Roster {
    */
   signIn(person: Person): Promise<void>;
   tick(): Promise<void>;
+  /**
+   * Pause or resume the person's runs: written to their credentials file,
+   * logged once as `person.paused` or `person.resumed` when it changes, and
+   * their current runtime stops working at once. A resume is worked from the
+   * next tick.
+   */
+  pause(person: Person, paused: boolean): Promise<void>;
+  /** Whether the person's file says their runs are paused. */
+  paused(personId: string): Promise<boolean>;
   /** The items the last judged tick found claimed by more than one person, each with who: what a write from the page or the MCP goes by. */
   ambiguous(): ReadonlyMap<string, string[]>;
+}
+
+/**
+ * One person's Pause / Resume my runs, as the board asks it: whether their
+ * file says they paused, and the pause or resume itself, which wakes the
+ * loop on a resume so the next tick picks their items up now.
+ */
+export interface PausePath {
+  paused(): Promise<boolean>;
+  set(paused: boolean): Promise<void>;
 }
 
 /** What one judging of a person found: how they resolve, and what `start` keeps of it. */
@@ -3128,12 +3151,19 @@ export interface TurnedAway {
 }
 
 /**
- * One converge's agent slot. `take` answers null once it holds one, or why
- * not; `give` hands it back, and does nothing when none is held.
+ * One converge's agent slot. `take` is asked before every step the converge
+ * runs, not only the first: it answers null while it holds one — taking it
+ * the first time — or why not, which a pause can say of a slot already
+ * held; `give` hands it back, and does nothing when none is held.
  */
 export interface AgentSlot {
   take: () => Promise<string | null>;
   give: () => void;
+  /**
+   * Why the run's person has paused it, asked before every pass: a pause
+   * lets the step going finish and record its answer, and writes nothing more.
+   */
+  paused: () => string | null;
 }
 
 /**
@@ -3217,6 +3247,15 @@ export interface WorkspaceRuntime {
    * empty, and stays so.
    */
   asking: SlotAsk[];
+  /**
+   * Why this runtime works nothing now — its person paused their runs, or
+   * their file could not be read to tell — or absent while it works. Its
+   * ticks still list, so the board and everyone's claims stay current; no
+   * item is checked, no step starts, and a slot freed starts nothing for it.
+   * A run already going finishes its step. Set by the roster from the
+   * person's file before every tick, and at once by a pause.
+   */
+  paused?: string;
   /**
    * What the latest checks turned away for want of a slot, most urgent
    * first: a slot a run of this process frees goes to the first. Starts empty.
@@ -3869,6 +3908,13 @@ export interface BoardView {
   rows: BoardRow[];
   /** When the next scheduled tick is due, epoch ms; null when nothing is scheduled. */
   nextTickAt: number | null;
+  /**
+   * Whether the person reading the board paused their runs: the header's
+   * Paused chip, and the cog menu's Resume. Added by the server from its
+   * `pause`, on `/board.json` and on its `{ ready: false }` alike; absent from
+   * a view the board itself builds.
+   */
+  paused?: boolean;
   /** The repository checkout's own name — the header chip. `basename(workspace)`. */
   folder: string;
   /** The absolute path of the repository checkout landrace is running in. */
@@ -4010,6 +4056,13 @@ export interface UiOptions {
    * route is 404. Absent, it is.
    */
   pairing?: boolean;
+  /**
+   * The caller's own Pause / Resume my runs: `POST /pause` and `POST /resume`,
+   * each under its own action header, and whether `/tick` is refused and
+   * `/board.json` says `paused`. Bound to one caller, so no route names a
+   * person. Absent, both routes are 404.
+   */
+  pause?: PausePath;
   /**
    * Whether the board has a runtime behind it. False, `/board.json` answers
    * `{ ready: false }` and every write but the Integrations tab's is refused
