@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { DEFAULT_LOCKFILES, ensureWorktree, removeWorktree } from "#agent/worktree.js";
+import { DEFAULT_LOCKFILES, ensureWorktree, gitControlPaths, removeWorktree } from "#agent/worktree.js";
 import { labelsOf } from "#conventions.js";
 import { fetchBranch, gitIn } from "#kit/git.js";
 import { defineArtifactHook, definePostHook, definePreHook, defineSource } from "#hooks/contracts.js";
@@ -28,6 +28,7 @@ import { commitOn, gitRepo as repo, gitRepoWithOrigin, plainDir, pushedElsewhere
 jest.setTimeout(60_000);
 
 const exec = promisify(execFile);
+const LINUX = process.platform === "linux";
 type Fail = Extract<StepResult, { ok: false }>;
 
 /**
@@ -67,7 +68,7 @@ describe("a step that exceeds what it declared", () => {
     const root = await repo();
     const path = await ensureWorktree("101", root);
 
-    const r = await runStep({
+    const r = await runStep({ controls: null,
       item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
@@ -100,7 +101,7 @@ describe("a step that exceeds what it declared", () => {
       },
     };
 
-    const r = await runStep({
+    const r = await runStep({ controls: null,
       item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: committer,
@@ -117,7 +118,7 @@ describe("a step that exceeds what it declared", () => {
     const root = await repo();
     const path = await ensureWorktree("103", root);
 
-    const r = await runStep({
+    const r = await runStep({ controls: null,
       item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
@@ -140,7 +141,7 @@ describe("a step that exceeds what it declared", () => {
       const admin = join(common, "worktrees", basename(path));
       await writeFile(join(admin, "commondir"), `${tmpdir()}\n`);
       let ran = false;
-      const r = await runStep({
+      const r = await runStep({ controls: { deny: [], absent: [] },
         item: "1", step: step(capabilities),
         stageId: "spec", round: 1, snapshot: {},
         executor: { id: "never", run: async () => { ran = true; return { text: "", sessionId: null }; } },
@@ -159,7 +160,7 @@ describe("a step that exceeds what it declared", () => {
     const root = await repo();
     const path = await ensureWorktree("104", root);
 
-    const r = await runStep({
+    const r = await runStep({ controls: await gitControlPaths(path, root),
       item: "1", step: step(["repo:read", "repo:write"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: writer("planted.ts"),
@@ -176,7 +177,7 @@ describe("a step that exceeds what it declared", () => {
     const root = await repo();
     const path = await ensureWorktree("105", root);
 
-    const r = await runStep({
+    const r = await runStep({ controls: null,
       item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: wellBehaved(),
@@ -200,7 +201,7 @@ describe("a step that exceeds what it declared", () => {
       run: async () => { invoked = true; return { text: "", sessionId: null }; },
     };
 
-    const r = await runStep({
+    const r = await runStep({ controls: null,
       item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
@@ -224,7 +225,7 @@ describe("a step that exceeds what it declared", () => {
       },
     };
 
-    const r = await runStep({
+    const r = await runStep({ controls: null,
       item: "1", step: step(["repo:read"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: vanishing,
@@ -248,7 +249,7 @@ describe("a step that exceeds what it declared", () => {
       run: async () => { invoked = true; return { text: "", sessionId: null }; },
     };
 
-    const r = await runStep({
+    const r = await runStep({ controls: null,
       item: "1", step: step(["repo:read", "net:egress"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
@@ -265,7 +266,7 @@ describe("a step that exceeds what it declared", () => {
   it("refuses the retired capability tickets:create, naming items:create", async () => {
     let invoked = false;
     const spy: Executor = { id: "spy", run: async () => { invoked = true; return { text: "", sessionId: null }; } };
-    const r = await runStep({
+    const r = await runStep({ controls: null,
       item: "1", step: step(["repo:read", "tickets:create"]),
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
@@ -283,7 +284,7 @@ describe("a step that exceeds what it declared", () => {
       run: async (_p, o) => { seen = o.capabilities; return { text: "", sessionId: null }; },
     };
 
-    await runStep({
+    await runStep({ controls: null,
       item: "1", step: { prompt: "go" },
       stageId: "spec", round: 1, snapshot: {},
       executor: spy,
@@ -520,6 +521,8 @@ describe("converge and the sandbox", () => {
       return { runs, executor };
     };
     const write = new Map<string, Step>([["spec", step(["repo:read", "repo:write"])]]);
+    // A Linux sandbox is denied only the paths that are there; the rest are checked after the run.
+    const onThisPlatform = (paths: string[]): string[] => (LINUX ? paths.filter((p) => existsSync(p)) : paths);
     const common = async (dir: string): Promise<string> =>
       realpathSync(resolve(dir, (await exec("git", ["rev-parse", "--git-common-dir"], { cwd: dir })).stdout.trim()));
 
@@ -530,11 +533,11 @@ describe("converge and the sandbox", () => {
       const [run] = runs;
       const cwd = run?.cwd as string;
       const git = await common(root);
-      expect(run?.denyWrite).toEqual(expect.arrayContaining([
+      expect(run?.denyWrite).toEqual(expect.arrayContaining(onThisPlatform([
         join(git, "config"), join(git, "config.worktree"), join(git, "commondir"), join(git, "hooks"), join(git, "info"), join(cwd, ".git"),
-      ]));
+      ])));
       expect(run?.denyWrite?.filter((p) => p.startsWith(join(git, "worktrees"))).map((p) => basename(p)))
-        .toEqual(["config", "config.worktree", "commondir", "gitdir", "hooks", "info"]);
+        .toEqual(LINUX ? ["commondir", "gitdir"] : ["config", "config.worktree", "commondir", "gitdir", "hooks", "info"]);
     });
 
     it("hands a read step none", async () => {
@@ -554,12 +557,12 @@ describe("converge and the sandbox", () => {
       expect(run?.cwd).toBeUndefined();
       const theirs = await common(workspace);
       const here = await common(process.cwd());
-      expect(run?.denyWrite).toEqual(expect.arrayContaining([
+      expect(run?.denyWrite).toEqual(expect.arrayContaining(onThisPlatform([
         ...["config", "commondir", "hooks", "info"].map((f) => join(theirs, f)),
         ...["config", "commondir", "hooks", "info"].map((f) => join(here, f)),
-      ]));
+      ])));
       expect(run?.denyWrite?.filter((p) => p.startsWith(join(theirs, "worktrees"))).map((p) => basename(p)))
-        .toEqual(["config", "config.worktree", "commondir", "gitdir", "hooks", "info"]);
+        .toEqual(LINUX ? ["commondir", "gitdir"] : ["config", "config.worktree", "commondir", "gitdir", "hooks", "info"]);
       await removeWorktree("9", workspace);
     });
   });
@@ -980,5 +983,185 @@ describe("converge and a stage's branch", () => {
       sandbox: { root, worktree: { copy: ["*.env"], setup: ["touch ready.txt"], timeoutMs: 60_000, lockfiles: [...DEFAULT_LOCKFILES] } },
     }));
     expect(seen).toEqual([false]);
+  });
+});
+
+/*
+ * A Linux sandbox denies only the control paths that exist, so a write run can
+ * make one that did not: each that was missing as it started and holds
+ * something once it ends is refused, however the run ended, before the
+ * engine's git runs there.
+ */
+describe("a write run that leaves a git control path holding something", () => {
+  const OK = '```json\n{"kind":"spec"}\n```';
+  const writeStep = step(["repo:read", "repo:write"]);
+  /** Resolves once `signal` has aborted, at once if it already has. */
+  const stopped = (signal: AbortSignal | undefined): Promise<void> => new Promise((done) => {
+    if (signal === undefined || signal.aborted) done();
+    else signal.addEventListener("abort", () => done(), { once: true });
+  });
+  const ENDS = ["answers", "throws", "runs past its limit", "is aborted"] as const;
+  type End = typeof ENDS[number];
+  /** An agent that plants `file` with `body`, then ends as `end` says. */
+  const planter = (file: () => string, body: string, end: End, abort: AbortController): Executor => ({
+    id: "planter",
+    run: async (_p, { signal }) => {
+      await writeFile(file(), body);
+      if (end === "answers") return { text: OK, sessionId: "sid-1" };
+      if (end === "throws") throw new Error("the agent crashed");
+      if (end === "is aborted") abort.abort();
+      await stopped(signal);
+      throw new Error("the agent was stopped");
+    },
+  });
+
+  it("refuses a step that may write when it is handed no control paths, and never runs it", async () => {
+    const root = await repo();
+    const path = await ensureWorktree("119", root);
+    let ran = false;
+    const r = await runStep({
+      controls: null, item: "1", step: writeStep, stageId: "spec", round: 1, snapshot: {},
+      executor: { id: "never", run: async () => { ran = true; return { text: OK, sessionId: null }; } },
+      signal: new AbortController().signal, sandbox: { path, root },
+    });
+    expect(r).toMatchObject({ ok: false, kind: "refused" });
+    expect((r as Fail).reason).toMatch(/git paths its agent may not write/);
+    expect(ran).toBe(false);
+    await removeWorktree("119", root);
+  });
+
+  it.each(ENDS)("refuses one that planted <common>/commondir when it %s, naming it", async (end) => {
+    const root = await repo();
+    const path = await ensureWorktree("120", root);
+    const common = realpathSync(join(root, ".git"));
+    const controls = await gitControlPaths(path, root, "linux");
+    const abort = new AbortController();
+    try {
+      const r = await runStep({
+        controls, item: "1", step: writeStep, stageId: "spec", round: 1, snapshot: {},
+        executor: planter(() => join(common, "commondir"), "/elsewhere\n", end, abort),
+        signal: abort.signal, sandbox: { path, root },
+        ...(end === "runs past its limit" ? { defaultTimeoutMs: 300 } : {}),
+      });
+      expect(r).toMatchObject({ ok: false, kind: "refused", planted: true });
+      expect((r as Fail).reason).toContain(join(common, "commondir"));
+      expect((r as Fail).reason).toMatch(/a step that may write could have put it there/);
+    } finally {
+      await rm(join(common, "commondir"), { force: true });
+      await removeWorktree("120", root);
+    }
+  });
+
+  it("lets through the empty file a Linux sandbox leaves where it denied a path", async () => {
+    const root = await repo();
+    const path = await ensureWorktree("121", root);
+    const common = realpathSync(join(root, ".git"));
+    const controls = await gitControlPaths(path, root, "linux");
+    try {
+      const r = await runStep({
+        controls, item: "1", step: writeStep, stageId: "spec", round: 1, snapshot: {},
+        executor: planter(() => join(common, "config.worktree"), "", "answers", new AbortController()),
+        signal: new AbortController().signal, sandbox: { path, root },
+      });
+      expect(r).toMatchObject({ ok: true });
+    } finally {
+      await rm(join(common, "config.worktree"), { force: true });
+      await removeWorktree("121", root);
+    }
+  });
+
+  describe("through converge", () => {
+    const writes = new Map<string, Step>([["spec", writeStep]]);
+    const commonOf = (root: string): string => realpathSync(join(root, ".git"));
+    /** The admin folder of the worktree an agent ran in. */
+    const adminOf = async (root: string, cwd: string): Promise<string> => {
+      for (const name of await readdir(join(commonOf(root), "worktrees"))) {
+        const folder = join(commonOf(root), "worktrees", name);
+        if ((await readFile(join(folder, "gitdir"), "utf8")).trim() === join(cwd, ".git")) return folder;
+      }
+      throw new Error(`no admin folder names ${cwd}`);
+    };
+
+    it.each(ENDS)("halts the item and records the refusal when the run %s", async (end) => {
+      const root = await repo();
+      const w = world();
+      const abort = new AbortController();
+      const planted = join(commonOf(root), "commondir");
+      try {
+        const r = await converge("1", deps(w, {
+          executor: planter(() => planted, "/elsewhere\n", end, abort), steps: writes, sandbox: { root },
+          ctx: { item: "1", config: {} as HookContext["config"], secrets: new Map(), signal: abort.signal, log: () => {} },
+          ...(end === "runs past its limit" ? { stepTimeoutMs: 300 } : {}),
+        }));
+        expect(r.settled).toBe("halt");
+        expect(r.why).toContain(planted);
+        const refused = w.entries.filter((e) => e.kind === "refused");
+        expect(refused).toHaveLength(1);
+        expect(JSON.stringify(refused[0])).toContain("spec");
+      } finally {
+        await rm(planted, { force: true });
+      }
+    });
+
+    it("halts on an admin config.worktree setting a filter, and runs no git in the worktree after", async () => {
+      const root = await repo();
+      const marker = join(realpathSync(tmpdir()), `lr-filter-${Date.now()}`);
+      const filter = `${marker}.sh`;
+      await writeFile(filter, `#!/bin/sh\necho ran >> '${marker}'\ncat\n`, { mode: 0o755 });
+      // With the extension on, git reads each admin folder's config.worktree.
+      await exec("git", ["config", "extensions.worktreeConfig", "true"], { cwd: root });
+      const w = world();
+      let admin = "";
+      let cwd = "";
+      let armed = false;
+      const executor: Executor = {
+        id: "planter",
+        run: async (_p, { cwd: at }) => {
+          cwd = at as string;
+          admin = await adminOf(root, cwd);
+          await writeFile(join(admin, "config.worktree"), `[filter "trap"]\n\tclean = ${filter}\n`);
+          await writeFile(join(cwd, ".gitattributes"), "* filter=trap\n");
+          await writeFile(join(cwd, "src", "a.ts"), "export const a = 2;\n");
+          // Armed: git run plainly there runs the filter. Cleared, so what follows is the engine's alone.
+          await exec("git", ["status"], { cwd });
+          armed = existsSync(marker);
+          await rm(marker, { force: true });
+          return { text: OK, sessionId: "sid-1" };
+        },
+      };
+      try {
+        const r = await converge("1", deps(w, { executor, steps: writes, sandbox: { root } }));
+        expect(r.settled).toBe("halt");
+        if (LINUX) {
+          // On Linux no write run starts with the extension on.
+          expect(r.why).toMatch(/extensions\.worktreeConfig/);
+          expect(cwd).toBe("");
+        } else {
+          expect(r.why).toContain(join(admin, "config.worktree"));
+          expect(w.entries.filter((e) => e.kind === "refused")).toHaveLength(1);
+          expect(armed).toBe(true);
+          expect(existsSync(marker)).toBe(false);
+        }
+      } finally {
+        await rm(marker, { force: true });
+        await rm(filter, { force: true });
+      }
+    });
+
+    it("halts the item when a run with no worktree plants one in the workspace", async () => {
+      const workspace = await repo();
+      const planted = join(commonOf(workspace), "commondir");
+      const w = world();
+      try {
+        const r = await converge("1", deps(w, {
+          executor: planter(() => planted, "/elsewhere\n", "answers", new AbortController()), steps: writes, workspace,
+        }));
+        expect(r.settled).toBe("halt");
+        expect(r.why).toContain(planted);
+        expect(w.entries.filter((e) => e.kind === "refused")).toHaveLength(1);
+      } finally {
+        await rm(planted, { force: true });
+      }
+    });
   });
 });

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 
 import { screenPrompt } from "#agent/screen.js";
-import { ensureWorktree, gitControlPaths, pathFor, removeWorktree, worktreeIntact, worktreeOf, worktreeState } from "#agent/worktree.js";
+import { ensureWorktree, gitControlPaths, pathFor, plantedControlPaths, removeWorktree, worktreeIntact, worktreeOf, worktreeState } from "#agent/worktree.js";
 import {
   CHILD_SERVER_NAME,
   durationMs,
@@ -19,7 +19,7 @@ import {
 } from "#conventions.js";
 import { assess, gotoDeclined, gotoNotListed, gotoTargetsOf, nextRound, planEffects, reconcile, stageBranch } from "#core/index.js";
 import type {
-  Effect, Entry, ExecutorAnswer, PairDeps, PairFinished, PairingView, PairOffer, PairReleased, PairStarted, Pairing, Snapshot, Stage, Step,
+  ControlPaths, Effect, Entry, ExecutorAnswer, PairDeps, PairFinished, PairingView, PairOffer, PairReleased, PairStarted, Pairing, Snapshot, Stage, Step,
 } from "#namespace.js";
 import { buildBriefing } from "#runner/artifacts.js";
 import { stepTimeoutMs } from "#runner/budget.js";
@@ -330,8 +330,9 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
     const sandbox = { path: cwd, root };
 
     const scrub = scrubberOf(deps.ctx.secrets, deps.scrub);
-    const reject = async (kind: "contract" | "refused", reason: string): Promise<never> => {
-      await apply(deps, item, snapshot, [malformedEffect(stage.id, round, reason, scrub, kind === "refused" ? REFUSED_KIND : MALFORMED_KIND)]);
+    // `through`: what the record is written with — the run's own, unless it was aborted.
+    const reject = async (kind: "contract" | "refused", reason: string, through: PairDeps = deps): Promise<never> => {
+      await apply(through, item, snapshot, [malformedEffect(stage.id, round, reason, scrub, kind === "refused" ? REFUSED_KIND : MALFORMED_KIND)]);
       throw new Error(`the hand-in was refused: ${reason}. #${item} halts with the pairing still open; finish again once it has`);
     };
 
@@ -340,11 +341,11 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
     const start = await sandboxBefore(sandbox, step.capabilities);
     if (!start.ok) return reject("refused", start.reason);
     // The closing turn of a step that may write is denied the git control
-    // paths its step is: see `gitControlPaths`.
-    let denyWrite: string[] = [];
+    // paths its step is, and judged on them after: see `gitControlPaths`.
+    let controls: ControlPaths | null = null;
     if (mayWriteRepo(step.capabilities)) {
       try {
-        denyWrite = await gitControlPaths(cwd, root);
+        controls = await gitControlPaths(cwd, root);
       } catch (e) {
         return reject("refused", messageOf(e));
       }
@@ -359,14 +360,14 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
 
     const timeoutMs = (step.timeout === undefined ? null : durationMs(step.timeout)) ?? stepTimeoutMs(deps.workflow);
     const limit = AbortSignal.timeout(timeoutMs);
-    let answer: ExecutorAnswer;
+    let ran: { ok: true; answer: ExecutorAnswer } | { ok: false; error: unknown };
     try {
-      answer = await executor.run(prompt, {
+      ran = { ok: true, answer: await executor.run(prompt, {
         round,
         resume: sessionOf(root, item, open),
         fork: true,
         cwd,
-        ...(denyWrite.length ? { denyWrite } : {}),
+        ...(controls === null ? {} : { denyWrite: controls.deny }),
         capabilities: step.capabilities ?? [],
         ...(step.model === undefined ? {} : { model: step.model }),
         ...(step.effort === undefined ? {} : { effort: step.effort }),
@@ -378,12 +379,25 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
           ? { child: { parent: item, stage: stage.id, round, server: childServerFor(deps.childServer, { parent: item, stage: stage.id, round }) } }
           : {}),
         signal: AbortSignal.any([deps.ctx.signal, limit]),
-      });
+      }) };
     } catch (e) {
+      ran = { ok: false, error: e };
+    }
+
+    // However the closing turn ended, and before any git runs there:
+    // runStep's check, recorded as its refusal is.
+    if (controls !== null) {
+      const planted = await plantedControlPaths(controls.absent);
+      // Recorded even when the run was aborted, as converge records it: the
+      // next list finds the path there and never judges it again.
+      if (planted !== null) return reject("refused", planted, { ...deps, ctx: { ...deps.ctx, signal: new AbortController().signal } });
+    }
+    if (!ran.ok) {
       // Nothing was produced, so nothing is rejected: the pairing stays open
       // exactly as it was, and Finish may simply be asked again.
-      throw new Error(limit.aborted ? `the closing turn ran past its ${timeoutMs}ms limit` : `the closing turn did not run: ${messageOf(e)}`);
+      throw new Error(limit.aborted ? `the closing turn ran past its ${timeoutMs}ms limit` : `the closing turn did not run: ${messageOf(ran.error)}`);
     }
+    const answer = ran.answer;
 
     const trespass = await sandboxTrespass(sandbox, start.before);
     if (trespass) return reject("refused", trespass);
