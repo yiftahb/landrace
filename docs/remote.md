@@ -269,7 +269,13 @@ A local instance runs for one person, `local`, the operator. Adding `people.oidc
       - { login: landrace-bot, until: "2026-11-01T09:00:00Z" }
   ```
 
-  Replace `landrace-bot` with the login the local instance posted as: on GitHub, `tracker.bot` or the token's user. On Jira, also remove "Edit Own Comments" from the former account, or deactivate a former bot, before the switch: see [A former tracker login](security.md#a-former-tracker-login).
+  Replace `landrace-bot` with the login the local instance posted as, in the form each system names its author:
+
+  - **GitHub:** `tracker.bot`, or the token's user.
+  - **Jira:** the old account's account id, as `GET /rest/api/3/myself` answers it for that account. Never its email or display name: Jira names a comment's author by account id, so any other value leaves every old record `unlisted`.
+  - **GitLab:** the old account's username, without the `@`, as `GET /api/v4/user` answers it. The list also judges the forge's records, so a GitLab forge's old username goes in it too.
+
+  On Jira, also remove "Edit Own Comments" from the former account, or deactivate a former bot, before the switch: see [A former tracker login](security.md#a-former-tracker-login).
 
 **Editors move to HTTP.** The operator tools are served at `/mcp` beside the board, never over stdio. An editor still configured to run `landrace mcp` gets the message in [landrace mcp](cli.md#landrace-mcp), and exits. Each person points their editor at the instance instead:
 
