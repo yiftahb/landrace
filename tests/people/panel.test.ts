@@ -49,6 +49,35 @@ const forge = (check?: ConnectionDef["check"]): ConnectionDef => defineConnectio
 });
 const login = defineConnection({ id: "chat", label: "Chat", kind: "identity", fields: ["user"] });
 
+/*
+ * #229: a credential shared with a var refuses the person's runtime only once
+ * they connect it, so the reason is on that connection's own row, and not
+ * only in the operator's log.
+ */
+describe("the people panel's rows, when a var holds a connection's credential", () => {
+  it("shows the credential's row not working, with why", async () => {
+    const shared = runtimeConfigSchema.parse({
+      version: 1, agent: { adapter: "claude" },
+      vars: { me: { perPerson: true, connection: "forge.token" } },
+      secrets: { forgeToken: { perPerson: true, connection: "forge.token" } },
+    });
+    const root = join(await mkdtemp(join(tmpdir(), "lr-panel-")), "credentials");
+    const store = createCredentialStore(root);
+    await store.put("local", ME, "forge", { fields: { token: TOKEN }, source: "paste", connectedAt: NOW.toISOString() });
+    const ctx = { config: shared, secrets: new Map(), signal: new AbortController().signal, log: () => {} } as unknown as RuntimeContext;
+    const panel = createPeoplePanel({
+      store, mode: { remote: false }, log: createLogger({ sink: () => {} }), onChange: async () => {}, now: () => NOW,
+      gate: () => ({ registry: { connections: new Map([["forge", forge()]]) }, loaded: { ...loaded, config: shared }, ctx }),
+    });
+    const mine = await panel.me(ME);
+    expect(mine.ready).toBe(false);
+    expect(mine.connections).toEqual([expect.objectContaining({
+      id: "forge", state: "failed", detail: expect.stringMatching(/vars entry "me" resolves to the same value as a secret/),
+    })]);
+    expect(JSON.stringify(mine)).not.toContain(TOKEN);
+  });
+});
+
 describe("the people panel's identities", () => {
   it("shows the caller their own looked-up identity, never another's and never a credential, and why one is missing", async () => {
     const tracker = defineConnection({ id: "tracker", label: "Tracker", kind: "identity", fields: ["accountId"] });

@@ -134,7 +134,8 @@ export const runtimeConfigSchema = z.object({
    * These are *not* secrets, and the schema cannot enforce that — the log
    * redacts by value and only knows the values `secrets` declares, while a var
    * reaches a comment body and an agent's prompt unredacted. `varsHoldingSecrets`
-   * in config/load.ts is the check; this comment is the reason it exists.
+   * in config/load.ts is the check, and `resolvePerson` for a pair with a
+   * per-person key in it; this comment is the reason it exists.
    *
    * A var may instead be the per-person form (`keyValue`), whose value comes
    * from its `env` or, unset, from the person's own stored connection.

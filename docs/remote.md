@@ -217,7 +217,7 @@ Everything a person connects is under `~/.landrace/credentials/`, in the home fo
 | Path | Holds | Mode |
 |---|---|---|
 | `~/.landrace/credentials/` | The folder itself | `0700` |
-| `~/.landrace/credentials/<person id>.json` | One person: their id, email and name as they signed in, and each connection they made or Landrace looked up, with its values. The id is the provider's `sub`; the file is named after it, URL-encoded | `0600` |
+| `~/.landrace/credentials/<person id>.json` | One person: their id, email and name as they signed in, each connection they made or Landrace looked up, with its values, and whether they paused their runs. The id is the provider's `sub`; the file is named after it, URL-encoded | `0600` |
 | `~/.landrace/credentials/local.json` | The operator's own connections, from a local instance. Nobody signs in as `local` | `0600` |
 | `~/.landrace/credentials/mcp/mcp-clients.json` | Every MCP client that registered | `0600` |
 | `~/.landrace/credentials/mcp/mcp-tokens.json` | Each MCP refresh token, as a hash, with the client and the person it was issued to, and when it ends | `0600` |
@@ -235,6 +235,8 @@ Sessions, MCP access tokens, and sign-ins and connects in progress live in memor
 How the files are written, and how a step is kept from reading them, is in [Stored credentials](security.md#stored-credentials).
 
 ## Removing a person
+
+To stop someone's runs for a while instead, such as while they are on leave, they choose **Pause my runs** in their own board's cog menu. That needs no restart and signs nobody out ([Pausing your runs](cli.md#pausing-your-runs)).
 
 To remove someone, take them off `people.allow` and restart `start`:
 

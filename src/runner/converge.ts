@@ -96,12 +96,15 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
   // ends: the passes after a step are the same run's, and a slot given back
   // between two steps could go to another item while this one still works.
   // Nothing before the first step takes one — reading an item, entering a
-  // stage, a merge — so those never wait behind running agents.
+  // stage, a merge — so those never wait behind running agents. Asked again
+  // before each later step all the same: a person who paused their runs
+  // while this one worked lets its step finish, and starts no next one —
+  // nor, by the check at the top of each pass, writes anything after it.
   let slotted = false;
   const take = async (): Promise<string | null> => {
-    if (slotted || !deps.slot) return null;
+    if (!deps.slot) return null;
     const refused = await deps.slot.take();
-    slotted = refused === null;
+    if (refused === null) slotted = true;
     return refused;
   };
 
@@ -181,6 +184,12 @@ async function converging(
     if (deps.ctx.signal.aborted) {
       return { passes: pass - 1, settled: "halt", why: "the run was aborted" };
     }
+    // Likewise a pause, which is a wait rather than a halt: the round a step
+    // just recorded stays recorded, and the transition it leads to — its
+    // `on_enter`, a merge — is the next tick's after a resume. Asked only
+    // before the first step, the same call wrote to a paused person's tracker.
+    const paused = deps.slot?.paused() ?? null;
+    if (paused !== null) return { passes: pass - 1, settled: "wait", why: paused };
 
     // Re-read rather than simulate what our own writes did: one model of what
     // an effect means, not two that can disagree. Wrapped: a tracker's pre

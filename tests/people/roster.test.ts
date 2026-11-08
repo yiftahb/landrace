@@ -476,6 +476,191 @@ describe("one runner, many people", () => {
 });
 
 /*
+ * #231: a person pauses their own runs. Their runtime still lists — their
+ * board and their claims stay current — and works nothing; everyone else's
+ * keeps ticking. The pause is their file's, so a restart keeps it.
+ */
+describe("pausing a person's runs", () => {
+  const ALICE: Person = { id: "alice", email: "alice@example.invalid" };
+  /** Every event of alice's that takes a lock, starts a step or writes. */
+  const working = (w: World, person: string): LandraceEvent[] =>
+    w.events.filter((e) => e.person === person && ["lock.acquired", "step.started", "effect.applied"].includes(e.name));
+
+  it("works nothing of alice's while she is paused, and bob's items still run", async () => {
+    const w = await world({ people: ["alice", "bob"], items: [{ id: "1", labels: ["for:alice"] }, { id: "4", labels: ["for:bob"] }] });
+
+    await w.roster.pause(ALICE, true);
+    await w.roster.tick();
+
+    expect(working(w, "alice")).toEqual([]);
+    expect(working(w, "bob")).not.toEqual([]);
+    expect(w.runs.map((r) => r.person)).toEqual(["bob"]);
+    expect(w.state.stage("1")).toBeNull();
+    expect(w.state.stage("4")).toBe("done");
+    expect(await w.roster.paused("alice")).toBe(true);
+    expect(await w.roster.paused("bob")).toBe(false);
+    expect(w.named("person.paused")).toEqual([expect.objectContaining({ person: "alice", personEmail: "alice@example.invalid" })]);
+    expect(w.events.filter((e) => e.name === "tick.skipped" && e.person === "alice")).toEqual([
+      expect.objectContaining({ reason: "alice paused their runs" }),
+    ]);
+  });
+
+  it("picks alice's items up again on the next tick once she resumes", async () => {
+    const w = await world({ people: ["alice", "bob"], items: [{ id: "1", labels: ["for:alice"] }] });
+    await w.roster.pause(ALICE, true);
+    await w.roster.tick();
+    expect(w.runs).toEqual([]);
+
+    await w.roster.pause(ALICE, false);
+    await w.roster.tick();
+
+    expect(w.runs.map((r) => `${r.person}:${r.item}`)).toEqual(["alice:1"]);
+    expect(w.state.stage("1")).toBe("done");
+    expect(await w.roster.paused("alice")).toBe(false);
+    expect(w.named("person.resumed")).toEqual([expect.objectContaining({ person: "alice" })]);
+  });
+
+  it("keeps alice paused across a restart: a new roster over the same store", async () => {
+    const store = await storeOf(["alice", "bob"]);
+    const before = await world({ people: ["alice", "bob"], store, items: [] });
+    await before.roster.pause(ALICE, true);
+
+    const after = await world({ people: ["alice", "bob"], store, items: [{ id: "1", labels: ["for:alice"] }, { id: "4", labels: ["for:bob"] }] });
+    await after.roster.tick();
+
+    expect(working(after, "alice")).toEqual([]);
+    expect(after.runs.map((r) => r.person)).toEqual(["bob"]);
+    expect(await after.roster.paused("alice")).toBe(true);
+  });
+
+  /*
+   * Review of #231: a tick's read of the file, begun before a pause wrote it
+   * and answered after, set the runtime back to running, and that tick worked
+   * every item of a person whose board said Paused. Its twin re-paused a
+   * runtime just resumed. The read here is held until the pause has answered.
+   */
+  async function heldRead(): Promise<{ store: CredentialStore; arm: () => void; held: () => boolean; release: () => void }> {
+    const inner = await storeOf(["alice"]);
+    let armed = false;
+    let holding = false;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    gates.push(open);
+    const store: CredentialStore = {
+      ...inner,
+      read: async (id) => {
+        const read = await inner.read(id);
+        if (armed && id === "alice") {
+          armed = false;
+          holding = true;
+          await gate;
+        }
+        return read;
+      },
+    };
+    return { store, arm: () => { armed = true; }, held: () => holding, release: () => open() };
+  }
+
+  it("keeps a pause that lands while a tick reads the file: that tick works nothing for her", async () => {
+    const h = await heldRead();
+    const w = await world({ people: ["alice"], store: h.store, items: [{ id: "1", labels: ["for:alice"] }] });
+    h.arm();
+    const ticking = w.roster.tick();
+    await until(h.held, "the tick's read of alice's file");
+    await w.roster.pause(ALICE, true);
+    h.release();
+    await ticking;
+
+    expect(w.runs).toEqual([]);
+    expect(w.events.filter((e) => e.name === "lock.acquired")).toEqual([]);
+  });
+
+  it("keeps a resume that lands while a tick reads the file: that tick works her items", async () => {
+    const h = await heldRead();
+    const w = await world({ people: ["alice"], store: h.store, items: [{ id: "1", labels: ["for:alice"] }] });
+    await w.roster.pause(ALICE, true);
+    h.arm();
+    const ticking = w.roster.tick();
+    await until(h.held, "the tick's read of alice's file");
+    await w.roster.pause(ALICE, false);
+    h.release();
+    await ticking;
+
+    expect(w.runs.map((r) => `${r.person}:${r.item}`)).toEqual(["alice:1"]);
+  });
+
+  it("logs one event for a pause asked twice, and none for a resume of someone running", async () => {
+    const w = await world({ people: ["alice"], items: [] });
+    await w.roster.pause(ALICE, false);
+    await w.roster.pause(ALICE, true);
+    await w.roster.pause(ALICE, true);
+    expect(w.events.filter((e) => e.name === "person.paused" || e.name === "person.resumed").map((e) => e.name)).toEqual(["person.paused"]);
+  });
+
+  it("still counts a paused person's claim: 7, alice's and bob's, runs for neither", async () => {
+    const w = await world({ people: ["alice", "bob"], items: [{ id: "7", labels: ["for:alice", "for:bob"] }] });
+    await w.roster.pause(ALICE, true);
+    await w.roster.tick();
+    expect(w.runs).toEqual([]);
+    expect(lastRows(w, "bob")).toEqual([{ item: "7", outcome: "claimed by more than one person: alice and bob" }]);
+  });
+
+  it("works nothing for a person ticking alone while paused, as a local runtime does", async () => {
+    const w = await world({ people: ["alice"], items: [{ id: "1", labels: ["for:alice"] }] });
+    await w.roster.pause(ALICE, true);
+    await w.roster.tick();
+    expect(working(w, "alice")).toEqual([]);
+    expect(w.runs).toEqual([]);
+  });
+
+  it("lets a run already going finish, and starts no item it turned away in the slot it frees", async () => {
+    const release = new Map<string, () => void>();
+    const w = await world({
+      people: ["alice"], capacity: 1, held: true, release,
+      items: [{ id: "1", labels: ["for:alice"] }, { id: "2", labels: ["for:alice"] }],
+    });
+    const ticking = w.roster.tick();
+    await until(() => w.inFlight("alice") === 1, "alice's first run");
+    // Long enough for the second item's check to be turned away.
+    await new Promise((r) => setTimeout(r, 50));
+    const [first] = w.runs;
+
+    const other = first?.item === "1" ? "2" : "1";
+    expect(w.events.filter((e) => e.name === "item.skipped" && e.item === other)).toEqual([
+      expect.objectContaining({ reason: "waiting for a free agent slot (tick.concurrency 1)" }),
+    ]);
+
+    await w.roster.pause(ALICE, true);
+    const paused = w.events.length;
+    release.get(`alice:${first?.item ?? ""}`)?.();
+    await ticking;
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(w.runs).toEqual([{ person: "alice", item: first?.item, stopped: false }]);
+    // The slot it freed took no lock on the item turned away: not checked again at all.
+    expect(w.events.slice(paused).filter((e) => e.name === "lock.acquired")).toEqual([]);
+    // Its step's answer is recorded, and the stage it leads to is not entered:
+    // `done`'s on_enter is a tracker write, and a paused person gets none.
+    expect(w.state.entriesOf(first?.item ?? "").some((e) => e.stage === "spec" && e.kind === "output")).toBe(true);
+    expect(w.state.stage(first?.item ?? "")).toBe("spec");
+    expect(w.events.slice(paused).filter((e) => e.name === "effect.applied" && e.type === "tracker.status")).toEqual([]);
+  });
+
+  it("skips a person whose file stops reading, since whether they paused is unknown", async () => {
+    const store = await storeOf(["alice", "bob"]);
+    const w = await world({ people: ["alice", "bob"], store, items: [{ id: "1", labels: ["for:alice"] }, { id: "4", labels: ["for:bob"] }] });
+    await writeFile(join(store.root, "alice.json"), "{ not json");
+
+    await w.roster.tick();
+
+    expect(w.runs.map((r) => r.person)).toEqual(["bob"]);
+    expect(w.events.filter((e) => e.name === "tick.skipped" && e.person === "alice")).toEqual([
+      expect.objectContaining({ reason: expect.stringMatching(/^whether alice paused their runs is unknown: .*is not JSON/) }),
+    ]);
+  });
+});
+
+/*
  * #187: a remote roster is everyone who signed in. A sign-in remembers the
  * person, writes what an admin pinned for them, and an identity value
  * another person already holds is theirs, never the newcomer's.
