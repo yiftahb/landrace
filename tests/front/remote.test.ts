@@ -109,11 +109,11 @@ const cookieIn = (res: Response, name: string): string | undefined =>
   new RegExp(`(?:^|, )${name}=([^;]*)`).exec(res.headers.get("set-cookie") ?? "")?.[1];
 
 /** The whole browser sign-in: /login, the provider, the callback. The callback's response. */
-async function signIn(d: Door, claims: Record<string, unknown>, returnTo = "/"): Promise<Response> {
+async function signIn(d: Door, claims: Record<string, unknown>, returnTo = "/", userinfo: Record<string, unknown> | number = {}): Promise<Response> {
   const login = await d.fetch(`${PUBLIC}/login?return=${encodeURIComponent(returnTo)}`);
   expect(login.status).toBe(302);
   const to = login.headers.get("location") ?? "";
-  const code = d.idp.approve(to, claims);
+  const code = d.idp.approve(to, claims, userinfo);
   const state = new URL(to).searchParams.get("state") ?? "";
   return d.fetch(`${PUBLIC}/login/callback?code=${code}&state=${encodeURIComponent(state)}`, {
     headers: { cookie: `${LOGIN}=${cookieIn(login, LOGIN) ?? ""}` },
@@ -244,6 +244,24 @@ describe("signing in at the door", () => {
     expect(cookieIn(res, SESSION)).toBeUndefined();
     expect(d.signedIn).toEqual([]);
     expect(d.events).toEqual(expect.arrayContaining([expect.objectContaining({ name: "signin.refused", reason: expect.stringMatching(/not verified/) })]));
+  });
+
+  // #220: a thin ID token, as Okta's org server issues, verified at userinfo.
+  it("signs in a person whose email is verified only at userinfo", async () => {
+    const d = await door();
+    const res = await signIn(d, { sub: ALICE.sub }, "/", { email: ALICE.email, email_verified: true });
+    expect(res.status).toBe(302);
+    expect(cookieIn(res, SESSION)).toEqual(expect.any(String));
+    expect(d.signedIn).toEqual([{ id: "sub-alice", email: "alice@example.invalid" }]);
+  });
+
+  it("refuses 502, with no session cookie, when userinfo fails", async () => {
+    const d = await door();
+    const res = await signIn(d, { sub: ALICE.sub, email: ALICE.email }, "/", 500);
+    expect(res.status).toBe(502);
+    expect(cookieIn(res, SESSION)).toBeUndefined();
+    expect(d.signedIn).toEqual([]);
+    expect(d.events).toEqual(expect.arrayContaining([expect.objectContaining({ name: "signin.refused", reason: expect.stringMatching(/could not be accepted/) })]));
   });
 
   it("sends return=//evil.example to / once signed in", async () => {

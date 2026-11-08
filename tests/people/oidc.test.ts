@@ -51,11 +51,90 @@ describe("signing in with OpenID Connect", () => {
 
   it.each([
     ["false", { ...ALICE, email_verified: false }],
-    ["absent", { sub: "sub-alice", email: "alice@example.invalid" }],
+    ["absent, and absent at userinfo too", { sub: "sub-alice", email: "alice@example.invalid" }],
   ])("refuses an email whose verification is %s, 403", async (_, claims) => {
     const { oidc, idp, callback } = setup();
     const { url, binding } = await oidc.begin("/");
-    expect(await oidc.finish(callback(url, idp.approve(url, claims)), binding)).toEqual({ refused: expect.stringMatching(/not verified/), status: 403 });
+    expect(await oidc.finish(callback(url, idp.approve(url, claims, { email: "alice@example.invalid" })), binding)).toEqual({ refused: expect.stringMatching(/not verified/), status: 403 });
+  });
+
+  /*
+   * #220: a provider that issues a thin ID token — Okta's org server, for
+   * one — serves email and email_verified only at userinfo. Asked only when
+   * the ID token lacks one, about the ID token's own subject.
+   */
+  describe("an ID token without email or email_verified", () => {
+    const THIN = { sub: "sub-alice", name: "Alice" };
+
+    it("asks userinfo for email_verified, with the access token, and signs the person in", async () => {
+      const { oidc, idp, callback } = setup();
+      const { url, binding } = await oidc.begin("/");
+      const code = idp.approve(url, { ...THIN, email: "alice@example.invalid" }, { email: "alice@example.invalid", email_verified: true });
+      expect(await oidc.finish(callback(url, code), binding)).toEqual({ person: { id: "sub-alice", email: "alice@example.invalid", name: "Alice" }, returnTo: "/" });
+      expect(idp.userinfoRequests).toEqual([expect.stringMatching(/^Bearer [0-9a-f]{32}$/)]);
+    });
+
+    it("takes both from userinfo when the ID token has neither", async () => {
+      const { oidc, idp, callback } = setup();
+      const { url, binding } = await oidc.begin("/");
+      const code = idp.approve(url, THIN, { email: " bob.alice@example.invalid ", email_verified: true });
+      expect(await oidc.finish(callback(url, code), binding)).toEqual({ person: { id: "sub-alice", email: "bob.alice@example.invalid", name: "Alice" }, returnTo: "/" });
+    });
+
+    it.each([
+      ["false", { email: "alice@example.invalid", email_verified: false }],
+      ["absent there too", { email: "alice@example.invalid" }],
+      ["the string \"true\"", { email: "alice@example.invalid", email_verified: "true" }],
+      // Userinfo vouches for its own email only: never for another the ID token named.
+      ["true of another email", { email: "mallory@example.invalid", email_verified: true }],
+    ])("refuses, 403, when userinfo's email_verified is %s", async (_, userinfo) => {
+      const { oidc, idp, callback } = setup();
+      const { url, binding } = await oidc.begin("/");
+      const code = idp.approve(url, { ...THIN, email: "alice@example.invalid" }, userinfo);
+      expect(await oidc.finish(callback(url, code), binding)).toEqual({
+        refused: "your email, alice@example.invalid, is not verified at the provider; verify it there and sign in again", status: 403,
+      });
+    });
+
+    it("refuses, 403, when neither names an email", async () => {
+      const { oidc, idp, callback } = setup();
+      const { url, binding } = await oidc.begin("/");
+      expect(await oidc.finish(callback(url, idp.approve(url, THIN, { email_verified: true })), binding)).toEqual({
+        refused: "the provider sent no email for you, and Landrace knows people by theirs", status: 403,
+      });
+    });
+
+    it("keeps the ID token's own false: userinfo only fills what it lacks", async () => {
+      const { oidc, idp, callback } = setup();
+      const { url, binding } = await oidc.begin("/");
+      const code = idp.approve(url, { ...THIN, email_verified: false }, { email: "alice@example.invalid", email_verified: true });
+      expect(await oidc.finish(callback(url, code), binding)).toEqual({ refused: expect.stringMatching(/alice@example\.invalid, is not verified/), status: 403 });
+    });
+
+    it("refuses, 502, a userinfo answer about another subject", async () => {
+      const { oidc, idp, callback } = setup();
+      const { url, binding } = await oidc.begin("/");
+      // The same answer under the ID token's own sub signs Alice in, above: the subject alone is refused.
+      const code = idp.approve(url, { ...THIN, email: "alice@example.invalid" }, { sub: "sub-mallory", email: "alice@example.invalid", email_verified: true });
+      expect(await oidc.finish(callback(url, code), binding)).toEqual({ refused: expect.stringMatching(/^the provider's answer could not be accepted: ./), status: 502 });
+      expect(idp.userinfoRequests).toHaveLength(1);
+    });
+
+    it.each([401, 500])("refuses, 502, when userinfo answers %i", async (status) => {
+      const { oidc, idp, callback } = setup();
+      const { url, binding } = await oidc.begin("/");
+      const code = idp.approve(url, { ...THIN, email: "alice@example.invalid" }, status);
+      expect(await oidc.finish(callback(url, code), binding)).toEqual({ refused: expect.stringMatching(/^the provider's answer could not be accepted: ./), status: 502 });
+      expect(idp.userinfoRequests).toHaveLength(1);
+    });
+
+    it("never asks userinfo when the ID token has both", async () => {
+      const { oidc, idp, callback } = setup();
+      const { url, binding } = await oidc.begin("/");
+      const code = idp.approve(url, ALICE, { email: "other@example.invalid", email_verified: false });
+      expect(await oidc.finish(callback(url, code), binding)).toHaveProperty("person.email", "alice@example.invalid");
+      expect(idp.userinfoRequests).toHaveLength(0);
+    });
   });
 
   it("refuses a callback in a browser that did not begin it — login CSRF — and asks nothing of the provider", async () => {
