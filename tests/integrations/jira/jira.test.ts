@@ -1421,6 +1421,36 @@ describe("composed with a forge and docs", () => {
     const graph = await hooks.source.read(child.id, ctx);
     expect(graph.nodes.find((n) => n.id === child.id)?.origin).toBeNull();
   });
+
+  /*
+   * #237: a child a former login created and edited keeps its origin only
+   * while the changelog says that edit came by its until.
+   */
+  it("judges a former login's edit of a child's origin by the changelog's time", async () => {
+    const OLD = { accountId: "old-account", displayName: "Old bot", emailAddress: "old@example.com" };
+    const originAfter = async (edited: "before" | "after" | "untimed"): Promise<unknown> => {
+      const { fake, jira, ctx } = setup();
+      const hooks = hooksOver(jira);
+      const parent = await hooks.operator.createItem({ title: "Parent" }, ctx);
+      const child = await hooks.operator.createItem(
+        { title: "Child", parent: parent.id, origin: { parent: parent.id, stage: "breakdown", round: 1 } }, ctx,
+      );
+      const issue = fake.issue(child.id);
+      issue.creator = OLD as never;
+      fake.edit(child.id, OLD as never, issue.description as Adf);
+      const created = Date.parse(issue.created);
+      const until = new Date(created + 60_000).toISOString();
+      const change = issue.history.at(-1);
+      if (!change) throw new Error("no change recorded");
+      change.created = edited === "before" ? jiraTime(created + 30_000) : edited === "after" ? jiraTime(created + 120_000) : "";
+      const config = { tracker: { formerLogins: [{ login: OLD.accountId, until }] } } as never;
+      const graph = await hooks.source.read(child.id, { ...ctx, config });
+      return graph.nodes.find((n) => n.id === child.id)?.origin;
+    };
+    expect(await originAfter("before")).toMatchObject({ stage: "breakdown", round: 1 });
+    expect(await originAfter("after")).toBeNull();
+    expect(await originAfter("untimed")).toBeNull();
+  });
 });
 
 /*
