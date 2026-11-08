@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, cp, link, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -323,6 +323,13 @@ describe("the admin folder the engine's git uses", () => {
     await expect(worktreeIntact(path, root)).resolves.toBeUndefined();
   });
 
+  it("halts on an empty config.worktree with a second name, which a step can fill through it", async () => {
+    const { root, path, common, admin } = await setup();
+    await writeFile(join(common, "description"), "");
+    await link(join(common, "description"), join(admin, "config.worktree"));
+    await expect(gitDirsOf(path, root)).rejects.toThrow(join(admin, "config.worktree"));
+  });
+
   it("halts when two admin folders name the worktree, naming both", async () => {
     const { root, path, common, admin } = await setup();
     const second = join(common, "worktrees", "second");
@@ -468,6 +475,20 @@ describe("gitControlPaths", () => {
     expect(new Set([...deny, ...absent])).toEqual(new Set((await gitControlPaths(path, root, "darwin")).deny));
   });
 
+  // A sandbox denies by path: a control file with a second name is written through that one.
+  it.each(["linux", "darwin"] as const)("refuses a write run on %s while a control file has more than one link, naming it", async (platform) => {
+    const { root } = await gitRepoWithOrigin();
+    const path = await ensureWorktree("6", root);
+    const common = realpathSync(join(root, ".git"));
+    const linked = join(common, "config.worktree");
+    await writeFile(join(common, "description"), "");
+    await link(join(common, "description"), linked);
+    await expect(gitControlPaths(path, root, platform)).rejects.toThrow(linked);
+    await expect(gitControlPaths(path, root, platform)).rejects.toThrow(/more than one link/);
+    await rm(linked);
+    await expect(gitControlPaths(path, root, platform)).resolves.toBeDefined();
+  });
+
   it("lists no .git file for a checkout whose .git is a directory", async () => {
     const { root } = await gitRepoWithOrigin();
     const common = realpathSync(join(root, ".git"));
@@ -595,6 +616,40 @@ describe("plantedControlPaths", () => {
     const reason = await plantedControlPaths(absent);
     expect(reason).toContain(planted);
     expect(reason).toMatch(/a step that may write could have put it there/);
+  });
+
+  // A hard link to a file the step may still write, such as `<common>/description`: empty when
+  // judged, bound read-only by path from the next run on, and filled through its other name.
+  it.each([
+    ["<common>/config.worktree", (c: string) => join(c, "config.worktree")],
+    ["an admin config.worktree", (_c: string, a: string) => join(a, "config.worktree")],
+    ["an admin config", (_c: string, a: string) => join(a, "config")],
+  ])("refuses an empty hard link at %s, which another name can fill", async (_what, where: (c: string, a: string) => string) => {
+    const { common, admin, absent } = await setup();
+    const planted = where(common, admin);
+    expect(absent).toContain(planted);
+    await writeFile(join(common, "description"), "");
+    await link(join(common, "description"), planted);
+    const reason = await plantedControlPaths(absent);
+    expect(reason).toContain(planted);
+    expect(reason).toMatch(/a step that may write could have put it there/);
+  });
+
+  // Read whole, a multi-gigabyte file would exhaust the engine's memory before the refusal is recorded.
+  it("refuses a file over 4 KiB without reading it, and reads one of exactly 4 KiB", async () => {
+    const { admin, absent } = await setup();
+    const planted = join(admin, "config.worktree");
+    await writeFile(planted, " ".repeat(4096));
+    await expect(plantedControlPaths(absent)).resolves.toBeNull();
+    await writeFile(planted, " ".repeat(4097));
+    expect(await plantedControlPaths(absent)).toContain(planted);
+  });
+
+  it("refuses a FIFO without opening it to read", async () => {
+    const { admin, absent } = await setup();
+    const planted = join(admin, "config.worktree");
+    await exec("mkfifo", [planted]);
+    expect(await plantedControlPaths(absent)).toContain(planted);
   });
 
   it("refuses a path it cannot read, naming it", async () => {

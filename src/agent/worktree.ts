@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, lstat, mkdir, open, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -205,11 +206,19 @@ async function adminDirOf(path: string, common: string, what: string): Promise<s
 /**
  * Whether `path` holds anything git could act on: a regular file with more
  * than whitespace in it, a folder with anything in it, or anything else — a
- * link, a socket. Missing, empty and whitespace-only set nothing: the last
- * two are what a Linux sandbox leaves where it was told to deny a path. A
- * path that cannot be read throws.
+ * link, a socket, a FIFO. Missing, empty and whitespace-only set nothing: the
+ * last two are what a Linux sandbox leaves where it was told to deny a path.
+ * A path that cannot be read throws.
+ *
+ * A regular file with a second name holds something whatever it says now: a
+ * sandbox denies by path, so a step fills it through the other name once it
+ * has passed. One over `MOST_READ` bytes holds something unread, so a file of
+ * gigabytes cannot exhaust the engine before the refusal is recorded. And it
+ * is opened without following a link or waiting on a FIFO, then judged by
+ * what was opened, since something could swap it after the `lstat`.
  */
 const MISSING = new Set(["ENOENT", "ENOTDIR"]);
+const MOST_READ = 4096;
 
 async function holdsSomething(path: string): Promise<boolean> {
   let stat;
@@ -220,9 +229,27 @@ async function holdsSomething(path: string): Promise<boolean> {
     if (MISSING.has((e as NodeJS.ErrnoException).code ?? "")) return false;
     throw e;
   }
-  if (stat.isFile()) return (await readFile(path, "utf8")).trim() !== "";
   if (stat.isDirectory()) return (await readdir(path)).length > 0;
-  return true;
+  if (!stat.isFile() || stat.nlink > 1 || stat.size > MOST_READ) return true;
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "";
+    if (MISSING.has(code)) return false;
+    // Swapped for a link since the lstat.
+    if (code === "ELOOP") return true;
+    throw e;
+  }
+  try {
+    const now = await handle.stat();
+    if (!now.isFile() || now.nlink > 1 || now.size > MOST_READ) return true;
+    const buffer = Buffer.alloc(MOST_READ + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return bytesRead > MOST_READ || buffer.subarray(0, bytesRead).toString("utf8").trim() !== "";
+  } finally {
+    await handle.close();
+  }
 }
 
 /** Whether anything is at `path`, whatever it holds; one that cannot be looked at throws. */
@@ -331,7 +358,9 @@ const ADMIN_CONTROL_FILES = ["config", "config.worktree", "commondir", "gitdir",
  * reads every admin folder's `config.worktree`, those made while the step runs
  * too, and the sandbox cannot keep the step from making one. Read with the
  * repository's includes followed, which can only refuse more, and as git reads
- * a boolean; a config that cannot be read refuses too.
+ * a boolean; a config that cannot be read refuses too. Nor, on any
+ * platform, while a control file has a second name, which a deny by path
+ * leaves writable.
  */
 export async function gitControlPaths(path: string, repoRoot: string, platform: NodeJS.Platform = process.platform): Promise<ControlPaths> {
   const what = `could not list the git paths a write step may not write in ${path}`;
@@ -350,12 +379,23 @@ export async function gitControlPaths(path: string, repoRoot: string, platform: 
     ...(isFile ? [dotGit] : []),
   ];
   const absent: string[] = [];
+  const linked: string[] = [];
   for (const at of all) {
-    const missing = await lstat(at).then(() => false, (e: unknown) => {
-      if (MISSING.has((e as NodeJS.ErrnoException).code ?? "")) return true;
+    const stat = await lstat(at).catch((e: unknown) => {
+      if (MISSING.has((e as NodeJS.ErrnoException).code ?? "")) return null;
       throw new Error(`${what}: ${messageOf(e)}`);
     });
-    if (missing) absent.push(at);
+    if (stat === null) absent.push(at);
+    else if (stat.isFile() && stat.nlink > 1) linked.push(at);
+  }
+  // On every platform: each sandbox denies by path, and a file with a second
+  // name is written through that one. Git never links a control file.
+  if (linked.length > 0) {
+    throw new Error(
+      `${what}: ${linked.join(", ")} ${linked.length === 1 ? "has" : "have"} more than one link, so a sandbox that denies ` +
+      "the path cannot keep a step from writing it through another name, and a step that may write could have linked it. " +
+      "Replace it with a copy of its own, or remove it, and the item carries on",
+    );
   }
   return { deny: platform === "linux" ? all.filter((at) => !absent.includes(at)) : all, absent };
 }
