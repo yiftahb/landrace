@@ -656,7 +656,7 @@ describe("plantedControlPaths", () => {
   // folder is there, its `gitdir` and `commondir` not yet. Both exist after the run, and were read
   // as planted, halting an item that did nothing.
   it.each([
-    ["nothing in it yet", async (_folder: string) => undefined],
+    ["nothing in it yet", async () => undefined],
     ["its gitdir but no commondir yet", async (folder: string, other: string) => writeFile(join(folder, "gitdir"), `${join(other, ".git")}\n`)],
   ])("leaves out an admin folder being made, with %s, and passes once git finishes it", async (_what, before) => {
     const { root, path, common } = await setup();
