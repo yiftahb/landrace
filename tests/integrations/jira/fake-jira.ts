@@ -59,7 +59,8 @@ export interface FakeTransition { id: string; name: string; to: string; needs?: 
 /** An entity property, as Jira keeps one on a comment or a worklog: a key and any JSON value. */
 export interface FakeProperty { key: string; value: unknown }
 
-export interface FakeComment { id: string; author: FakeUser; body: Adf; created: string; properties?: FakeProperty[] }
+/** `updated` is `created` unless a test says; a `created` of "" is one Jira did not give, and left out of its answer. */
+export interface FakeComment { id: string; author: FakeUser; body: Adf; created: string; updated?: string; properties?: FakeProperty[] }
 
 export interface FakeWorklog { id: string; author: FakeUser; timeSpentSeconds: number; started: string; properties?: FakeProperty[] }
 
@@ -834,7 +835,7 @@ export function createFakeJira(project = "KEY") {
         const expand = (q.get("expand") ?? "").split(",").includes("properties");
         const comments = issue.comments.slice(startAt, startAt + maxResults).map((c) => ({
           self: `${SITE}/rest/api/3/issue/${issue.id}/comment/${c.id}`, id: c.id, author: user(c.author), body: c.body,
-          updateAuthor: user(c.author), created: c.created, updated: c.created, jsdPublic: isPublic(c),
+          updateAuthor: user(c.author), ...(c.created === "" ? {} : { created: c.created }), updated: c.updated ?? c.created, jsdPublic: isPublic(c),
           ...(expand ? { properties: c.properties ?? [] } : {}),
         }));
         return json({ startAt, maxResults, total: issue.comments.length, comments });

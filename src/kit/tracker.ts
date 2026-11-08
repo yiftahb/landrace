@@ -150,25 +150,18 @@ export const wroteIt = (c: SnapshotComment, logins: Logins): boolean =>
   markTrust(c.user?.login, { created: c.created_at, edited: c.updated_at }, logins) === "ours";
 
 /**
- * The items whose foreign marks this process has already said, by the
- * tracker's configuration and the item. Module-wide rather than an
- * instance's: a hook reload builds a new tracker, and the operator was told
- * once already. A changed `tracker` block is a new key, so a new list of
- * former logins is judged and said afresh.
+ * `records.foreign`, once per item for each `said` — a tracker keeps one
+ * for as long as it runs: how many marks on its comments do not count, and
+ * each author with why — `unlisted`, `after-until` or `no-time` — so the
+ * operator knows what to fix. Said again under a changed `tracker` block,
+ * whose former logins are judged afresh.
  */
-const foreignSaid = new Set<string>();
-
-/**
- * `records.foreign`, once per item per process: how many marks on its
- * comments do not count, and each author with why — `unlisted`,
- * `after-until` or `no-time` — so the operator knows what to fix.
- */
-export function sayForeign(ctx: HookContext, comments: TrackerComment[], logins: Logins): void {
+export function sayForeign(ctx: HookContext, comments: TrackerComment[], logins: Logins, said: Set<string>): void {
   const { count, authors } = foreignRecords(comments, logins);
   if (count === 0) return;
-  const key = JSON.stringify([ctx.config.tracker ?? null, ctx.item]);
-  if (foreignSaid.has(key)) return;
-  foreignSaid.add(key);
+  const key = JSON.stringify([ctx.config?.tracker ?? null, ctx.item]);
+  if (said.has(key)) return;
+  said.add(key);
   ctx.log("records.foreign", { item: ctx.item, count, authors });
 }
 
@@ -570,6 +563,8 @@ export function stillOpen(snapshot: Snapshot, effect: Effect): string[] {
  * with `briefs()`.
  */
 export abstract class BaseTracker {
+  /** The items whose foreign marks this tracker has said: `records.foreign` once per item, not once per tick. */
+  private readonly foreignSaid = new Set<string>();
   /** The login we post as: what tells our comments and markers from a stranger's. */
   abstract login(ctx: RuntimeContext): Promise<string>;
   /** Every open item, and any closed one the board should still show, each with its parent. */
@@ -811,7 +806,7 @@ export abstract class BaseTracker {
     const item = await this.item(ctx.item, ctx);
     const comments = await this.comments(ctx.item, ctx);
     const logins = await this.logins(ctx);
-    sayForeign(ctx, comments, logins);
+    sayForeign(ctx, comments, logins, this.foreignSaid);
     return {
       item: { body: item.body, comments }, entries: entriesFromComments(comments, logins), tracker: { bot: logins.current, former: logins.former },
     };

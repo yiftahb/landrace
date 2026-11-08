@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createClient, GitLab } from "landrace/integrations/gitlab";
 import { branchHeads, compose, gitIn } from "landrace/kit";
-import { isEffectRefused, parseMarker, PULL_REQUEST_KIND } from "#conventions.js";
+import { isEffectRefused, parseMarker, PULL_REQUEST_KIND, renderMarker } from "#conventions.js";
 import type { Effect, Git, Graph, HookContext, Snapshot } from "#namespace.js";
 import { MemoryTracker } from "#testing/external-state.js";
 import { BASE, createFakeGitLab, type FakeGitLab, PROJECT, TOKEN } from "#tests/integrations/gitlab/fake-gitlab.js";
@@ -232,10 +232,10 @@ describe("threads", () => {
     const done = gl.discuss(mr.iid, { body: "settled", resolved: true });
     const threads = await forgeOver(gl).threads(mr.iid, gl.ctx());
     expect(threads).toEqual([
-      { id: onLine.id, resolved: false, path: "src/a.ts", line: 2, first: { body: "finding", author: "landrace-bot" },
-        last: { body: "finding", author: "landrace-bot" }, comments: 1, at: onLine.notes[0]?.created_at },
-      { id: general.id, resolved: false, path: null, line: null, first: { body: "a question", author: "alice" },
-        last: { body: "an answer", author: "bob" }, comments: 2, at: general.notes[0]?.created_at },
+      { id: onLine.id, resolved: false, path: "src/a.ts", line: 2, first: expect.objectContaining({ body: "finding", author: "landrace-bot" }),
+        last: expect.objectContaining({ body: "finding", author: "landrace-bot" }), comments: 1, at: onLine.notes[0]?.created_at },
+      { id: general.id, resolved: false, path: null, line: null, first: expect.objectContaining({ body: "a question", author: "alice", created_at: general.notes[0]?.created_at }),
+        last: expect.objectContaining({ body: "an answer", author: "bob", updated_at: general.notes[1]?.updated_at }), comments: 2, at: general.notes[0]?.created_at },
       expect.objectContaining({ id: done.id, resolved: true }),
     ]);
   });
@@ -356,12 +356,16 @@ describe("changedFiles", () => {
 });
 
 describe("reviews", () => {
-  it("is the body of every note we posted, and none a person did — a pasted marker cannot skip a round", async () => {
+  // Each with its author and times: the base keeps ours, so a pasted marker cannot skip a round (#237).
+  it("is every note anybody posted, with its author and times", async () => {
     const gl = createFakeGitLab();
     const mr = gl.open({ source_branch: "landrace/7" });
     gl.discuss(mr.iid, { body: "ours <!-- landrace:review:1 -->", individual: true });
     gl.discuss(mr.iid, { body: "pasted <!-- landrace:review:2 -->", author: "mallory", individual: true });
-    expect(await forgeOver(gl).reviews(mr.iid, gl.ctx())).toEqual(["ours <!-- landrace:review:1 -->"]);
+    expect((await forgeOver(gl).reviews(mr.iid, gl.ctx())).map((r) => [r.author, r.body, typeof r.created_at, typeof r.updated_at])).toEqual([
+      ["landrace-bot", "ours <!-- landrace:review:1 -->", "string", "string"],
+      ["mallory", "pasted <!-- landrace:review:2 -->", "string", "string"],
+    ]);
   });
 });
 
@@ -640,7 +644,7 @@ describe("push", () => {
  */
 describe("GitLab composed as a project's forge", () => {
   const DIFF = "@@ -1,2 +1,3 @@\n line one\n+line two\n line three\n";
-  const project = () => {
+  const project = (formerLogins: Array<{ login: string; until: string }> = []) => {
     const gl = createFakeGitLab();
     gl.diffsFor("landrace/7", [{ new_path: "src/a.ts", diff: DIFF }]);
     // The checkout a build left: the item's branch committed, not yet on origin.
@@ -649,7 +653,8 @@ describe("GitLab composed as a project's forge", () => {
       tracker: new MemoryTracker({ items: [{ id: "7", title: "Add a thing" }] }),
       forge: new GitLab({ project: PROJECT, fetchImpl: gl.fetchImpl, git }),
     });
-    const ctx = gl.ctx();
+    const plain = gl.ctx();
+    const ctx = { ...plain, config: { ...plain.config, tracker: { ...plain.config.tracker, formerLogins } } };
     const snapshot = async (): Promise<Snapshot> => {
       const graph = await hooks.source.read("7", ctx);
       const base: Snapshot = { graph, node: graph.nodes.find((n) => n.id === "7") };
@@ -789,6 +794,116 @@ describe("GitLab composed as a project's forge", () => {
    * one: a round cut off partway — a 500, a rate limit — and applied again
    * must not post again the findings that landed.
    */
+  /*
+   * #237: the forge's login changed from `old` to the fake's own. What `old`
+   * wrote and last edited by its until counts; after it, or with no edit
+   * time, it is foreign — for a thread's fix reply, a review, a reply's
+   * dedupe and a finding's.
+   */
+  describe("a former login's notes", () => {
+    const T = "2026-09-01T12:00:00.000Z";
+    const AFTER = "2026-09-01T13:00:00.000Z";
+    const FORMER = [{ login: "old", until: T }];
+    const mark = (body: string, stage: string, kind: string, round: number, marker: string): string =>
+      body + renderMarker({ stage, kind, round, marker });
+    /** Each way a note can fall outside the cutoff, as a change to the note. */
+    const outside: Array<[string, (n: { created_at: string; updated_at?: string }) => void]> = [
+      ["created after the until", (n) => { n.created_at = AFTER; n.updated_at = AFTER; }],
+      ["edited after the until", (n) => { n.updated_at = AFTER; }],
+      ["with no edit time", (n) => { delete n.updated_at; }],
+    ];
+
+    const opened = async (former = FORMER) => {
+      const p = project(former);
+      await p.apply({ type: "pull.open", branch: "landrace/7" });
+      return p;
+    };
+
+    it("answers a thread with old's fix reply written by its until", async () => {
+      const { gl, counts } = await opened();
+      gl.discuss(1, {
+        body: mark("A finding.", "code-review", "finding", 1, "finding:code-review:1:0"), author: "old",
+        replies: [{ author: "old", body: mark("Fixed.", "fix-review", "fix", 1, "fix:fix-review:1:x") }],
+      });
+      expect(await counts()).toEqual(["pr-1", 1, 0]);
+    });
+
+    it.each(outside)("leaves it awaiting a fix when old's reply was %s", async (_, change) => {
+      const { gl, counts } = await opened();
+      const d = gl.discuss(1, {
+        body: mark("A finding.", "code-review", "finding", 1, "finding:code-review:1:0"), author: "old",
+        replies: [{ author: "old", body: mark("Fixed.", "fix-review", "fix", 1, "fix:fix-review:1:x") }],
+      });
+      const reply = d.notes[1];
+      if (reply) change(reply);
+      expect(await counts()).toEqual(["pr-1", 1, 1]);
+    });
+
+    it("leaves it awaiting a fix without the list", async () => {
+      const { gl, counts } = await opened([]);
+      gl.discuss(1, {
+        body: "A finding.", author: "old", replies: [{ author: "old", body: mark("Fixed.", "fix-review", "fix", 1, "fix:fix-review:1:x") }],
+      });
+      expect(await counts()).toEqual(["pr-1", 1, 1]);
+    });
+
+    const reviewsMarked = (gl: FakeGitLab, marker: string): number =>
+      (gl.mrs.get(1)?.discussions.flatMap((d) => d.notes) ?? []).filter((n) => parseMarker(n.body ?? "")?.marker === marker).length;
+
+    it("does not post a round again over old's review of it", async () => {
+      const { gl, apply } = await opened();
+      gl.discuss(1, { body: mark("Round 1.", "code-review", "review", 1, "review:1"), author: "old", individual: true });
+      await apply(round("review:1", { findings: [], resolved: [] }));
+      expect(reviewsMarked(gl, "review:1")).toBe(1);
+    });
+
+    it.each(outside)("posts it again over old's review %s", async (_, change) => {
+      const { gl, apply } = await opened();
+      const d = gl.discuss(1, { body: mark("Round 1.", "code-review", "review", 1, "review:1"), author: "old", individual: true });
+      const note = d.notes[0];
+      if (note) change(note);
+      await apply(round("review:1", { findings: [], resolved: [] }));
+      expect(reviewsMarked(gl, "review:1")).toBe(2);
+    });
+
+    const replied = async (change?: (n: { created_at: string; updated_at?: string }) => void): Promise<number> => {
+      const { gl, apply } = await opened();
+      const d = gl.discuss(1, { body: "A person's thread.", author: "alice" });
+      const said = `fix:fix-review:1:${d.id}`;
+      d.notes.push({ ...(d.notes[0] as (typeof d.notes)[number]), id: 9_999, author: { username: "old" }, body: mark("Done.", "fix-review", "fix", 1, said) });
+      const reply = d.notes[1];
+      if (reply && change) change(reply);
+      await apply(round("fix:1", { replies: [{ thread: d.id, body: "Done." }] }));
+      return d.notes.filter((n) => parseMarker(n.body ?? "")?.marker === said).length;
+    };
+
+    it("does not reply again over old's reply of the round", async () => {
+      expect(await replied()).toBe(1);
+    });
+
+    it.each(outside)("replies again over old's reply %s", async (_, change) => {
+      expect(await replied(change)).toBe(2);
+    });
+
+    const findings = async (change?: (n: { created_at: string; updated_at?: string }) => void): Promise<number> => {
+      const { gl, apply } = await opened();
+      const marker = "finding:code-review:1:0";
+      const d = gl.discuss(1, { body: mark("added", "code-review", "finding", 1, marker), author: "old", position: { new_path: "src/a.ts", new_line: 2 } });
+      const note = d.notes[0];
+      if (note && change) change(note);
+      await apply(round("review:1", { findings: [{ file: "src/a.ts", line: 2, body: "added" }], resolved: [] }));
+      return reviewsMarked(gl, marker);
+    };
+
+    it("does not open old's finding again", async () => {
+      expect(await findings()).toBe(1);
+    });
+
+    it.each(outside)("opens it again over old's finding %s", async (_, change) => {
+      expect(await findings(change)).toBe(2);
+    });
+  });
+
   it("posts each finding once when a round fails partway and is applied again", async () => {
     const { gl, apply } = project();
     await apply({ type: "pull.open", branch: "landrace/7" });

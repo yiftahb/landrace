@@ -87,13 +87,13 @@ describe("the hook resolves the login it posts as", () => {
   it("records the resolved login in the snapshot, for the post hook to check effects against", async () => {
     const { hooks } = build({ user: ok("landrace-bot") });
     const fragment = await hooks.pre.run(itemCtx);
-    expect(fragment.tracker).toEqual({ bot: "landrace-bot" });
+    expect(fragment.tracker).toEqual({ bot: "landrace-bot", former: [] });
     expect(hooks.pre.provides).toContain("tracker.bot");
   });
 
   it("verifies a configured bot name against the token rather than trusting it", async () => {
     const { hooks } = build({ bot: "landrace[bot]", user: ok("Landrace[bot]") });
-    expect((await hooks.pre.run(itemCtx)).tracker).toEqual({ bot: "landrace[bot]" });
+    expect((await hooks.pre.run(itemCtx)).tracker).toEqual({ bot: "landrace[bot]", former: [] });
   });
 
   it("halts naming both logins when the configured name is a typo", async () => {
@@ -110,7 +110,7 @@ describe("the hook resolves the login it posts as", () => {
       bot: "landrace[bot]",
       user: () => { throw new Error("getaddrinfo ENOTFOUND api.github.com"); },
     });
-    expect((await hooks.pre.run(itemCtx)).tracker).toEqual({ bot: "landrace[bot]" });
+    expect((await hooks.pre.run(itemCtx)).tracker).toEqual({ bot: "landrace[bot]", former: [] });
   });
 
   it("refuses to run rather than guess when the login cannot be resolved", async () => {
@@ -686,7 +686,7 @@ describe("a comment effect lands under either spelling of an app's login", () =>
   const { post } = githubHooks({ repo: "acme/widgets", token: "t", bot: "b", git: noBranches });
   const snapshot = (author: string, bot: string): Snapshot => ({
     node: { state: { labels: [] } },
-    tracker: { bot },
+    tracker: { bot, former: [] },
     item: { comments: [{ user: { login: author },
       body: `x\n\n${renderMarker({ stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1" })}` }] },
   } as unknown as Snapshot);

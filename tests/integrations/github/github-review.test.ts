@@ -410,3 +410,91 @@ describe("the changed files, as GitHub pages them", () => {
     ]);
   });
 });
+
+/*
+ * #237: the token changed from `old` to the fake's own login. What `old`
+ * wrote and last edited by its until counts; after it, or with no time to
+ * judge by, it is foreign. GitHub's REST reviews carry no edit time, so a
+ * review by `old` is always foreign: the worst it costs is one more review.
+ */
+describe("a former login's thread comments and reviews, on GitHub", () => {
+  const T = "2026-01-01T12:00:00Z";
+  const BEFORE = "2026-01-01T01:00:00Z";
+  const AFTER = "2026-01-01T13:00:00Z";
+  const fixed = `Fixed.${renderMarker({ stage: "fix-review", kind: "fix", round: 1, marker: "fix:fix-review:1:T1" })}`;
+  /** The times of `old`'s reply: within the cutoff, then each way outside it. "" is a time GitHub did not give. */
+  const within = { createdAt: BEFORE, lastEditedAt: null };
+  const outside: Array<[string, { createdAt: string; lastEditedAt: string | null }]> = [
+    ["created after the until", { createdAt: AFTER, lastEditedAt: null }],
+    ["edited after the until", { createdAt: BEFORE, lastEditedAt: AFTER }],
+    ["with no time", { createdAt: "", lastEditedAt: null }],
+  ];
+
+  const former = (gh: FakeTracker, formerLogins = [{ login: "old", until: T }]): HookContext["config"] =>
+    ({ ...gh.ctx.config, tracker: { ...gh.ctx.config.tracker, formerLogins } });
+  const run = async (gh: FakeTracker, effect: Effect, formerLogins?: Array<{ login: string; until: string }>): Promise<Snapshot> => {
+    const ctx = { ...gh.ctx, config: former(gh, formerLogins) };
+    const read = async (): Promise<Snapshot> => {
+      const graph = await gh.registry.source?.read("7", ctx);
+      let s: Snapshot = { graph, node: graph?.nodes.find((n) => n.id === "7") };
+      for (const hook of gh.registry.pre) s = { ...s, ...(await hook.run({ ...ctx, item: "7", snapshot: s })) };
+      return s;
+    };
+    await post(gh).apply(effect, { ...ctx, item: "7", snapshot: await read(), log: () => {} });
+    return read();
+  };
+  const fixRound = (output: unknown): Effect => ({ type: "pull.review", branch: "landrace/7", marker: "fix:1", stage: "fix-review", round: 1, body: "Fixed.", output });
+  const prState = (s: Snapshot) => ((s.graph as Graph | undefined)?.nodes.find((n: Node) => n.id === "pr-20"))?.state;
+  const withOldReply = (times: { createdAt: string; lastEditedAt: string | null }): FakeTracker =>
+    withPull([{ id: "T1", isResolved: false, body: `off by one${findingMarker(0)}`, path: "src/a.ts", line: 2, replies: [{ author: "old", body: fixed, ...times }] }]);
+
+  it("reads old's fix reply within the cutoff as the fixer's, and does not reply again", async () => {
+    const gh = withOldReply(within);
+    const s = await run(gh, fixRound({ kind: "addressed", replies: [{ thread: "T1", body: "Fixed." }] }));
+    expect(pull(gh).threads[0]?.replies).toHaveLength(1);
+    expect(prState(s)).toMatchObject({ openThreads: 1, awaitingFix: 0 });
+  });
+
+  it.each(outside)("reads old's fix reply %s as foreign: awaiting a fix, and replied to again", async (_, times) => {
+    const gh = withOldReply(times);
+    const s = await run(gh, fixRound({ kind: "addressed", replies: [{ thread: "T1", body: "Fixed." }] }));
+    expect(pull(gh).threads[0]?.replies).toHaveLength(2);
+    expect(prState(s)).toMatchObject({ openThreads: 1, awaitingFix: 0 });
+    const gh2 = withOldReply(times);
+    expect(prState(await run(gh2, review({ kind: "reviewed", findings: [], resolved: [] }, 9)))).toMatchObject({ openThreads: 1, awaitingFix: 1 });
+  });
+
+  it("reads old's fix reply as foreign without the list", async () => {
+    const gh = withOldReply(within);
+    expect(prState(await run(gh, review({ kind: "reviewed", findings: [], resolved: [] }, 9), []))).toMatchObject({ openThreads: 1, awaitingFix: 1 });
+  });
+
+  it("resolves only a finding old raised within the cutoff", async () => {
+    const make = (times: { createdAt: string; lastEditedAt: string | null }): FakeTracker =>
+      withPull([{ id: "T1", isResolved: false, body: `off by one${findingMarker(0)}`, author: "old", path: "src/a.ts", line: 2, ...times }]);
+    const ok = make(within);
+    await run(ok, review({ kind: "reviewed", findings: [], resolved: ["T1"] }, 2));
+    expect(pull(ok).threads[0]?.isResolved).toBe(true);
+    for (const [, times] of outside) {
+      const late = make(times);
+      await run(late, review({ kind: "reviewed", findings: [], resolved: ["T1"] }, 2));
+      expect(pull(late).threads[0]?.isResolved).toBe(false);
+    }
+  });
+
+  it("posts a round again over old's review of it, which GitHub gives no edit time for", async () => {
+    const gh = withPull();
+    const body = `Round one.${renderMarker({ stage: "code-review", kind: "review", round: 1, marker: "review:1" })}`;
+    pull(gh).reviews = [{ body, event: "COMMENT", user: "old", submitted_at: BEFORE }];
+    await run(gh, review({ kind: "reviewed", findings: [], resolved: [] }));
+    expect(pull(gh).reviews?.filter((r) => parseMarker(r.body)?.marker === "review:1")).toHaveLength(2);
+  });
+
+  it("does not post a round again over the current login's own review of it, whenever it was posted", async () => {
+    const gh = withPull();
+    const body = `Round one.${renderMarker({ stage: "code-review", kind: "review", round: 1, marker: "review:1" })}`;
+    pull(gh).reviews = [{ body, event: "COMMENT", user: gh.bot, submitted_at: AFTER }];
+    await run(gh, review({ kind: "reviewed", findings: [], resolved: [] }));
+    expect(pull(gh).reviews).toHaveLength(1);
+  });
+});
