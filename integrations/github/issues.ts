@@ -68,6 +68,8 @@ interface IssueNode {
   author: { login: string } | null;
   /** Who last edited the body, or null if nobody has since it was opened. */
   editor: { login: string } | null;
+  /** When the body was last edited: null if it never was. */
+  lastEditedAt?: string | null;
   /** ISO 8601. Optional because a reading without it draws no age, never NaN. */
   createdAt?: string;
   /** ISO 8601, when it last changed: the board's lane order. Optional likewise; null where GitHub answers none. */
@@ -93,7 +95,7 @@ const ISSUE_BASE_FIELDS = `
   number title url state stateReason createdAt updatedAt
   labels(first: 100) { nodes { name } }
   assignees(first: 20) { nodes { login } }
-  body author { login } editor { login }`;
+  body author { login } editor { login } lastEditedAt`;
 
 /**
  * The fields every reading of an issue that keeps its blockers asks for,
@@ -117,7 +119,7 @@ const SUB_ISSUE_FIELDS = `
   number title url state stateReason createdAt updatedAt
   labels(first: 20) { nodes { name } }
   assignees(first: 5) { nodes { login } }
-  body author { login } editor { login }`;
+  body author { login } editor { login } lastEditedAt`;
 
 /** One issue, and the issue it is a sub-issue of. */
 const ISSUE_QUERY = `
@@ -337,6 +339,7 @@ const subRecordOf = (issue: SubIssueNode, parent: string | null): ItemRecord => 
   body: issue.body ?? "",
   author: issue.author?.login,
   editor: issue.editor?.login,
+  editedAt: issue.lastEditedAt ?? undefined,
   createdAt: issue.createdAt,
   updatedAt: issue.updatedAt ?? undefined,
   parent,

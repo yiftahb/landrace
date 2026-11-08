@@ -261,6 +261,21 @@ A local instance runs for one person, `local`, the operator. Adding `people.oidc
 - **Where values come from.** A per-person key's `env` variable is ignored, and each person connects their own value. Your shell's `GITHUB_TOKEN`, say, no longer answers anyone's `githubToken`.
 - **No pairing.** A person on a remote instance has no terminal on this machine, so pairing is off.
 - **Your items stay where they are.** State is read from the tracker, so each person's runtime picks items up where the local one left them. Split them between people first: see [How items are shared](#how-steps-run-for-each-person).
+- **A new tracker login.** A record counts only when the login that posts now wrote it. If Landrace will post under a different login than the local one did, its old records would stop counting and finished stages would run again. Before the first `start` under the new login, list the old one in [`tracker.formerLogins`](configuration.md#landraceyaml), with `until` set to the moment of the switch:
+
+  ```yaml
+  tracker:
+    formerLogins:
+      - { login: landrace-bot, until: "2026-11-01T09:00:00Z" }
+  ```
+
+  Replace `landrace-bot` with the login the local instance posted as, in the form each system names its author:
+
+  - **GitHub:** `tracker.bot`, or the token's user.
+  - **Jira:** the old account's account id, as `GET /rest/api/3/myself` answers it for that account. Never its email or display name: Jira names a comment's author by account id, so any other value leaves every old record `unlisted`.
+  - **GitLab:** the old account's username, without the `@`, as `GET /api/v4/user` answers it. The list also judges the forge's records, so a GitLab forge's old username goes in it too.
+
+  On Jira, this step is required before the switch: remove "Edit Own Comments" and "Edit Own Worklogs" from every former account, or deactivate a former bot. Until you do, a former account can add a `landrace.marker` property to any comment or worklog it wrote before `until`, a plain reply included, and forge any record. See [A former tracker login](security.md#a-former-tracker-login).
 
 **Editors move to HTTP.** The operator tools are served at `/mcp` beside the board, never over stdio. An editor still configured to run `landrace mcp` gets the message in [landrace mcp](cli.md#landrace-mcp), and exits. Each person points their editor at the instance instead:
 
@@ -295,3 +310,4 @@ Then they sign in through OAuth: see [Connecting an MCP client](#connecting-an-m
 | `request.refused` | `person`, `path`, `status`, sometimes `reason` | A request from nobody signed in, or a consent approval refused. |
 | `item.ambiguous` | `item`, `people` | Two people's runtimes claim one item, so neither works it. |
 | `source.failed` | `people`, `reason` | A tick could not list these people's items, so no one's claims were judged. |
+| `records.foreign` | `item`, `count`, `authors: [{ login, why }]` | Marks on an item that do not count, so they are neither a record nor a reply. `why` is `unlisted` for a login that is neither the current one nor in [`tracker.formerLogins`](configuration.md#landraceyaml). It is `after-until` for a former login's mark written or edited after its `until`, and `no-time` when the tracker gave no time to judge it by. Logged once per item, author and `why` while each runtime runs, on a local instance too: a later mark by another account, or for another reason, is logged again, with every author the item has so far. |

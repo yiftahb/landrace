@@ -8,12 +8,12 @@
  * otherwise moves only to close an item or reopen it.
  */
 import {
-  type Closed, type Effect, FIELD_EFFECT, type HookContext, type ItemPatch, type Json, mayCreateItems, neutraliseMarkers, type Node,
-  type PreflightContext, RELATIONS, RESERVED_IDS, type RuntimeContext, sameLogin, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT,
+  type Closed, type Effect, FIELD_EFFECT, type HookContext, type ItemPatch, type Json, type Logins, markTrust, mayCreateItems, neutraliseMarkers, type Node,
+  type PreflightContext, RELATIONS, RESERVED_IDS, type RuntimeContext, type Snapshot, STAGE_LABEL_PREFIX, STATUS_EFFECT,
   type TrackerFieldValue, WORKLOG_EFFECT,
 } from "landrace/hooks";
 import {
-  BaseTracker, botLoginOf, type CommentVisibility, type CreateRequest, DONE_WINDOW_MS, EffectRefused, type EffectTable, ISSUE_PAGE, MAX_ISSUE_PAGES,
+  BaseTracker, loginsOf, type CommentVisibility, type CreateRequest, DONE_WINDOW_MS, EffectRefused, type EffectTable, ISSUE_PAGE, MAX_ISSUE_PAGES,
   ITEM_PAGE, type ItemRecord, type OpenRelations, type RelatedRecord, statusSatisfied, type TrackerComment, type WorklogRecord,
 } from "landrace/kit";
 import { type AdfDoc, type AdfNode, fromAdf, type Mention, mentionsIn, plainAdf, splitMarker, toAdf } from "./adf.js";
@@ -404,10 +404,10 @@ function worklogMarker(effect: Effect): string {
  * this marker — or, with `skipIfLogged`, any worklog at all, a person's
  * included.
  */
-function worklogLogged(worklogs: WorklogRecord[], effect: Effect, bot: string): boolean {
+function worklogLogged(worklogs: WorklogRecord[], effect: Effect, logins: Logins): boolean {
   const marker = worklogMarker(effect);
   if (effect.skipIfLogged === true && worklogs.length > 0) return true;
-  return worklogs.some((w) => typeof w.author === "string" && sameLogin(w.author, bot) && w.marker === marker);
+  return worklogs.some((w) => markTrust(w.author, { created: w.created, edited: w.updated }, logins) === "ours" && w.marker === marker);
 }
 
 /**
@@ -847,12 +847,13 @@ export class Jira extends BaseTracker {
   }
 
   /**
-   * Who last changed each issue's description, by issue id. The changelog
-   * comes oldest first, so the last change seen is the latest. An unknown
-   * author is "": somebody, and not us.
+   * Who last changed each issue's description, and when, by issue id. The
+   * changelog comes oldest first, so the last change seen is the latest. An
+   * unknown author is "": somebody, and not us. An unknown time is absent,
+   * and a former login's edit is not trusted without one.
    */
-  private async editors(jira: Client, ids: string[]): Promise<Map<string, string>> {
-    const editors = new Map<string, string>();
+  private async editors(jira: Client, ids: string[]): Promise<Map<string, { by: string; at: string | undefined }>> {
+    const editors = new Map<string, { by: string; at: string | undefined }>();
     for (let i = 0; i < ids.length; i += CHANGELOG_BATCH) {
       let nextPageToken: string | undefined;
       for (let page = 0; ; page++) {
@@ -861,7 +862,7 @@ export class Jira extends BaseTracker {
           throw new Error(`more description changes than ${MAX_ISSUE_PAGES} pages carry; who last edited a body cannot be told`);
         }
         const res = await jira.call<{
-          issueChangeLogs?: Array<{ issueId?: string; changeHistories?: Array<{ author?: User; items?: Array<{ fieldId?: string }> }> }>;
+          issueChangeLogs?: Array<{ issueId?: string; changeHistories?: Array<{ author?: User; created?: string; items?: Array<{ fieldId?: string }> }> }>;
           nextPageToken?: string | null;
         }>("POST", "/rest/api/3/changelog/bulkfetch", {
           issueIdsOrKeys: ids.slice(i, i + CHANGELOG_BATCH),
@@ -871,7 +872,7 @@ export class Jira extends BaseTracker {
         for (const log of res.issueChangeLogs ?? []) {
           for (const change of log.changeHistories ?? []) {
             if (log.issueId && change.items?.some((item) => item.fieldId === "description")) {
-              editors.set(log.issueId, change.author?.accountId ?? "");
+              editors.set(log.issueId, { by: change.author?.accountId ?? "", at: iso(change.created) });
             }
           }
         }
@@ -1075,7 +1076,8 @@ export class Jira extends BaseTracker {
         // The creator, not the reporter: anyone who may edit an issue may change its reporter.
         author: fields.creator?.accountId,
         // Whoever last changed the description, so an origin a person edited reads as nobody's.
-        editor: editors.get(id),
+        editor: editors.get(id)?.by,
+        editedAt: editors.get(id)?.at,
         createdAt: iso(fields.created),
         updatedAt: iso(fields.updated),
         // A parent in another project is no item of this tracker's.
@@ -1215,7 +1217,7 @@ export class Jira extends BaseTracker {
     const all: TrackerComment[] = [];
     for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
       const res = await jira.call<{
-        comments?: Array<{ id?: string; author?: User; body?: unknown; created?: string; properties?: Property[] }>; total?: number;
+        comments?: Array<{ id?: string; author?: User; body?: unknown; created?: string; updated?: string; properties?: Property[] }>; total?: number;
       }>("GET", `/rest/api/3/issue/${key}/comment?startAt=${all.length}&maxResults=${ISSUE_PAGE}&orderBy=created&expand=properties`);
       const batch = res.comments ?? [];
       all.push(...batch.map((c) => {
@@ -1225,7 +1227,9 @@ export class Jira extends BaseTracker {
         return {
           id: c.id,
           body: !found ? text : `${neutraliseMarkers(own)}${marker === null ? "" : `\n\n${marker}`}`,
+          // A missing time stays missing: a former login's marker is then not trusted.
           created_at: iso(c.created) ?? "",
+          ...(iso(c.updated) === undefined ? {} : { updated_at: iso(c.updated) }),
           user: c.author?.accountId ? { login: c.author.accountId } : null,
         };
       }));
@@ -1288,7 +1292,7 @@ export class Jira extends BaseTracker {
     const all: WorklogRecord[] = [];
     for (let page = 0; page < MAX_ISSUE_PAGES; page++) {
       const res = await jira.call<{
-        worklogs?: Array<{ id?: unknown; author?: User; timeSpentSeconds?: unknown; properties?: Property[] }>; total?: number;
+        worklogs?: Array<{ id?: unknown; author?: User; timeSpentSeconds?: unknown; created?: string; updated?: string; properties?: Property[] }>; total?: number;
       }>("GET", `/rest/api/3/issue/${key}/worklog?startAt=${all.length}&maxResults=${ISSUE_PAGE}&expand=properties`);
       const batch = res.worklogs ?? [];
       all.push(...batch.map((w) => {
@@ -1298,6 +1302,8 @@ export class Jira extends BaseTracker {
           author: w.author?.accountId ?? null,
           seconds: typeof w.timeSpentSeconds === "number" ? w.timeSpentSeconds : 0,
           marker: typeof value?.marker === "string" ? value.marker : null,
+          created: iso(w.created),
+          updated: iso(w.updated),
         };
       }));
       if (batch.length === 0 || all.length >= (res.total ?? 0)) return all;
@@ -1590,7 +1596,7 @@ export class Jira extends BaseTracker {
           } catch (e) {
             throw refused(e, [403, 404]);
           }
-          if (worklogLogged(worklogs, effect, botLoginOf(ctx.snapshot))) return;
+          if (worklogLogged(worklogs, effect, loginsOf(ctx.snapshot))) return;
           try {
             await jira.call("POST", `/rest/api/3/issue/${key}/worklog`, {
               timeSpentSeconds: seconds,

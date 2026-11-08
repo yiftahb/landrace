@@ -14,16 +14,16 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, sep } from "node:path";
 import {
-  BRANCH_PUSH_EFFECT, EffectRefused, effectBranch, hasPullFrom, ITEM_BRANCH, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT,
+  BRANCH_PUSH_EFFECT, EffectRefused, effectBranch, formerLoginsOf, hasPullFrom, ITEM_BRANCH, markTrust, neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, PULL_CLOSE_EFFECT,
   PULL_MERGE_EFFECT,
-  PULL_DESCRIPTION_FIELDS, PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, PULL_TITLE_FIELDS, pullsFrom, RELATIONS, renderMarker, sameLogin, signBody, splitSignature,
+  PULL_DESCRIPTION_FIELDS, PULL_OPEN_EFFECT, PULL_REQUEST_KIND, PULL_REVIEW_EFFECT, PULL_TITLE_FIELDS, pullsFrom, RELATIONS, renderMarker, signBody, splitSignature,
   stripMarker, variantBranch,
 } from "#conventions.js";
 import { headIn, headsOf } from "#kit/git.js";
 import { createdAtOf, nodesCloseSatisfied, stillOpen, updatedAtOf, wroteIt } from "#kit/tracker.js";
 import type {
   BranchHeads, BriefTable, ChangedFile, ChangedFiles, CheckCounts, CheckState, Effect, EffectTable, FailedCheck, Finding, ForgeOptions, Graph, HistoryItem,
-  HookContext, MergeAnswer, Node, PullRecord, RelationDecl, Relationship, Reply, ReviewThread, PreflightContext, RuntimeContext, Snapshot,
+  HookContext, Logins, MergeAnswer, Node, PullRecord, RelationDecl, Relationship, Reply, ReviewThread, PreflightContext, RuntimeContext, Snapshot,
   SnapshotComment, ThreadComment, ThreadCounts,
 } from "#namespace.js";
 
@@ -36,21 +36,36 @@ export const FINDING_KIND = "finding";
 export const FIX_KIND = "fix";
 
 /**
+ * Whether a thread comment, or a review, is ours by `markTrust`: the current
+ * login, or a former one that wrote and last edited it by its cutoff.
+ */
+export const wroteThread = (c: ThreadComment | null | undefined, logins: Logins): boolean =>
+  c != null && markTrust(c.author, { created: c.created_at, edited: c.updated_at }, logins) === "ours";
+
+/**
  * Whether a thread's last word is the fixer's answer — ours, by login and
  * marker both, since anyone with comment access can paste a marker. Anything
  * else last, or no reply at all, is a thread awaiting a fix.
  */
-export const answered = (last: ThreadComment | null | undefined, bot: string): boolean =>
-  typeof last?.author === "string" && sameLogin(last.author, bot) && parseMarker(last.body)?.kind === FIX_KIND;
+export const answered = (last: ThreadComment | null | undefined, logins: Logins): boolean =>
+  wroteThread(last, logins) && parseMarker(last?.body ?? "")?.kind === FIX_KIND;
+
+/**
+ * Whether a thread is one the reviewer raised: its opening ours, by login and
+ * marker both. Only those may the reviewer resolve, and only those are named
+ * its own in a brief.
+ */
+const ownFinding = (thread: Pick<ReviewThread, "first">, logins: Logins): boolean =>
+  wroteThread(thread.first, logins) && parseMarker(thread.first?.body ?? "")?.kind === FINDING_KIND;
 
 /**
  * Whether a thread opens with the reviewer's own wording finding: ours, by
  * login and marker both, as `answered` reads the fixer's — a person who pasted
  * the marker opened a thread of their own, and theirs is never wording (#71).
  */
-const wordingFinding = (first: ThreadComment | null | undefined, bot: string): boolean => {
-  if (typeof first?.author !== "string" || !sameLogin(first.author, bot)) return false;
-  const marker = parseMarker(first.body);
+const wordingFinding = (first: ThreadComment | null | undefined, logins: Logins): boolean => {
+  if (!wroteThread(first, logins)) return false;
+  const marker = parseMarker(first?.body ?? "");
   return marker?.kind === FINDING_KIND && marker.wording === true;
 };
 
@@ -60,14 +75,14 @@ const wordingFinding = (first: ThreadComment | null | undefined, bot: string): b
  * findings. Every page of them, or the integration refuses: a count over
  * part of a pull request's threads is a number known to be short.
  */
-export function threadCounts(threads: Array<Pick<ReviewThread, "resolved" | "first" | "last">>, bot: string): ThreadCounts {
+export function threadCounts(threads: Array<Pick<ReviewThread, "resolved" | "first" | "last">>, logins: Logins): ThreadCounts {
   const counts: ThreadCounts = { openThreads: 0, awaitingFix: 0, awaitingBehaviourFix: 0 };
   for (const t of threads) {
     if (t.resolved) continue;
     counts.openThreads++;
-    if (answered(t.last, bot)) continue;
+    if (answered(t.last, logins)) continue;
     counts.awaitingFix++;
-    if (!wordingFinding(t.first, bot)) counts.awaitingBehaviourFix++;
+    if (!wordingFinding(t.first, logins)) counts.awaitingBehaviourFix++;
   }
   return counts;
 }
@@ -387,12 +402,12 @@ export function newest<T>(
  * reply when it has one. The ones awaiting a fix come first, so the cut falls
  * on threads already answered.
  */
-export function threadsBrief(open: number[], read: Map<number, ReviewThread[]>, bot: string): string {
+export function threadsBrief(open: number[], read: Map<number, ReviewThread[]>, logins: Logins): string {
   if (open.length === 0) return "There is no pull request open on this item, so there is nothing to address.";
 
   const unresolved = open.flatMap((pull) => (read.get(pull) ?? [])
     .filter((thread) => !thread.resolved)
-    .map((thread) => ({ pull, thread, waiting: !answered(thread.last, bot) })));
+    .map((thread) => ({ pull, thread, waiting: !answered(thread.last, logins) })));
   if (unresolved.length === 0) return "No review thread on the item's pull requests is open. Nothing here needs addressing.";
   // Stable, so each group keeps the forge's order.
   unresolved.sort((a, b) => Number(b.waiting) - Number(a.waiting));
@@ -406,11 +421,11 @@ export function threadsBrief(open: number[], read: Map<number, ReviewThread[]>, 
       const opening = thread.first?.body ?? "";
       // The id is what a reviewer lists to resolve a thread, and only its
       // own may be: ours by the finding marker pull.review stamped.
-      const ours = parseMarker(opening)?.kind === FINDING_KIND ? "(raised by the reviewer) " : "";
+      const ours = ownFinding(thread, logins) ? "(raised by the reviewer) " : "";
       const turn = waiting ? "[awaiting a fix] " : "[answered by the fixer, awaiting the person] ";
       const last = thread.last;
       const reply = thread.comments > 1 && last
-        ? `\n   Last reply, from ${last.author !== null && sameLogin(last.author, bot) ? "Landrace" : `@${last.author ?? "ghost"}`}: ${text(last.body)}`
+        ? `\n   Last reply, from ${wroteThread(last, logins) ? "Landrace" : `@${last.author ?? "ghost"}`}: ${text(last.body)}`
         : "";
       return `${i + 1}. [thread ${thread.id}] ${turn}${where(thread)}${ours}${text(opening)}${reply}`;
     }).join("\n\n")}`];
@@ -489,21 +504,21 @@ const briefText = (body: string | null | undefined): string => cut((body ?? "").
  * reply the board posted as the bot reads as that person's turn, not as a
  * record. The body is cut here; the engine bounds the whole on the way in.
  */
-export function commentLine(c: SnapshotComment, bot: string): string {
-  const marker = wroteIt(c, bot) ? parseMarker(c.body ?? "") : null;
+export function commentLine(c: SnapshotComment, logins: Logins): string {
+  const marker = wroteIt(c, logins) ? parseMarker(c.body ?? "") : null;
   return marker
     ? `Landrace [${marker.marker ?? marker.kind}]: ${briefText(stripMarker(c.body ?? ""))}`
     : `@${c.user?.login ?? "ghost"}: ${briefText(c.body)}`;
 }
 
 /** One review thread as the history shows it: where, who raised it, whether it is settled, what it said, and its last reply. */
-export function threadLine(thread: ReviewThread, bot: string): string {
-  const ours = (login: string | null | undefined): boolean => typeof login === "string" && sameLogin(login, bot);
+export function threadLine(thread: ReviewThread, logins: Logins): string {
+  const ours = (c: ThreadComment | null): boolean => wroteThread(c, logins);
   const opening = thread.first;
   const last = thread.last;
-  const by = ours(opening?.author) ? "Landrace's reviewer" : `@${opening?.author ?? "ghost"}`;
+  const by = ours(opening) ? "Landrace's reviewer" : `@${opening?.author ?? "ghost"}`;
   const reply = thread.comments > 1 && last
-    ? `\nLast reply, from ${ours(last.author) ? "Landrace" : `@${last.author ?? "ghost"}`}: ${briefText(last.body)}`
+    ? `\nLast reply, from ${ours(last) ? "Landrace" : `@${last.author ?? "ghost"}`}: ${briefText(last.body)}`
     : "";
   return `${where(thread)}raised by ${by} — ${thread.resolved ? "resolved" : "open"}\n${briefText(opening?.body)}${reply}`;
 }
@@ -763,6 +778,10 @@ export abstract class BaseForge {
   abstract readonly commentChars: number;
   /** The login we post as here: whose turn a review thread is, by its last word. */
   abstract login(ctx: RuntimeContext): Promise<string>;
+  /** Whose marks count here: `login`, and `tracker.formerLogins`, each up to its `until`. */
+  protected async logins(ctx: RuntimeContext): Promise<Logins> {
+    return { current: await this.login(ctx), former: formerLoginsOf(ctx.config) };
+  }
   /** Every open pull request, and any closed one the board should still show. */
   abstract pulls(ctx: RuntimeContext): Promise<PullRecord[]>;
   /**
@@ -781,8 +800,13 @@ export abstract class BaseForge {
    * passed off as the whole.
    */
   abstract changedFiles(pull: number, ctx: RuntimeContext): Promise<ChangedFiles>;
-  /** The body of every review posted on a pull request: its marker is what says a round is already there. */
-  abstract reviews(pull: number, ctx: RuntimeContext): Promise<string[]>;
+  /**
+   * Every review posted on a pull request, each with its author and times: a
+   * marker on one the base judges ours is what says a round is already there.
+   * A forge that gives no edit time leaves `updated_at` out, and a former
+   * login's review is then not ours.
+   */
+  abstract reviews(pull: number, ctx: RuntimeContext): Promise<ThreadComment[]>;
   /**
    * Propose `branch` for `item`, naming the item in the forge's own way, with
    * `description` as its text when `pull.description` is set — already
@@ -991,7 +1015,7 @@ export abstract class BaseForge {
         if (nodes.has(pull.number) || !named.has(item)) continue;
         const open = isOpen(pull);
         const threads = open
-          ? threadCounts(await this.threads(pull.number, ctx), await this.login(ctx))
+          ? threadCounts(await this.threads(pull.number, ctx), await this.logins(ctx))
           : { openThreads: 0, awaitingFix: 0, awaitingBehaviourFix: 0 };
         const ci = checkCounts(open ? await this.checks(pull, ctx) : "none");
         const node = this.node(pull, threads, { ...ci, reviewPending: open ? await this.reviewPending(pull, ctx) : 0 });
@@ -1240,7 +1264,7 @@ export abstract class BaseForge {
         const pulls = await open(ctx);
         const read = new Map<number, ReviewThread[]>();
         for (const pull of pulls) read.set(pull.number, await this.threads(pull.number, ctx));
-        return threadsBrief(pulls.map((p) => p.number), read, await this.login(ctx));
+        return threadsBrief(pulls.map((p) => p.number), read, await this.logins(ctx));
       },
       diff: async (ctx) => {
         const changed: Array<{ number: number } & ChangedFiles> = [];
@@ -1261,12 +1285,12 @@ export abstract class BaseForge {
 
   /** Every review thread on every pull request tied to the item, for the history's one timeline. */
   async history(ctx: HookContext): Promise<HistoryItem[]> {
-    const bot = await this.login(ctx);
+    const logins = await this.logins(ctx);
     const entries: HistoryItem[] = [];
     for (const pull of await this.pullsNaming(ctx.item, ctx)) {
       const state = pull.merged ? "merged" : pull.closed ? "closed" : "open";
       for (const thread of await this.threads(pull.number, ctx)) {
-        entries.push({ at: thread.at ?? "", text: `On pr-${pull.number} (${state}): ${threadLine(thread, bot)}` });
+        entries.push({ at: thread.at ?? "", text: `On pr-${pull.number} (${state}): ${threadLine(thread, logins)}` });
       }
     }
     return entries;
@@ -1320,7 +1344,7 @@ export abstract class BaseForge {
       : new Map<string, ReviewThread>();
 
     // Replies first, the review last: its marker says the round is posted.
-    const bot = replies.length > 0 ? await this.login(ctx) : "";
+    const logins = await this.logins(ctx);
     for (const reply of replies) {
       const thread = threads.get(reply.thread);
       if (!thread) {
@@ -1329,7 +1353,7 @@ export abstract class BaseForge {
       }
       const said = `${kind}:${stage}:${round}:${thread.id}`;
       const last = thread.last;
-      if (typeof last?.author === "string" && sameLogin(last.author, bot) && parseMarker(last.body)?.marker === said) continue;
+      if (wroteThread(last, logins) && parseMarker(last?.body ?? "")?.marker === said) continue;
       await this.reply(
         thread.id,
         fitSigned(reply.body, this.commentChars - 1_000) + renderMarker({ stage, kind, round, marker: said }),
@@ -1337,7 +1361,7 @@ export abstract class BaseForge {
       );
     }
 
-    const posted = (await this.reviews(number, ctx)).some((body) => parseMarker(body)?.marker === marker);
+    const posted = (await this.reviews(number, ctx)).some((r) => wroteThread(r, logins) && parseMarker(r.body)?.marker === marker);
     if (!posted) {
       const changed = await this.changedFiles(number, ctx);
       let placed: ReturnType<typeof placeFindings>;
@@ -1358,7 +1382,7 @@ export abstract class BaseForge {
 
     for (const id of resolved) {
       const thread = threads.get(id);
-      if (!thread || parseMarker(thread.first?.body ?? "")?.kind !== FINDING_KIND) {
+      if (!thread || !ownFinding(thread, logins)) {
         // A person's thread is theirs to close, and an id not on the pull
         // request is a mistake worth seeing: said, never silently dropped.
         log("forge.review.unresolvable", { thread: id, why: thread ? "a person raised it" : "no such thread on the pull request" });

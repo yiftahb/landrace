@@ -63,8 +63,10 @@ export const source = brand("source", {
   // comments exactly. This is the one check the MCP plane makes that is not
   // itself the preflight.
   relations: [],
-  list: async (ctx: { config: { tracker: { order: string; barrier?: number } } }): Promise<unknown> => {
-    await appendFile(ctx.config.tracker.order, JSON.stringify({ list: true }) + "\\n");
+  list: async (ctx: { config: { tracker: { order: string; barrier?: number; formerLogins?: unknown[] } } }): Promise<unknown> => {
+    // With the former logins it was handed, when there are any: what a tracker judges its marks by.
+    const former = ctx.config.tracker.formerLogins ?? [];
+    await appendFile(ctx.config.tracker.order, JSON.stringify({ list: true, ...(former.length > 0 ? { formerLogins: former } : {}) }) + "\\n");
     // With a barrier, no list answers until that many have begun: probed one
     // after another, the first waits for a second that never starts.
     const { order, barrier } = ctx.config.tracker;
@@ -179,6 +181,8 @@ async function fixture(opts: {
   fast?: boolean;
   /** `fast` loads its own copy of the hook module, so it has a source of its own. */
   fastSource?: boolean;
+  /** `tracker.formerLogins`, as written in landrace.yaml. */
+  formerLogins?: string;
   /** No source's list answers until this many have begun. */
   barrier?: number;
   /** What the `spec` step declares, inside its brackets; `repo:read` by default. */
@@ -267,7 +271,7 @@ stages:
     join(dir, "landrace.yaml"),
     `version: 1
 agent: { adapter: ${opts.adapter ?? "fake"}, model: opus, isolation: ${opts.isolation ?? "none"}${opts.agentKeys ? `, ${opts.agentKeys}` : ""} }
-tracker: { record: ${JSON.stringify(record)}, order: ${JSON.stringify(order)}${opts.barrier === undefined ? "" : `, barrier: ${opts.barrier}`} }
+tracker: { record: ${JSON.stringify(record)}, order: ${JSON.stringify(order)}${opts.barrier === undefined ? "" : `, barrier: ${opts.barrier}`}${opts.formerLogins === undefined ? "" : `, formerLogins: ${opts.formerLogins}`} }
 tick: { interval: 30s, concurrency: 2 }
 security: { screen: ${opts.screen}, model: fake-small }
 log: { redact: [githubToken] }
@@ -316,6 +320,15 @@ describe("buildMcpTools and the startup preflight", () => {
     await expect(buildMcpTools(dir)).rejects.toThrow(
       /preflight "fake" failed: token needs "Contents: Read and write" on acme\/widgets/,
     );
+  });
+
+  // #237: what a tracker judges a former login's marks by reaches its hooks on this door too.
+  it("hands the hooks tracker.formerLogins, and refuses one with no offset as validate does", async () => {
+    const { dir, order } = await fixture({ screen: false, formerLogins: '[{ login: old, until: "2026-11-01T09:00:00Z" }]' });
+    await buildMcpTools(dir);
+    expect(await linesOf(order)).toContainEqual({ list: true, formerLogins: [{ login: "old", until: "2026-11-01T09:00:00Z" }] });
+    const bare = await fixture({ screen: false, formerLogins: '[{ login: old, until: "2026-11-01" }]' });
+    await expect(buildMcpTools(bare.dir)).rejects.toThrow(/formerLogins\.0\.until/);
   });
 
   it("assembles normally when the loaded preflight passes", async () => {
@@ -853,6 +866,33 @@ stages:
     const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "fast", "local");
     await tool.createChild({ title: "API" });
     expect(await linesOf(created)).toEqual([["lr:fast"]]);
+  });
+
+  // #237: the operator reads a created child back through `itemNode`, which judges its origin by these.
+  it("hands the operator tracker.formerLogins, as landrace.yaml sets them", async () => {
+    const root = await mkdtemp(join(tmpdir(), "lr-child-former-"));
+    const dir = join(root, ".landrace");
+    const seen = join(root, "seen.jsonl");
+    await mkdir(join(dir, "hooks"), { recursive: true });
+    await writeFile(join(dir, "hooks", "operator.ts"), `import { appendFile } from "node:fs/promises";
+const KIND = Symbol.for("landrace.hook.kind");
+export const operator = Object.defineProperty({
+  id: "fake",
+  createItem: async (input: { title: string }, ctx: { config: { tracker: { formerLogins?: unknown } } }): Promise<unknown> => {
+    await appendFile(${JSON.stringify(seen)}, JSON.stringify(ctx.config.tracker.formerLogins ?? null) + "\\n");
+    return { id: "9", kind: "item", title: input.title, link: "u/9", closed: null, priority: null, origin: null, state: { labels: [], assignees: [] } };
+  },
+  updateItem: async (): Promise<unknown> => { throw new Error("not here"); },
+}, KIND, { value: "operator", enumerable: false });
+`);
+    const wf = join(dir, "workflows", "main");
+    await mkdir(join(wf, "steps"), { recursive: true });
+    await writeFile(join(wf, "steps", "breakdown.md"), "---\ncapabilities: [items:create]\n---\n\nBreak it down.\n");
+    await writeFile(join(wf, "workflow.yaml"), "version: 1\nname: main\ndescription: test\nhooks: [../../hooks/operator.ts]\nstages:\n  - id: breakdown\n    entry: true\n    terminal: true\n    step: steps/breakdown.md\n");
+    await writeFile(join(dir, "landrace.yaml"), 'version: 1\nagent: { adapter: claude, model: opus }\ntracker: { formerLogins: [{ login: old, until: "2026-11-01T09:00:00Z" }] }\n');
+    const tool = await buildChildTool(dir, { parent: "1", stage: "breakdown", round: 1 }, "main", "local");
+    await tool.createChild({ title: "API" });
+    expect(await linesOf(seen)).toEqual([[{ login: "old", until: "2026-11-01T09:00:00Z" }]]);
   });
 
   it("refuses a workflow the workspace does not have, naming the ones it does", async () => {

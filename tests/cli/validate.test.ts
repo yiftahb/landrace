@@ -596,3 +596,38 @@ build
     expect(r.problems.filter(notExecutor)).toContainEqual({ rule: "branch", message: expect.stringMatching(/names it 2 times/) });
   });
 });
+
+/** tracker.formerLogins (#237): what a former login's marks are trusted up to, refused in `start`'s words. */
+describe("landrace validate, and tracker.formerLogins", () => {
+  const dirFor = async (tracker: string): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), "landrace-validate-former-"));
+    await mkdir(workflowIn(dir), { recursive: true });
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), [
+      "version: 1", "name: t", "description: test", "stages:",
+      "  - id: a", "    entry: true", "    terminal: true", "    triggers:", '      - { when: { "run.stage": null } }', "",
+    ].join("\n"));
+    await writeFile(join(dir, "landrace.yaml"), `version: 1\nagent: { adapter: claude }\n${tracker}`);
+    return dir;
+  };
+
+  it.each([
+    ["a blank login", 'tracker: { formerLogins: [{ login: " ", until: "2026-11-01T00:00:00Z" }] }\n', /formerLogins\.0\.login/],
+    ["a missing until", "tracker: { formerLogins: [{ login: old }] }\n", /formerLogins\.0\.until/],
+    ["an until with no offset", 'tracker: { formerLogins: [{ login: old, until: "2026-11-01" }] }\n', /formerLogins\.0\.until/],
+    ["an until whose time has no offset", 'tracker: { formerLogins: [{ login: old, until: "2026-11-01T10:00:00" }] }\n', /formerLogins\.0\.until/],
+    ["an offset written without its colon", 'tracker: { formerLogins: [{ login: old, until: "2026-11-01T10:00:00+0200" }] }\n', /formerLogins\.0\.until/],
+    ["a key it does not read", 'tracker: { formerLogins: [{ login: old, until: "2026-11-01T00:00:00Z", from: x }] }\n', /formerLogins\.0/],
+    ["one login listed twice", 'tracker: { formerLogins: [{ login: old, until: "2026-11-01T00:00:00Z" }, { login: OLD, until: "2026-12-01T00:00:00Z" }] }\n', /formerLogins\.1\.login/],
+  ])("refuses %s", async (_, tracker, where) => {
+    const r = await runValidate(await dirFor(tracker));
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContainEqual({ rule: "config", message: expect.stringMatching(where) });
+  });
+
+  it("passes an until that names its offset, and a tracker block without the key", async () => {
+    for (const tracker of ['tracker: { formerLogins: [{ login: old, until: "2026-11-01T10:00:00+02:00" }] }\n', "tracker: { repo: a/b }\n", ""]) {
+      const r = await runValidate(await dirFor(tracker));
+      expect(r.problems.filter((p) => p.rule === "config")).toEqual([]);
+    }
+  });
+});

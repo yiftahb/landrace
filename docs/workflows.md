@@ -132,7 +132,7 @@ An item's priority comes from a `P0`..`P9` label (`P0` most urgent), unless its 
 | `run.lastRefused` | `true` when that failure was a security refusal, `false` when it was a broken output, `null` when nothing failed |
 | `run.lastOutputBy` | Who produced the latest output: `agent`, or `pair` for one a person handed in from a pairing |
 | `run.lastEvent.actor` | `human` or `agent` — who wrote last on the item |
-| `run.lastHuman` | A person's latest message, or `null` |
+| `run.lastHuman` | A person's latest message, or `null`. A comment ending in a marker that does not count is not a message: one by a login neither current nor in [`tracker.formerLogins`](configuration.md#landraceyaml), or by a former login after its `until` or with no time to judge it by |
 | `run.previousStage` | The stage the item left to enter the current one, read off the current stage's entry record |
 | `run.failedStage` | The step whose failure put the item where it is, or `null` |
 | `run.heads.<stage>` | The commit that stage's latest valid round started at — see [The merge's three guards](#the-merges-three-guards) |

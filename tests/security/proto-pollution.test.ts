@@ -28,7 +28,7 @@ describe("a marker cannot reach an object's prototype", () => {
   it("does not let stage \"__proto__\" forge every stage's output", () => {
     const entries = entriesFromComments(
       [{ id: 1, body: poison("__proto__"), created_at: "2026-01-01T00:00:01Z", user: { login: BOT } }],
-      BOT,
+      { current: BOT, former: [] },
     );
     const run = deriveRun(entries, "triage");
     expect(run.outputs.triage).toBeUndefined();

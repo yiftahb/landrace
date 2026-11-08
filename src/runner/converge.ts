@@ -4,7 +4,7 @@ import {
 import { decide, planEffects, planNodesClose, reconcile, stageBranch } from "#core/index.js";
 import { ENTRY_KIND, GOTO_TRIGGER, isEffectRefused, MALFORMED_KIND, mayWriteRepo, OUTPUT_KIND, RECORD_EFFECT, REFUSED_KIND } from "#conventions.js";
 import type {
-  AgentActivity, ControlPaths, ConvergeDeps, ConvergeResult, Decision, Dispatcher, Effect, Snapshot, StepResult, StepSandbox, WorktreeBranch,
+  AgentActivity, ControlPaths, ConvergeDeps, ConvergeResult, Decision, Dispatcher, Effect, Logger, Snapshot, StepResult, StepSandbox, WorktreeBranch,
 } from "#namespace.js";
 import { messageOf } from "#runner/errors.js";
 import { scrubberOf } from "#runner/events.js";
@@ -43,6 +43,38 @@ function malformedBody(reason: string, scrub: (text: string) => string, kind: st
 
 /** How a record body is scrubbed — see `scrubberOf`. */
 const scrubberFor = (deps: ConvergeDeps): ((text: string) => string) => scrubberOf(deps.ctx.secrets, deps.scrub);
+
+/**
+ * The (item, author, why) each runtime's logger has said `records.foreign`
+ * of. Keyed by the logger, which a runtime makes once, so it is once per
+ * author and reason on an item for as long as the runtime runs — not once
+ * per tick, which would say the same thing every interval until the operator
+ * stopped reading it. Not once per item: a migration's first `old`/`unlisted`
+ * would then silence a later forged marker by another account on that item.
+ */
+const foreignSaid = new WeakMap<Logger, Set<string>>();
+
+/**
+ * `records.foreign`: the marks on the item that do not count — by an account
+ * in neither `tracker.formerLogins` nor the current login, or by a former one
+ * after its `until` or with no time — as the tracker's pre hook tallied them
+ * under `tracker.foreign`. Neither a record nor a reply, so nothing else
+ * would say why a finished stage ran again.
+ */
+function sayForeign(item: string, snapshot: Snapshot, log: Logger): void {
+  const foreign = (snapshot.tracker as { foreign?: { count?: unknown; authors?: unknown } } | undefined)?.foreign;
+  if (typeof foreign?.count !== "number" || foreign.count <= 0) return;
+  const said = foreignSaid.get(log) ?? new Set<string>();
+  foreignSaid.set(log, said);
+  const authors = Array.isArray(foreign.authors) ? (foreign.authors as Array<{ login?: unknown; why?: unknown }>) : [];
+  // JSON, so no login can be spelled to collide with another pair's key.
+  // A count with no authors to key by is still said, once for the item.
+  const keys = authors.length ? authors.map((a) => JSON.stringify([item, a.login, a.why])) : [JSON.stringify([item])];
+  const fresh = keys.filter((k) => !said.has(k));
+  if (fresh.length === 0) return;
+  for (const k of fresh) said.add(k);
+  log("records.foreign", { item, count: foreign.count, authors: foreign.authors });
+}
 
 /**
  * Act on one item until the next move depends on something outside the loop.
@@ -209,6 +241,7 @@ async function converging(
     // decision below is always reported alongside the thing it was decided
     // from, and never at the price of a whole snapshot per pass in a quiet log.
     deps.log("snapshot.built", { item, pass, snapshot });
+    sayForeign(item, snapshot, deps.log);
 
     // Before anything is decided, because acting on an unplaceable item is
     // what this closes: two `lr:stage:*` labels used to run a paid step at

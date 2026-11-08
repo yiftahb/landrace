@@ -4,7 +4,7 @@ import type { Marker, TrackerComment } from "#namespace.js";
 const BOT = "landrace-bot";
 const posted = (body: string, login = BOT): TrackerComment =>
   ({ id: 1, body, created_at: "2026-01-01T00:00:00.000Z", user: { login } });
-const readBack = (m: Marker, login = BOT) => entriesFromComments([posted(`x${renderMarker(m)}`, login)], BOT)[0];
+const readBack = (m: Marker, login = BOT) => entriesFromComments([posted(`x${renderMarker(m)}`, login)], { current: BOT, former: [] })[0];
 
 /*
  * One marker for every tracker. The GitHub hook and the in-memory tracker
@@ -60,8 +60,8 @@ describe("the head a record carries", () => {
     expect(e?.data).toEqual({ kind: "reviewed", head: "forged" });
   });
 
-  it("is nobody's on a comment someone else posted, marker and all", () => {
-    expect(readBack(output({ output: { kind: "reviewed" }, head: "abc123" }), "a-person")).not.toHaveProperty("head");
+  it("is nobody's on a comment someone else posted, marker and all: the comment is dropped", () => {
+    expect(readBack(output({ output: { kind: "reviewed" }, head: "abc123" }), "a-person")).toBeUndefined();
   });
 
   it.each(["", 7, null])("reads back no head that is not a commit's name (%j)", (bad) => {

@@ -2707,6 +2707,27 @@ export const chatIdentity = brand("connection", {
     expect(gate.lookups).toEqual(new Map([["chat", "Chat found nobody with your email"]]));
     expect((await credentials.read("local")).connections).toEqual({});
   }, 30_000);
+
+  /*
+   * #237: an `until` is the moment of a switch already made. One in the
+   * future — 2062 typed for 2026 — would trust the former account for
+   * decades; `validate` has no clock, so `start` refuses it, naming the entry.
+   */
+  it("refuses to start with a former login's until later than now, naming the entry, and starts with one already past", async () => {
+    const withFormer = async (until: string): Promise<string> => {
+      const { dir } = await fixture({});
+      const yaml = join(dir, "landrace.yaml");
+      await writeFile(yaml, (await readFile(yaml, "utf8")).replace(
+        "tracker: { record: ", `tracker: { formerLogins: [{ login: gone, until: "2020-01-01T00:00:00Z" }, { login: old, until: "${until}" }], record: `));
+      return dir;
+    };
+    const future = await withFormer("2062-11-01T09:00:00Z");
+    await expect(localGate(future, await storeOf(null))).rejects.toThrow(
+      /tracker\.formerLogins\.1 \("old"\): until 2062-11-01T09:00:00Z is later than now/);
+    await expect(runStart(future, { ...keyless(), once: true, credentials: await storeOf(null) })).rejects.toThrow(/tracker\.formerLogins\.1 \("old"\)/);
+    const past = await withFormer("2026-01-01T09:00:00+02:00");
+    await expect(localGate(past, await storeOf(null))).resolves.toBeDefined();
+  }, 30_000);
 });
 
 /*

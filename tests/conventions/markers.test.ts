@@ -52,7 +52,7 @@ describe("entriesFromComments", () => {
     const entries = entriesFromComments([
       { id: 1, body: `draft${renderMarker(doc)}`, created_at: at(1), user: { login: "bot" } },
       { id: 2, body: "looks good", created_at: at(2), user: { login: "yiftahb" } },
-    ], "bot");
+    ], { current: "bot", former: [] });
     expect(entries[0]).toMatchObject({ stage: "spec", kind: "output", round: 2, byAgent: true });
     expect(entries[1]).toMatchObject({ kind: "human", byAgent: false });
   });
@@ -64,7 +64,7 @@ describe("entriesFromComments", () => {
       { id: 1, body: `draft\n\nsecond paragraph${renderMarker(doc)}`, created_at: at(1), user: { login: "bot" } },
       { id: 2, body: "looks good", created_at: at(2), user: { login: "yiftahb" } },
       { id: 3, body: undefined as unknown as string, created_at: at(3), user: { login: "yiftahb" } },
-    ], "bot");
+    ], { current: "bot", former: [] });
     expect(entries.map((e) => e.text)).toEqual(["draft\n\nsecond paragraph", "looks good", ""]);
   });
 
@@ -76,7 +76,7 @@ describe("entriesFromComments", () => {
   it("reads a marker from the account we post as, whoever else is talking", () => {
     const [entry] = entriesFromComments([
       { id: 1, body: `x${renderMarker(doc)}`, created_at: at(1), user: { login: "yiftahb" } },
-    ], "yiftahb");
+    ], { current: "yiftahb", former: [] });
     expect(entry?.byAgent).toBe(true);
   });
 
@@ -90,7 +90,7 @@ describe("entriesFromComments", () => {
   it("reads an output record's payload as the step's value, not the marker's envelope", () => {
     const value = { kind: "questions", questions: ["scope?"] };
     const body = `asking${renderMarker({ ...doc, output: value })}`;
-    const [entry] = entriesFromComments([{ id: 1, body, created_at: at(1), user: { login: "bot" } }], "bot");
+    const [entry] = entriesFromComments([{ id: 1, body, created_at: at(1), user: { login: "bot" } }], { current: "bot", former: [] });
     expect(entry).toMatchObject({ stage: "spec", kind: "output", round: 2, byAgent: true });
     expect(entry?.data).toEqual(value);
   });
@@ -102,7 +102,7 @@ describe("entriesFromComments", () => {
   it("gives an output record with no value no payload at all", () => {
     const [entry] = entriesFromComments(
       [{ id: 1, body: `old${renderMarker(doc)}`, created_at: at(1), user: { login: "bot" } }],
-      "bot",
+      { current: "bot", former: [] },
     );
     expect(entry).toMatchObject({ stage: "spec", kind: "output", round: 2 });
     expect(entry?.data).toBeUndefined();
@@ -128,7 +128,7 @@ describe("entriesFromComments", () => {
         created_at: at(2),
         user: { login: "bot" },
       },
-    ], "bot");
+    ], { current: "bot", former: [] });
 
     expect(entries[0]?.session).toBe("sid-step");
     expect(entries[1]?.session).toBe("sid-turn");
@@ -146,7 +146,7 @@ describe("entriesFromComments", () => {
    */
   it("does not read a session out of an output value that happens to declare one", () => {
     const body = `draft${renderMarker({ ...doc, output: { kind: "spec", session: "sid-agent" } })}`;
-    const [entry] = entriesFromComments([{ id: 1, body, created_at: at(1), user: { login: "bot" } }], "bot");
+    const [entry] = entriesFromComments([{ id: 1, body, created_at: at(1), user: { login: "bot" } }], { current: "bot", former: [] });
 
     expect(entry?.session).toBeUndefined();
     expect(entry?.data).toEqual({ kind: "spec", session: "sid-agent" });
@@ -167,14 +167,14 @@ describe("entriesFromComments", () => {
         created_at: at(2),
         user: { login: "bot" },
       },
-    ], "bot");
+    ], { current: "bot", former: [] });
 
     expect(entries[0]?.session).toBeUndefined();
     expect(entries[1]?.session).toBeUndefined();
   });
 
   it("keeps a human comment's text where a step can read it", () => {
-    const [entry] = entriesFromComments([{ id: 7, body: "B2B only", created_at: at(1), user: { login: "y" } }], "bot");
+    const [entry] = entriesFromComments([{ id: 7, body: "B2B only", created_at: at(1), user: { login: "y" } }], { current: "bot", former: [] });
     expect(entry?.data).toMatchObject({ body: "B2B only", author: "y", id: 7 });
   });
 });
@@ -189,10 +189,10 @@ describe("our own records under an app's two spellings of its login", () => {
   // other places — and in `tracker.bot` — so either side may carry it.
   it.each([["myapp[bot]", "myapp"], ["myapp", "myapp[bot]"], ["MyApp[bot]", "myapp"]])(
     "reads a record by %s as ours when we post as %s", (author, bot) => {
-      expect(entriesFromComments([marked(author)], bot)[0]).toMatchObject({ kind: "enter", byAgent: true });
+      expect(entriesFromComments([marked(author)], { current: bot, former: [] })[0]).toMatchObject({ kind: "enter", byAgent: true });
     });
 
-  it("still reads a different account's record as a person's", () => {
-    expect(entriesFromComments([marked("myapp2[bot]")], "myapp")[0]).toMatchObject({ kind: "human", byAgent: false });
+  it("still reads a different account's record as foreign, and drops it", () => {
+    expect(entriesFromComments([marked("myapp2[bot]")], { current: "myapp", former: [] })).toEqual([]);
   });
 });

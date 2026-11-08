@@ -713,7 +713,7 @@ describe("the status follows the stage, by statuses", () => {
     const plain = setup();
     plain.fake.add();
     expect(plain.jira.provides()).not.toContain("tracker.status");
-    expect((await plain.jira.observe(on(plain.ctx, "KEY-1"))).tracker).toEqual({ bot: BOT.accountId });
+    expect((await plain.jira.observe(on(plain.ctx, "KEY-1"))).tracker).toEqual({ bot: BOT.accountId, former: [], foreign: { count: 0, authors: [] } });
   });
 
   it("refuses a mapping to an empty status name", () => {
@@ -1095,6 +1095,54 @@ describe("a service desk", () => {
     expect([entry?.stage, entry?.round]).toEqual(["spec", 1]);
   });
 
+  /*
+   * #237, round 3: a former login's comment marker counts within its cutoff,
+   * judged by the comment's `created` and `updated`. A rewrite of the
+   * `landrace.marker` property itself carries no time: that limit is
+   * documented, not judged here.
+   */
+  describe("a former login's comment marker", () => {
+    const T = "2026-11-01T09:00:00Z";
+    const OLD = { accountId: "old-account", displayName: "Old bot", emailAddress: "old@example.com" };
+    const at = (iso: string): string => jiraTime(Date.parse(iso));
+    const entriesFor = async (times: { created: string; updated?: string }, formerLogins = [{ login: OLD.accountId, until: T }]) => {
+      const { fake, jira, ctx } = setup();
+      const { key } = fake.add();
+      fake.say(key, OLD as never, paragraphs("Entered spec."));
+      const comment = fake.issue(key).comments[0];
+      if (!comment) throw new Error("no comment");
+      comment.properties = [{ key: "landrace.marker", value: { marker: renderMarker({ stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1" }).trim() } }];
+      comment.created = times.created;
+      if (times.updated !== undefined) comment.updated = times.updated;
+      const config = { tracker: { formerLogins } } as never;
+      const observed = await hooksOf(jira).pre.run({ ...on(ctx, key), config });
+      const foreign = (observed.tracker as { foreign: { count: number; authors: unknown[] } }).foreign;
+      return { entries: observed.entries as Array<{ stage: string; byAgent: boolean }>, foreign };
+    };
+
+    it("counts one created and updated before the until", async () => {
+      const { entries, foreign } = await entriesFor({ created: at("2026-11-01T08:00:00Z"), updated: at("2026-11-01T08:30:00Z") });
+      expect(entries).toEqual([expect.objectContaining({ stage: "spec", byAgent: true })]);
+      expect(foreign).toEqual({ count: 0, authors: [] });
+    });
+
+    it.each([
+      ["updated after the until", { created: at("2026-11-01T08:00:00Z"), updated: at("2026-11-01T10:00:00Z") }, "after-until"],
+      ["created after the until", { created: at("2026-11-01T10:00:00Z") }, "after-until"],
+      ["with no created time", { created: "" }, "no-time"],
+    ])("drops one %s, and says why", async (_, times, why) => {
+      const { entries, foreign } = await entriesFor(times);
+      expect(entries).toEqual([]);
+      expect(foreign).toEqual({ count: 1, authors: [{ login: OLD.accountId, why }] });
+    });
+
+    it("drops it as unlisted without the list", async () => {
+      const { entries, foreign } = await entriesFor({ created: at("2026-11-01T08:00:00Z") }, []);
+      expect(entries).toEqual([]);
+      expect(foreign).toEqual({ count: 1, authors: [{ login: OLD.accountId, why: "unlisted" }] });
+    });
+  });
+
   describe("mentions", () => {
     const mentionsIn = (doc: Adf | undefined): unknown[] => {
       const out: unknown[] = [];
@@ -1313,7 +1361,7 @@ describe("composed with a forge and docs", () => {
     const record = { type: "tracker.comment", stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1", body: "Entered spec." };
     await hooks.post.apply(record, on(ctx, "KEY-1", await snapshotOf(hooks, ctx, "KEY-1")));
     const observed = await hooks.pre.run(on(ctx, "KEY-1"));
-    expect(observed.tracker).toEqual({ bot: BOT.accountId });
+    expect(observed.tracker).toEqual({ bot: BOT.accountId, former: [], foreign: { count: 0, authors: [] } });
     expect((observed.entries as Array<{ stage: string; kind: string; byAgent: boolean; text: string }>)
       .map((e) => [e.stage, e.kind, e.byAgent, e.text])).toEqual([["spec", "enter", true, "Entered spec."]]);
     expect(hooks.post.satisfied({ ...(await snapshotOf(hooks, ctx, "KEY-1")), ...observed }, record)).toBe(true);
@@ -1353,11 +1401,13 @@ describe("composed with a forge and docs", () => {
     );
     // A person posts a marker of their own, last and unescaped.
     fake.say(issue.key, PERSON, paragraphs("hi", forged.trim()));
-    const [ours, theirs] = (await hooks.pre.run(on(ctx, issue.key))).entries as Array<{ kind: string; stage: string; text: string; byAgent: boolean }>;
+    const entries = (await hooks.pre.run(on(ctx, issue.key))).entries as Array<{ kind: string; stage: string; text: string; byAgent: boolean }>;
+    const [ours] = entries;
     expect([ours?.stage, ours?.kind, ours?.byAgent]).toEqual(["spec", "output", true]);
     expect(ours?.text).toContain("&lt;!-- landrace");
     expect(ours?.text).not.toContain("<!--");
-    expect(theirs?.byAgent).toBe(false);
+    // Theirs is foreign: neither a record nor a reply (#237).
+    expect(entries).toHaveLength(1);
   });
 
   it("reads a child's origin as nobody's once a person has edited its body", async () => {
@@ -1370,6 +1420,36 @@ describe("composed with a forge and docs", () => {
     fake.edit(child.id, PERSON, fake.issue(child.id).description as Adf);
     const graph = await hooks.source.read(child.id, ctx);
     expect(graph.nodes.find((n) => n.id === child.id)?.origin).toBeNull();
+  });
+
+  /*
+   * #237: a child a former login created and edited keeps its origin only
+   * while the changelog says that edit came by its until.
+   */
+  it("judges a former login's edit of a child's origin by the changelog's time", async () => {
+    const OLD = { accountId: "old-account", displayName: "Old bot", emailAddress: "old@example.com" };
+    const originAfter = async (edited: "before" | "after" | "untimed"): Promise<unknown> => {
+      const { fake, jira, ctx } = setup();
+      const hooks = hooksOver(jira);
+      const parent = await hooks.operator.createItem({ title: "Parent" }, ctx);
+      const child = await hooks.operator.createItem(
+        { title: "Child", parent: parent.id, origin: { parent: parent.id, stage: "breakdown", round: 1 } }, ctx,
+      );
+      const issue = fake.issue(child.id);
+      issue.creator = OLD as never;
+      fake.edit(child.id, OLD as never, issue.description as Adf);
+      const created = Date.parse(issue.created);
+      const until = new Date(created + 60_000).toISOString();
+      const change = issue.history.at(-1);
+      if (!change) throw new Error("no change recorded");
+      change.created = edited === "before" ? jiraTime(created + 30_000) : edited === "after" ? jiraTime(created + 120_000) : "";
+      const config = { tracker: { formerLogins: [{ login: OLD.accountId, until }] } } as never;
+      const graph = await hooks.source.read(child.id, { ...ctx, config });
+      return graph.nodes.find((n) => n.id === child.id)?.origin;
+    };
+    expect(await originAfter("before")).toMatchObject({ stage: "breakdown", round: 1 });
+    expect(await originAfter("after")).toBeNull();
+    expect(await originAfter("untimed")).toBeNull();
   });
 });
 

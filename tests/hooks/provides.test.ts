@@ -1,6 +1,7 @@
 import { createExternalState } from "#testing/index.js";
 import { createFakeTracker } from "#tests/support/fake-tracker.js";
-import type { HookContext, PreHook } from "#namespace.js";
+import { validateSemantics } from "#workflow/validate.js";
+import type { HookContext, PreHook, Workflow } from "#namespace.js";
 
 /**
  * A tracker declares exactly what it puts in the snapshot.
@@ -35,6 +36,14 @@ const pathsIn = (fragment: Record<string, unknown>): string[] => {
 
 const declaredBy = (hook: PreHook): string[] => [...(hook.provides ?? [])].sort();
 
+/**
+ * Put in the snapshot and deliberately not declared: how many marks do not
+ * count is a number any commenter can raise, so no workflow may route on it.
+ * The engine reads it to say `records.foreign`, and nothing else does.
+ */
+const UNDECLARED = ["tracker.foreign"];
+const routable = (fragment: Record<string, unknown>): string[] => pathsIn(fragment).filter((p) => !UNDECLARED.includes(p));
+
 describe("a tracker declares exactly what it puts in the snapshot", () => {
   it("the shipped GitHub integration", async () => {
     const gh = createFakeTracker([{ number: 1, labels: ["lr:auto", "lr:stage:spec"] }]);
@@ -43,14 +52,30 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     expect(hook.id).toBe("project");
 
     const fragment = await hook.run({ ...gh.ctx, item: "1", snapshot: {} } as HookContext);
-    expect(pathsIn(fragment)).toEqual(declaredBy(hook));
+    expect(routable(fragment)).toEqual(declaredBy(hook));
+    expect(pathsIn(fragment)).toEqual(expect.arrayContaining(UNDECLARED));
   });
 
   it("the in-memory tracker", async () => {
     const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto", "lr:stage:spec"] }] });
     const fragment = await state.pre.run({ item: "1", snapshot: {} } as HookContext);
-    expect(pathsIn(fragment)).toEqual(declaredBy(state.pre));
-    expect(declaredBy(state.pre)).toEqual(["entries", "item", "item.body", "item.comments"]);
+    expect(routable(fragment)).toEqual(declaredBy(state.pre));
+    expect(pathsIn(fragment)).toEqual(expect.arrayContaining(UNDECLARED));
+    expect(declaredBy(state.pre)).toEqual(["entries", "item", "item.body", "item.comments", "tracker", "tracker.bot", "tracker.former"]);
+  });
+
+  it("and validate refuses a workflow that routes on tracker.foreign, on either tracker", () => {
+    const gh = createFakeTracker([{ number: 1 }]);
+    const github = gh.registry.pre[0];
+    if (!github) throw new Error("the fake tracker registered no pre hook");
+    const state = createExternalState({ items: [{ id: "1" }] });
+    const w: Workflow = { version: 1, name: "t", description: "t", stages: [
+      { id: "a", entry: true, triggers: [{ when: { "tracker.foreign": { $exists: true } } }] },
+    ] };
+    for (const hook of [github, state.pre]) {
+      expect(validateSemantics(w, new Map(), [...(hook.provides ?? [])]).filter((p) => p.rule === "path-coverage").map((p) => p.message))
+        .toEqual([expect.stringContaining("reads tracker.foreign, which no hook provides")]);
+    }
   });
 
   /*

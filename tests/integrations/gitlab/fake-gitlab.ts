@@ -33,6 +33,8 @@ export interface FakeNote {
   body: string;
   author: { username: string };
   created_at: string;
+  /** When it was last edited, or written if never, as GitLab answers. A test deletes it for a time GitLab did not give. */
+  updated_at?: string;
   system: boolean;
   resolvable: boolean;
   resolved: boolean;
@@ -191,10 +193,13 @@ export function createFakeGitLab(): FakeGitLab {
   const now = (): string => new Date(Date.UTC(2026, 8, 1) + minute++ * 60_000).toISOString();
   const discussionId = (n: number): string => createHash("sha1").update(`discussion-${n}`).digest("hex");
 
-  const noteOf = (author: string, body: string, extra: Partial<FakeNote> = {}): FakeNote => ({
-    id: nextNote++, body, author: { username: author }, created_at: now(), system: false, resolvable: true, resolved: false,
-    type: "DiscussionNote", ...extra,
-  });
+  const noteOf = (author: string, body: string, extra: Partial<FakeNote> = {}): FakeNote => {
+    const at = now();
+    return {
+      id: nextNote++, body, author: { username: author }, created_at: at, updated_at: at, system: false, resolvable: true, resolved: false,
+      type: "DiscussionNote", ...extra,
+    };
+  };
 
   const open: FakeGitLab["open"] = (mr) => {
     const iid = mr.iid ?? nextIid;

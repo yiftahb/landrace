@@ -21,43 +21,43 @@ describe("the items:create capability", () => {
 describe("the origin marker", () => {
   it("round-trips when we wrote it", () => {
     const body = `Implement the API.${renderOrigin(origin)}`;
-    expect(parseOrigin(body, "landrace-bot", "landrace-bot")).toEqual(origin);
+    expect(parseOrigin(body, "landrace-bot", undefined, { current: "landrace-bot", former: [] })).toEqual(origin);
   });
 
   it("compares the author case-insensitively, the way trackers do", () => {
-    expect(parseOrigin(`x${renderOrigin(origin)}`, "Landrace-Bot", "landrace-bot")).toEqual(origin);
+    expect(parseOrigin(`x${renderOrigin(origin)}`, "Landrace-Bot", undefined, { current: "landrace-bot", former: [] })).toEqual(origin);
   });
 
   it("reads a GitHub App's login the same with or without its [bot] suffix, either way round", () => {
     // GraphQL reports an App author as "name", REST and tracker.bot as "name[bot]".
-    expect(parseOrigin(`x${renderOrigin(origin)}`, "landrace", "landrace[bot]")).toEqual(origin);
-    expect(parseOrigin(`x${renderOrigin(origin)}`, "Landrace[bot]", "landrace")).toEqual(origin);
-    expect(parseOrigin(`x${renderOrigin(origin)}`, "landrace-other", "landrace[bot]")).toBeNull();
+    expect(parseOrigin(`x${renderOrigin(origin)}`, "landrace", undefined, { current: "landrace[bot]", former: [] })).toEqual(origin);
+    expect(parseOrigin(`x${renderOrigin(origin)}`, "Landrace[bot]", undefined, { current: "landrace", former: [] })).toEqual(origin);
+    expect(parseOrigin(`x${renderOrigin(origin)}`, "landrace-other", undefined, { current: "landrace[bot]", former: [] })).toBeNull();
   });
 
   it("is nobody's when a person wrote it — authorship, not syntax, is the check", () => {
-    expect(parseOrigin(`x${renderOrigin(origin)}`, "a-person", "landrace-bot")).toBeNull();
-    expect(parseOrigin(`x${renderOrigin(origin)}`, undefined, "landrace-bot")).toBeNull();
+    expect(parseOrigin(`x${renderOrigin(origin)}`, "a-person", undefined, { current: "landrace-bot", former: [] })).toBeNull();
+    expect(parseOrigin(`x${renderOrigin(origin)}`, undefined, undefined, { current: "landrace-bot", former: [] })).toBeNull();
   });
 
   it("counts only a marker with nothing after it", () => {
-    expect(parseOrigin(`${renderOrigin(origin)}\n\ntrailing prose`, "landrace-bot", "landrace-bot")).toBeNull();
+    expect(parseOrigin(`${renderOrigin(origin)}\n\ntrailing prose`, "landrace-bot", undefined, { current: "landrace-bot", former: [] })).toBeNull();
   });
 
   it("ignores a trailing marker of any other kind", () => {
     const body = 'x\n\n<!-- landrace {"stage":"spec","kind":"enter","round":1} -->';
-    expect(parseOrigin(body, "landrace-bot", "landrace-bot")).toBeNull();
+    expect(parseOrigin(body, "landrace-bot", undefined, { current: "landrace-bot", former: [] })).toBeNull();
   });
 
   it("refuses a parent that is not an item id, or a round that is not a positive integer", () => {
     const bad = (o: object) => `x\n\n<!-- landrace ${JSON.stringify({ kind: "child", stage: "b", round: 1, parent: "1", ...o })} -->`;
-    expect(parseOrigin(bad({ parent: "../1" }), "bot", "bot")).toBeNull();
-    expect(parseOrigin(bad({ round: 0 }), "bot", "bot")).toBeNull();
-    expect(parseOrigin(bad({ round: 1.5 }), "bot", "bot")).toBeNull();
+    expect(parseOrigin(bad({ parent: "../1" }), "bot", undefined, { current: "bot", former: [] })).toBeNull();
+    expect(parseOrigin(bad({ round: 0 }), "bot", undefined, { current: "bot", former: [] })).toBeNull();
+    expect(parseOrigin(bad({ round: 1.5 }), "bot", undefined, { current: "bot", former: [] })).toBeNull();
   });
 
   it("fails closed without a bot login rather than trusting every marker", () => {
-    expect(() => parseOrigin(`x${renderOrigin(origin)}`, "anyone", "  ")).toThrow(/login/);
+    expect(() => parseOrigin(`x${renderOrigin(origin)}`, "anyone", undefined, { current: "  ", former: [] })).toThrow(/login/);
   });
 });
 
