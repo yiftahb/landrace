@@ -196,8 +196,8 @@ export function createFakeGitLab(): FakeGitLab {
   const noteOf = (author: string, body: string, extra: Partial<FakeNote> = {}): FakeNote => {
     const at = now();
     return {
-    id: nextNote++, body, author: { username: author }, created_at: at, updated_at: at, system: false, resolvable: true, resolved: false,
-    type: "DiscussionNote", ...extra,
+      id: nextNote++, body, author: { username: author }, created_at: at, updated_at: at, system: false, resolvable: true, resolved: false,
+      type: "DiscussionNote", ...extra,
     };
   };
 

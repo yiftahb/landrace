@@ -8,10 +8,8 @@ import {
   PULL_OPEN_EFFECT,
   PULL_REQUEST_KIND,
   PULL_REVIEW_EFFECT,
-  RECORD_EFFECT,
   RELATIONS,
   stageFromLabels,
-  TRACKER_CREATE_EFFECT,
 } from "#conventions.js";
 import { defineSource } from "#hooks/contracts.js";
 import { compose } from "#kit/compose.js";
@@ -35,7 +33,6 @@ import type {
   FiledIssue,
   ForgeOptions,
   Graph,
-  HookContext,
   MergeAnswer,
   Node,
   PullRecord,
