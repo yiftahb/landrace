@@ -572,6 +572,122 @@ describe("a branch origin has moved on", () => {
 });
 
 /*
+ * A branch origin has and this checkout does not: a remote instance taking
+ * over in-flight items, a second person's runtime, a fresh clone, a branch a
+ * cleanup deleted locally. Cut from the base, the step worked on a fork of
+ * the real branch, and its push was refused for good (#233).
+ */
+describe("a branch only origin has", () => {
+  const git = async (cwd: string, ...args: string[]): Promise<string> =>
+    (await run("git", args, { cwd })).stdout.trim();
+  const sha = (cwd: string, ref: string): Promise<string | null> =>
+    run("git", ["rev-parse", "--verify", "-q", ref], { cwd }).then((r) => r.stdout.trim(), () => null);
+
+  /** The operator's checkout and a bare origin with main, origin's HEAD known. */
+  async function withOrigin(): Promise<{ root: string; origin: string }> {
+    const root = await repo();
+    const origin = await mkdtemp(join(tmpdir(), "lr-wt-origin-"));
+    roots.push(origin);
+    await git(origin, "init", "-q", "--bare", "-b", "main");
+    await git(root, "remote", "add", "origin", `file://${origin}`);
+    await git(root, "push", "-q", "origin", "main");
+    await git(root, "remote", "set-head", "origin", "main");
+    return { root, origin };
+  }
+
+  /** `branch` on origin, one commit past main, pushed from someone else's clone; this checkout has never fetched it. */
+  async function onOriginOnly(origin: string, branch: string): Promise<string> {
+    const theirs = await mkdtemp(join(tmpdir(), "lr-wt-theirs-"));
+    roots.push(theirs);
+    await run("git", ["clone", "-q", `file://${origin}`, theirs]);
+    await git(theirs, "config", "user.email", "them@example.com");
+    await git(theirs, "config", "user.name", "them");
+    await git(theirs, "checkout", "-q", "-b", branch);
+    await writeFile(join(theirs, "built.ts"), "export const built = 1;\n");
+    await git(theirs, "add", "-A");
+    await git(theirs, "commit", "-qm", "build");
+    await git(theirs, "push", "-q", "origin", branch);
+    return git(theirs, "rev-parse", "HEAD");
+  }
+
+  it("gives a write step origin's commit, and what it commits pushes as a fast-forward", async () => {
+    const { root, origin } = await withOrigin();
+    const branch = "landrace/80";
+    const theirs = await onOriginOnly(origin, branch);
+    expect(await sha(root, `refs/heads/${branch}`)).toBeNull();
+    expect(await sha(root, `refs/remotes/origin/${branch}`)).toBeNull();
+
+    const path = await ensureWorktree("80", root, { branch, write: true });
+
+    expect(await sha(path, "HEAD")).toBe(theirs);
+    expect(await git(path, "branch", "--show-current")).toBe(branch);
+    expect(existsSync(join(path, "built.ts"))).toBe(true);
+    expect(await sha(root, `refs/heads/${branch}`)).toBe(theirs);
+    await writeFile(join(path, "fix.ts"), "export const fix = 1;\n");
+    await git(path, "add", "-A");
+    await git(path, "commit", "-qm", "fix");
+    const fixed = await sha(path, "HEAD");
+    await removeWorktree("80", root);
+
+    // No force: a fork of origin's branch is refused here.
+    await git(root, "push", "-q", "origin", `refs/heads/${branch}:refs/heads/${branch}`);
+    expect(await sha(origin, `refs/heads/${branch}`)).toBe(fixed);
+  });
+
+  it("shows a read-only step origin's commit, detached, and creates no branch", async () => {
+    const { root, origin } = await withOrigin();
+    const branch = "landrace/81";
+    const theirs = await onOriginOnly(origin, branch);
+
+    const path = await ensureWorktree("81", root, { branch, write: false });
+
+    expect(await sha(path, "HEAD")).toBe(theirs);
+    expect(await git(path, "branch", "--show-current")).toBe("");
+    expect(await sha(root, `refs/heads/${branch}`)).toBeNull();
+    await removeWorktree("81", root);
+  });
+
+  it("continues a variant branch only origin has, rather than recutting it", async () => {
+    const { root, origin } = await withOrigin();
+    const branch = "landrace/82-retro";
+    const theirs = await onOriginOnly(origin, branch);
+
+    const path = await ensureWorktree("82", root, { branch, write: true }, keptSlot("82"));
+
+    expect(await sha(path, "HEAD")).toBe(theirs);
+    expect(await git(path, "branch", "--show-current")).toBe(branch);
+    await removeWorktree("82", root, keptSlot("82"));
+  });
+
+  it("cuts from origin's default branch when origin has no such branch, whatever a stale tracking ref says", async () => {
+    const { root, origin } = await withOrigin();
+    const branch = "landrace/83";
+    const gone = await onOriginOnly(origin, branch);
+    // Fetched once, then deleted on origin: the tracking ref this checkout kept is not origin's branch.
+    await git(root, "fetch", "-q", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`);
+    await git(origin, "branch", "-D", branch);
+    const main = await git(root, "rev-parse", "refs/remotes/origin/main");
+
+    const path = await ensureWorktree("83", root, { branch, write: true });
+
+    expect(await sha(path, "HEAD")).toBe(main);
+    expect(await sha(path, "HEAD")).not.toBe(gone);
+    await removeWorktree("83", root);
+  });
+
+  it.each([true, false])("refuses, naming the fetch, when origin cannot be asked for the branch, and creates no branch (write: %s)", async (write) => {
+    const { root, origin } = await withOrigin();
+    const branch = `landrace/84${write ? "w" : "r"}`;
+    await rm(origin, { recursive: true, force: true });
+
+    await expect(ensureWorktree("84", root, { branch, write }))
+      .rejects.toThrow(new RegExp(`#84[\\s\\S]*fetching origin's ${branch} failed[\\s\\S]*does not appear to be a git repository`));
+    expect(await sha(root, `refs/heads/${branch}`)).toBeNull();
+    expect(await worktrees(root)).toHaveLength(1);
+  });
+});
+
+/*
  * Where a worktree with nothing of its own to start from starts: origin's
  * default branch, fetched first, never the operator's checkout. Found on an
  * item whose spec ran on a local main a day behind origin's, and asked about

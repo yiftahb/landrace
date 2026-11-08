@@ -636,9 +636,44 @@ async function baseCommit(repoRoot: string, what: string, guard: RemoteGuard): P
  * is nothing to fetch.
  */
 async function fetchDefault(repoRoot: string, what: string, guard: RemoteGuard): Promise<string | null> {
-  const remotes = (await git(["remote"], repoRoot, what)).split("\n");
-  if (!remotes.includes("origin")) return null;
+  if (!(await hasOrigin(repoRoot, what))) return null;
   const branch = await defaultBranch(repoRoot, what, guard);
+  const commit = await fetchTracking(branch, repoRoot, what, guard);
+  if (commit === null) throw new Error(`${what}: origin's default branch ${branch} has no commit after fetching it`);
+  return commit;
+}
+
+/**
+ * Origin's `branch` fetched into `refs/remotes/origin/<branch>`, and the
+ * commit it names; null when origin has no such branch, or there is no
+ * origin. For an item branch this checkout does not have: a remote instance
+ * taking over in-flight items, a second person's runtime, a fresh clone, a
+ * branch deleted locally once pushed. Cut from the base instead, the step
+ * works on a fork of the real branch and its push is refused for good (#233).
+ *
+ * Origin is asked whether it has the branch, never the tracking ref this
+ * checkout kept: that may name a branch origin deleted since. A failure to
+ * ask, or to fetch, fails the round, since falling back to the base is the
+ * fork this exists to prevent.
+ */
+async function fetchItemBranch(branch: string, repoRoot: string, what: string, guard: RemoteGuard): Promise<string | null> {
+  if (!(await hasOrigin(repoRoot, what))) return null;
+  const ref = `refs/heads/${branch}`;
+  const failed = `${what}: fetching origin's ${branch} failed`;
+  const listed = await gitRemote(["ls-remote", "origin", ref], repoRoot, failed, guard);
+  const there = listed.split("\n").some((line) => line.split("\t")[1]?.trim() === ref);
+  if (!there) return null;
+  const commit = await fetchTracking(branch, repoRoot, what, guard);
+  if (commit === null) throw new Error(`${what}: origin's ${branch} has no commit after fetching it`);
+  return commit;
+}
+
+async function hasOrigin(repoRoot: string, what: string): Promise<boolean> {
+  return (await git(["remote"], repoRoot, what)).split("\n").includes("origin");
+}
+
+/** Origin's `branch` fetched into its remote-tracking ref, and the commit that ref names now. */
+async function fetchTracking(branch: string, repoRoot: string, what: string, guard: RemoteGuard): Promise<string | null> {
   const tracking = `refs/remotes/origin/${branch}`;
   // The operator's repository, so only that one ref, as the forge's fetch of
   // the same origin takes it: their FETCH_HEAD and tags untouched, none of
@@ -649,9 +684,7 @@ async function fetchDefault(repoRoot: string, what: string, guard: RemoteGuard):
       "fetch", "-q", "--no-tags", "--no-write-fetch-head", "origin", `+refs/heads/${branch}:${tracking}`],
     repoRoot, `${what}: fetching origin's ${branch} failed`, guard,
   );
-  const commit = await commitOf(tracking, repoRoot, what);
-  if (commit === null) throw new Error(`${what}: origin's default branch ${branch} has no commit after fetching it`);
-  return commit;
+  return commitOf(tracking, repoRoot, what);
 }
 
 /** `git worktree list --porcelain`, one entry per worktree: where, at which commit, on which branch (null when detached). */
@@ -671,9 +704,10 @@ function registered(porcelain: string): Array<{ path: string; head: string | nul
  * With no branch — a stage that names none — origin's default branch,
  * detached: the agent sees committed state only, cannot read the operator's
  * work in progress and cannot damage it, and nothing it commits outlives the
- * worktree. With one, a step that may write gets the branch itself, created
- * at origin's default branch the first time (see `baseCommit`) and with that
- * branch fetched again every later time, for the step to merge,
+ * worktree. With one, a step that may write gets the branch itself — made at
+ * origin's copy of it when only origin has it (`fetchItemBranch`), else at
+ * origin's default branch the first time (see `baseCommit`) — with that
+ * default branch fetched again every later time, for the step to merge,
  * so its commits are kept when the worktree goes; a read-only step gets the
  * branch's commit detached — the item's code, not main's, and no branch for
  * a commit it should never have made to land on.
@@ -712,7 +746,13 @@ export async function ensureWorktree(
   const kept = await pathFor(keptSlot(item), repoRoot, scope);
   const holder = on === undefined ? undefined : all.find((w) => w.branch === on.branch && w.path !== path && w.path !== kept);
   const local = on === undefined ? null : await commitOf(`refs/heads/${on.branch}`, repoRoot, what);
-  const tip = on === undefined || local === null || holder ? local : await caughtUp(on.branch, local, repoRoot, what);
+  // A branch only origin has is continued from origin's commit, never cut
+  // again from the base (see `fetchItemBranch`). A write step gets the branch
+  // made there, and only if nothing made it meanwhile; a read-only step looks
+  // at the commit detached, and makes no branch.
+  const remote = on !== undefined && local === null ? await fetchItemBranch(on.branch, repoRoot, what, guard) : null;
+  if (on?.write && remote !== null) await git(["update-ref", `refs/heads/${on.branch}`, remote, ""], repoRoot, what);
+  const tip = on === undefined ? null : local === null ? remote : holder ? local : await caughtUp(on.branch, local, repoRoot, what);
   const attach = on?.write ? on.branch : null;
   const base = tip === null ? await baseCommit(repoRoot, what, guard) : null;
   const detach = attach === null ? (tip ?? base) : null;
