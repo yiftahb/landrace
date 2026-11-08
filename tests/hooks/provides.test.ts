@@ -50,7 +50,7 @@ describe("a tracker declares exactly what it puts in the snapshot", () => {
     const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto", "lr:stage:spec"] }] });
     const fragment = await state.pre.run({ item: "1", snapshot: {} } as HookContext);
     expect(pathsIn(fragment)).toEqual(declaredBy(state.pre));
-    expect(declaredBy(state.pre)).toEqual(["entries", "item", "item.body", "item.comments"]);
+    expect(declaredBy(state.pre)).toEqual(["entries", "item", "item.body", "item.comments", "tracker", "tracker.bot", "tracker.foreign", "tracker.former"]);
   });
 
   /*

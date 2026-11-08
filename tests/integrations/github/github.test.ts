@@ -87,13 +87,13 @@ describe("the hook resolves the login it posts as", () => {
   it("records the resolved login in the snapshot, for the post hook to check effects against", async () => {
     const { hooks } = build({ user: ok("landrace-bot") });
     const fragment = await hooks.pre.run(itemCtx);
-    expect(fragment.tracker).toEqual({ bot: "landrace-bot", former: [] });
+    expect(fragment.tracker).toEqual({ bot: "landrace-bot", former: [], foreign: { count: 0, authors: [] } });
     expect(hooks.pre.provides).toContain("tracker.bot");
   });
 
   it("verifies a configured bot name against the token rather than trusting it", async () => {
     const { hooks } = build({ bot: "landrace[bot]", user: ok("Landrace[bot]") });
-    expect((await hooks.pre.run(itemCtx)).tracker).toEqual({ bot: "landrace[bot]", former: [] });
+    expect((await hooks.pre.run(itemCtx)).tracker).toEqual({ bot: "landrace[bot]", former: [], foreign: { count: 0, authors: [] } });
   });
 
   it("halts naming both logins when the configured name is a typo", async () => {
@@ -110,7 +110,7 @@ describe("the hook resolves the login it posts as", () => {
       bot: "landrace[bot]",
       user: () => { throw new Error("getaddrinfo ENOTFOUND api.github.com"); },
     });
-    expect((await hooks.pre.run(itemCtx)).tracker).toEqual({ bot: "landrace[bot]", former: [] });
+    expect((await hooks.pre.run(itemCtx)).tracker).toEqual({ bot: "landrace[bot]", former: [], foreign: { count: 0, authors: [] } });
   });
 
   it("refuses to run rather than guess when the login cannot be resolved", async () => {

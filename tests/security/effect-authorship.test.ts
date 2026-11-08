@@ -95,7 +95,7 @@ describe("an effect counts as done only when we are the ones who did it", () => 
     const [pre] = fake.registry.pre;
     if (!pre) throw new Error("the fake tracker registered no pre hook");
     const fragment = await pre.run({ item: 1 } as unknown as HookContext);
-    expect(fragment.tracker).toEqual({ bot: "yiftahb", former: [] });
+    expect(fragment.tracker).toEqual({ bot: "yiftahb", former: [], foreign: { count: 0, authors: [] } });
     expect(pre.provides).toEqual(expect.arrayContaining(["tracker.bot", "tracker.former"]));
   });
 });

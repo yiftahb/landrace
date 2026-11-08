@@ -149,22 +149,6 @@ export function loginsOf(s: Snapshot): Logins {
 export const wroteIt = (c: SnapshotComment, logins: Logins): boolean =>
   markTrust(c.user?.login, { created: c.created_at, edited: c.updated_at }, logins) === "ours";
 
-/**
- * `records.foreign`, once per item for each `said` — a tracker keeps one
- * for as long as it runs: how many marks on its comments do not count, and
- * each author with why — `unlisted`, `after-until` or `no-time` — so the
- * operator knows what to fix. Said again under a changed `tracker` block,
- * whose former logins are judged afresh.
- */
-export function sayForeign(ctx: HookContext, comments: TrackerComment[], logins: Logins, said: Set<string>): void {
-  const { count, authors } = foreignRecords(comments, logins);
-  if (count === 0) return;
-  const key = JSON.stringify([ctx.config?.tracker ?? null, ctx.item]);
-  if (said.has(key)) return;
-  said.add(key);
-  ctx.log("records.foreign", { item: ctx.item, count, authors });
-}
-
 /*
  * The labels the source read, not a second copy of them from the pre hook:
  * one reading of the item, which is the one the engine placed it from.
@@ -563,8 +547,6 @@ export function stillOpen(snapshot: Snapshot, effect: Effect): string[] {
  * with `briefs()`.
  */
 export abstract class BaseTracker {
-  /** The items whose foreign marks this tracker has said: `records.foreign` once per item, not once per tick. */
-  private readonly foreignSaid = new Set<string>();
   /** The login we post as: what tells our comments and markers from a stranger's. */
   abstract login(ctx: RuntimeContext): Promise<string>;
   /** Every open item, and any closed one the board should still show, each with its parent. */
@@ -785,7 +767,7 @@ export abstract class BaseTracker {
    * hold: the title, labels and assignees are the node's.
    */
   provides(): string[] {
-    return ["item", "item.body", "item.comments", "entries", "tracker", "tracker.bot", "tracker.former"];
+    return ["item", "item.body", "item.comments", "entries", "tracker", "tracker.bot", "tracker.former", "tracker.foreign"];
   }
 
   /**
@@ -799,16 +781,17 @@ export abstract class BaseTracker {
   /**
    * The item's body and records, and the logins whose marks count — recorded
    * because `satisfied()` is synchronous and must know which comments are ours.
-   * A foreign mark is said once per item, in `records.foreign`, so the
-   * operator learns which login to list or which `until` to move.
+   * And the marks that do not count, as `tracker.foreign` — how many, and
+   * each author with why — which the engine says once per item, in
+   * `records.foreign`, so the operator learns which login to list or which
+   * `until` to move. Said there, not here: the event is the engine's.
    */
   async observe(ctx: HookContext): Promise<Record<string, unknown>> {
     const item = await this.item(ctx.item, ctx);
     const comments = await this.comments(ctx.item, ctx);
     const logins = await this.logins(ctx);
-    sayForeign(ctx, comments, logins, this.foreignSaid);
     return {
-      item: { body: item.body, comments }, entries: entriesFromComments(comments, logins), tracker: { bot: logins.current, former: logins.former },
+      item: { body: item.body, comments }, entries: entriesFromComments(comments, logins), tracker: { bot: logins.current, former: logins.former, foreign: foreignRecords(comments, logins) },
     };
   }
 

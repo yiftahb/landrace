@@ -713,7 +713,7 @@ describe("the status follows the stage, by statuses", () => {
     const plain = setup();
     plain.fake.add();
     expect(plain.jira.provides()).not.toContain("tracker.status");
-    expect((await plain.jira.observe(on(plain.ctx, "KEY-1"))).tracker).toEqual({ bot: BOT.accountId, former: [] });
+    expect((await plain.jira.observe(on(plain.ctx, "KEY-1"))).tracker).toEqual({ bot: BOT.accountId, former: [], foreign: { count: 0, authors: [] } });
   });
 
   it("refuses a mapping to an empty status name", () => {
@@ -1114,16 +1114,16 @@ describe("a service desk", () => {
       comment.properties = [{ key: "landrace.marker", value: { marker: renderMarker({ stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1" }).trim() } }];
       comment.created = times.created;
       if (times.updated !== undefined) comment.updated = times.updated;
-      const seen: Array<[string, unknown]> = [];
       const config = { tracker: { formerLogins } } as never;
-      const observed = await hooksOf(jira).pre.run({ ...on(ctx, key), config, log: (name, data) => seen.push([name, data]) });
-      return { entries: observed.entries as Array<{ stage: string; byAgent: boolean }>, seen };
+      const observed = await hooksOf(jira).pre.run({ ...on(ctx, key), config });
+      const foreign = (observed.tracker as { foreign: { count: number; authors: unknown[] } }).foreign;
+      return { entries: observed.entries as Array<{ stage: string; byAgent: boolean }>, foreign };
     };
 
     it("counts one created and updated before the until", async () => {
-      const { entries, seen } = await entriesFor({ created: at("2026-11-01T08:00:00Z"), updated: at("2026-11-01T08:30:00Z") });
+      const { entries, foreign } = await entriesFor({ created: at("2026-11-01T08:00:00Z"), updated: at("2026-11-01T08:30:00Z") });
       expect(entries).toEqual([expect.objectContaining({ stage: "spec", byAgent: true })]);
-      expect(seen.filter(([name]) => name === "records.foreign")).toEqual([]);
+      expect(foreign).toEqual({ count: 0, authors: [] });
     });
 
     it.each([
@@ -1131,15 +1131,15 @@ describe("a service desk", () => {
       ["created after the until", { created: at("2026-11-01T10:00:00Z") }, "after-until"],
       ["with no created time", { created: "" }, "no-time"],
     ])("drops one %s, and says why", async (_, times, why) => {
-      const { entries, seen } = await entriesFor(times);
+      const { entries, foreign } = await entriesFor(times);
       expect(entries).toEqual([]);
-      expect(seen).toContainEqual(["records.foreign", expect.objectContaining({ count: 1, authors: [{ login: OLD.accountId, why }] })]);
+      expect(foreign).toEqual({ count: 1, authors: [{ login: OLD.accountId, why }] });
     });
 
     it("drops it as unlisted without the list", async () => {
-      const { entries, seen } = await entriesFor({ created: at("2026-11-01T08:00:00Z") }, []);
+      const { entries, foreign } = await entriesFor({ created: at("2026-11-01T08:00:00Z") }, []);
       expect(entries).toEqual([]);
-      expect(seen).toContainEqual(["records.foreign", expect.objectContaining({ authors: [{ login: OLD.accountId, why: "unlisted" }] })]);
+      expect(foreign).toEqual({ count: 1, authors: [{ login: OLD.accountId, why: "unlisted" }] });
     });
   });
 
@@ -1361,7 +1361,7 @@ describe("composed with a forge and docs", () => {
     const record = { type: "tracker.comment", stage: "spec", kind: "enter", round: 1, marker: "enter:spec:1", body: "Entered spec." };
     await hooks.post.apply(record, on(ctx, "KEY-1", await snapshotOf(hooks, ctx, "KEY-1")));
     const observed = await hooks.pre.run(on(ctx, "KEY-1"));
-    expect(observed.tracker).toEqual({ bot: BOT.accountId, former: [] });
+    expect(observed.tracker).toEqual({ bot: BOT.accountId, former: [], foreign: { count: 0, authors: [] } });
     expect((observed.entries as Array<{ stage: string; kind: string; byAgent: boolean; text: string }>)
       .map((e) => [e.stage, e.kind, e.byAgent, e.text])).toEqual([["spec", "enter", true, "Entered spec."]]);
     expect(hooks.post.satisfied({ ...(await snapshotOf(hooks, ctx, "KEY-1")), ...observed }, record)).toBe(true);
