@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-11-08
+
+### Fixed
+
+- **The board's header hides the folder chip when there is no folder name.** Before, the chip beside the title drew an empty bordered box. This happened on the remote board, whose view carries no folder name, and on every board load until the first poll landed. Now the chip starts hidden and shows only while the view names a folder.
+
 ## [2.0.1] - 2026-11-08
 
 ### Fixed
@@ -209,7 +215,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Versions and updates.** `landrace version` (and `--version`) prints the version and whether npm has a newer one; `landrace update` updates the project's own dependency with its package manager, or the global install; `landrace start` says when a newer version is out. The check asks npm's registry once, gives up after two seconds, and is off in CI or with `LANDRACE_NO_UPDATE_CHECK=1`.
 - **Notifications and telemetry.** A `notify` block tells a person, through a notifier hook, when an item comes to rest needing them. `--telemetry` exports the engine's events as OpenTelemetry log records.
 
-[Unreleased]: https://github.com/yiftahb/landrace/compare/v2.0.1...HEAD
+[Unreleased]: https://github.com/yiftahb/landrace/compare/v2.0.2...HEAD
+[2.0.2]: https://github.com/yiftahb/landrace/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/yiftahb/landrace/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/yiftahb/landrace/compare/v1.8.0...v2.0.0
 [1.8.0]: https://github.com/yiftahb/landrace/compare/v1.7.1...v1.8.0
