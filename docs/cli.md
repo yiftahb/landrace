@@ -152,7 +152,7 @@ The page follows the system's light or dark preference, or whatever you last tog
 
 **Pause my runs**, in the cog menu, stops Landrace working for you until you choose **Resume my runs** there. Use it when you are away, when you want to drive your items by hand for a while, or when your runs misbehave.
 
-- **What stops.** Your runtime starts no step, takes no item lock and writes nothing to the tracker or the forge. Each tick still lists your items, so your board stays current, and an item you and another person both claim still runs for neither of you. A step already running finishes and records its result, as it would when `start` stops, but no next step starts after it.
+- **What stops.** Your runtime starts no step and takes no item lock. Each tick still lists your items, so your board stays current, and an item you and another person both claim still runs for neither of you. A step already running when you pause finishes and records its answer. After that its run writes nothing more to the tracker or the forge: the item does not move to its next stage, and no next step starts, until you resume.
 - **What keeps working.** The board, the Integrations tab, the item panel's writes and your [operator tools](#the-operator-tools) all keep working, so you can still move items yourself.
 - **What you see.** The header shows **Paused** in place of the countdown. **Run next tick now** is disabled, and the server refuses a tick asked of it while you are paused. The menu entry reads **Resume my runs**, with its own icon.
 - **Who it stops.** Locally, it stops the one runtime. On a [remote instance](remote.md), it stops only the person who chose it. Nobody can pause anyone else.

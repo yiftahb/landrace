@@ -274,7 +274,7 @@ Landrace checks who signed in, not what they may do: everyone `people.allow` adm
 
 ## The board
 
-The board has fourteen writes:
+The board has sixteen writes:
 
 - in the header, the tick button and Refresh, and the cog menu's Pause my runs and Resume my runs;
 - in a row's menu, Start work, Retry, Clear & retry and Go to step;
