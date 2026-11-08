@@ -1,50 +1,54 @@
-Checks done; writing the spec now.
+Settled the design. Writing the revised spec now.
 
 ## Problem
-A record counts only when its author is the tracker's current login (`entriesFromComments`, `src/conventions.ts`). After the login changes, every old record reads as `kind: "human"`: finished stages re-run paid steps, `run.lastHuman` becomes the newest old record so reply triggers fire, and nothing is logged.
+Record counts only when author is tracker's current login (`entriesFromComments`, `src/conventions.ts`). Login change → old records read `kind: "human"`: finished stages re-run, reply triggers fire, nothing logged. Round 1 trusted a former login forever: its person could post or edit a marker after switch, e.g. no-findings `code-review` output passing `reviewedBy`.
 
 ## Decisions
 Flow:
-1. Operator lists old logins in `tracker.formerLogins` before first `start` under new login.
-2. `validate` refuses blank entry.
-3. Listed login's markers read as ours at every "ours" check: entries, origins, `satisfied()`, forge threads, reviews, history. Items resume.
-4. Marker from unlisted author: dropped. Not record, not reply. `records.foreign` logged once per item per process: `item`, `authors`, `count`.
+1. Operator sets `tracker.formerLogins: [{ login, until }]`, `until` = switch moment, before first `start` under new login.
+2. `validate` refuses blank `login`, missing or unparseable `until`.
+3. Former login's mark counts only when created and last edited at or before its `until`. Items resume.
+4. Any other mark foreign: not record, not reply. One `records.foreign` per item per process: `item`, `count`, `authors: [{ login, why }]`.
 
 Choices:
-- Engine-typed key, read by kit: every integration gets gate, none opts in.
-- One list for tracker and forge: GitHub posts both as one account. Login of wrong form never matches.
-- One required `Logins` value through every check, not optional arg: missed site fails typecheck.
-- Config key absent → `[]`, trust none. Snapshot `tracker.former` absent → halt, like `tracker.bot`.
-- Plain comment from listed login stays reply.
-- Several foreign authors → one event naming all: item says one per item.
-- Dedupe set in memory, log only: nothing routes on it.
-- `reviews()` answers authors, base filters: GitHub filtered none, GitLab filtered in integration.
+- Changed this round: cutoff per entry. Trust ends when runtime stops being that person.
+- Times from tracker, never body. Unknown time → foreign: abstain.
+- `why`: `unlisted`, `after-until`, `no-time`. Third reason: otherwise operator moves `until` for nothing.
+- `until` needs offset: bare date has no timezone.
+- Current login: no time check, as now.
+- Item origin: author judged at `createdAt`, editor at `editedAt`. Never edited needs no edit time.
+- Jira comment marker is property, edit time unreported → no `updated_at`, former marks foreign. Documented limit.
+- GitHub REST reviews carry no edit time → former review foreign. Worst case: one duplicate review.
+- Kept: one required `Logins` for tracker and forge, read by kit; key absent → `[]`; snapshot `tracker.former` absent → halt; plain comment is reply.
 
 ## Technical design
-- `src/namespace.ts` — `Logins { current: string; former: readonly string[] }`. `EventName` gains `"records.foreign"`.
-- `src/config/schema.ts` — `tracker` object: `formerLogins` string list, default `[]`, each non-blank after trim. Other keys passthrough.
-- `src/conventions.ts` — `isOurs(author, logins)`: `sameLogin` against current or any former. `formerLoginsOf(config)`: absent → `[]`, else non-list or non-string throws. `entriesFromComments(comments, logins)` drops foreign records. `foreignRecords(comments, logins): { authors: string[]; count: number }`. `parseOrigin(body, author, logins)`.
+- `src/namespace.ts` — `FormerLogin { login: string; until: string }`, `Logins { current: string; former: readonly FormerLogin[] }`, `MarkTrust = "ours" | "unlisted" | "after-until" | "no-time"`. `TrackerComment.updated_at?`, `ThreadComment.created_at: string` and `updated_at?`, `ItemRecord.editedAt?`. `EventName` gains `"records.foreign"`.
+- `src/config/schema.ts` — `tracker.formerLogins`: strict `{ login, until }`, login non-blank, until `datetime({ offset: true })`, default `[]`. Other keys passthrough.
+- `src/conventions.ts` — `markTrust(author, { created, edited }, logins): MarkTrust`. `formerLoginsOf(config)`. `entriesFromComments(comments, logins)` drops non-`ours` marks. `foreignRecords(comments, logins)`. `parseOrigin(body, author, created, logins)`.
 - `src/kit/tracker.ts` — `loginsOf(snapshot)` replaces `botLoginOf`. `wroteIt`, `itemNode` take `Logins`. Protected `logins(ctx)`. `observe` writes `tracker: { bot, former }` and logs event. `provides()` adds `tracker.former`.
-- `src/kit/forge.ts` — `answered`, `threadCounts`, `commentLine`, `threadLine`, reply dedupe take `Logins`. `reviews(pull, ctx): Promise<ThreadComment[]>`, base keeps ours.
-- `integrations/jira/tracker.ts` — `worklogLogged` takes `Logins`.
-- `integrations/gitlab/forge.ts` — `reviews` answers authors. Finding dedupe uses `isOurs`.
-- `integrations/github/forge.ts` — `reviews` answers authors.
-- `src/testing/external-state.ts` — `MemoryTracker.observe` records `tracker: { bot, former }`. Its `satisfied` overrides are dropped.
-- `docs/configuration.md` — `tracker.formerLogins` row.
-- `docs/remote.md` — under "From a local instance": list developers' logins or old bot before first `start`. `records.foreign` row.
-- `docs/security.md` — operator-only: a listed login's markers are trusted.
-- `docs/hooks.md` — kit row: `loginsOf`, `isOurs`.
+- `src/kit/forge.ts` — `answered`, `threadCounts`, `threadsBrief`, `commentLine`, `threadLine`, reply dedupe take `Logins`. `reviews(pull, ctx): Promise<ThreadComment[]>`, base keeps `ours`.
+- `integrations/github/client.ts` — `Comment.updated_at`. `listReviews` reads `user`, `submitted_at`.
+- `integrations/github/issues.ts` — `editedAt` from `lastEditedAt`. Comment `updated_at`.
+- `integrations/github/forge.ts` — thread comments query `createdAt lastEditedAt`. `reviews` answers authors.
+- `integrations/gitlab/forge.ts` — notes map both times. `reviews` answers authors. Finding dedupe uses `markTrust`.
+- `integrations/jira/tracker.ts` — `editors()` adds change time → `editedAt`. `worklogLogged` takes `Logins`.
+- `src/testing/external-state.ts` — comments, threads, reviews carry settable times. `observe` records `former`. `satisfied` overrides dropped.
+- `docs/configuration.md` — row.
+- `docs/remote.md` — "From a local instance": set `until` to switch moment. Jira limit. Event row.
+- `docs/security.md` — why trust ends at `until`.
+- `docs/hooks.md` — `loginsOf`, `markTrust`.
 
 ## Done when
-- History by `old`, login `new`, `formerLogins: [old]`: finished stage not re-entered, nothing posted.
-- Same without list: `old` markers absent from `entries`. `run.lastHuman` and `run.lastEvent.actor` ignore them. `run.lastHuman.at` trigger silent. Over two ticks, one `records.foreign` naming item, `old` and count.
-- Marker from author in neither list completes, blocks and counts nothing. Holds for comment, origin, thread and review.
+- `old` until T, login `new`: `old` marker created and edited before T counts. Finished stage not re-entered, nothing posted.
+- Created after T: foreign. Edited after T: foreign. No `updated_at`: `no-time`.
+- Same three for thread comment, review, and fix reply on GitHub and GitLab.
+- Without list: `old` marks absent from `entries`, `run.lastHuman`. `run.lastHuman.at` trigger silent. Over two ticks, one `records.foreign`: item, count, `old` `unlisted`.
+- Author in neither list completes, blocks, counts nothing: comment, origin, thread, review.
 - Plain comment, any author, is `run.lastHuman`.
-- Records by `old`, then `new`: one run, counters and rounds continue.
-- `validate` refuses `formerLogins: [" "]`.
-- Config without key: no halt, old markers untrusted. Snapshot without `tracker.former`: `satisfied()` halts.
-- Child server and `landrace mcp` honour list.
-- Jira body last edited by listed login keeps origin.
-- Fix reply by listed login answers thread, GitHub and GitLab.
+- Records by `old`, then `new`: one run, counters continue.
+- `validate` refuses `login: " "`, missing `until`, `until: "2026-11-01"`.
+- Config without key: no halt, old marks foreign. Snapshot without `tracker.former`: `satisfied()` halts.
+- Child server and `landrace mcp` apply cutoff.
+- Origin by `old` before T, unedited: kept. Edited by `old` after T, or edit time missing: lost.
 
 // Generated by AI (claude-opus-5-5:high)
