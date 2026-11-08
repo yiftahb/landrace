@@ -9,7 +9,11 @@
  * rather than quietly matching everything.
  */
 
-export interface FakeUser { accountId: string; displayName: string; emailAddress?: string }
+/**
+ * `hidden`: the email's owner keeps it private. Jira Cloud still matches a
+ * search against it, and answers `hidden` in its place: `""`, as it does.
+ */
+export interface FakeUser { accountId: string; displayName: string; emailAddress?: string; hidden?: string }
 
 /** The account the token belongs to: who landrace posts as. */
 export const BOT: FakeUser = { accountId: "5b10ac8d82e05b22cc7d4ef5", displayName: "landrace" };
@@ -527,14 +531,14 @@ export function createFakeJira(project = "KEY") {
       return json({ ...user(fake.me as FakeUser), emailAddress: EMAIL, locale: "en_US", groups: { size: 1, items: [] } });
     }
 
-    // Documented: an array, matching a prefix of the display name or the email; the email shown only when its owner allows.
+    // Documented: an array, matching a prefix of the display name or the email; the email shown only when its owner allows, and `""` when not.
     if (method === "GET" && path === "/rest/api/3/user/search") {
       const query = (q.get("query") ?? "").toLowerCase();
       if (!query) return errors(400, ["One of 'accountId' or 'query' must be specified"]);
       if (fake.permissions.USER_PICKER !== true) return json([]);
       return json(fake.users
         .filter((u) => u.displayName.toLowerCase().startsWith(query) || u.emailAddress?.toLowerCase().startsWith(query))
-        .map((u) => ({ ...user(u), ...(u.emailAddress === undefined ? {} : { emailAddress: u.emailAddress }) })));
+        .map((u) => ({ ...user(u), ...(u.emailAddress === undefined ? {} : { emailAddress: u.hidden ?? u.emailAddress }) })));
     }
 
     if (method === "GET" && path === "/rest/api/3/user") {

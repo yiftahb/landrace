@@ -922,6 +922,18 @@ describe("scoped to one assignee by jiraAssignee", () => {
     await expect(jira.check?.(ctx)).rejects.toThrow(/jiraAssignee "mia@acme\.example" matches 2 Jira users: Mia Krystof, mia@acme\.example \(old\)/);
   });
 
+  // #226: the configured account looking somebody else up sees their hidden email as "".
+  it("resolves an email Jira hides as an empty string to its one account, and scopes by it", async () => {
+    const { fake, jira, ctx } = scoped("hila@acme.example");
+    const hila = { accountId: "557058:hidden", displayName: "Hila Dor", emailAddress: "hila@acme.example", hidden: "" };
+    fake.users.push(hila);
+    const issue = fake.add({ assignee: hila });
+    fake.add({ assignee: OTHER });
+    await jira.check?.(ctx);
+    expect((await jira.items(ctx)).map((t) => t.id)).toEqual([issue.key]);
+    for (const q of queries(fake)) expect(q).toContain(`AND assignee = "${hila.accountId}"`);
+  });
+
   it("leaves out a user whose email Jira shows as another", async () => {
     const { fake, jira, ctx } = scoped("mia@acme.example");
     fake.users.push({ accountId: "557058:bbbb", displayName: "Mia Two", emailAddress: "mia@acme.example.org" });
