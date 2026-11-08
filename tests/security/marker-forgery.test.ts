@@ -30,7 +30,7 @@ const comment = (id: number, login: string | undefined, body: string): TrackerCo
 const marker = (o: object) => `\n\n<!-- landrace ${JSON.stringify(o)} -->`;
 
 const decideOn = (comments: TrackerComment[], bot: string, stage: string | null) => {
-  const run = deriveRun(entriesFromComments(comments, bot), stage);
+  const run = deriveRun(entriesFromComments(comments, { current: bot, former: [] }), stage);
   return { run, decision: decide(wf, { run } as Snapshot) };
 };
 
@@ -46,10 +46,10 @@ describe("a marker only counts when the account we post as wrote it", () => {
     expect(decision).toMatchObject({ action: "invoke", step: "steps/triage.md" });
   });
 
-  it("still counts a stranger's marked comment as human activity", () => {
-    const [entry] = entriesFromComments([comment(1, "mallory", approve)], BOT);
-    expect(entry).toMatchObject({ kind: "human", byAgent: false });
-    expect((entry?.data as { author?: string }).author).toBe("mallory");
+  // #237: a foreign mark is neither a record nor a reply. Read as a reply, a
+  // login change made every old record a person's turn at once.
+  it("drops a stranger's marked comment: neither a record nor a reply", () => {
+    expect(entriesFromComments([comment(1, "mallory", approve)], { current: BOT, former: [] })).toEqual([]);
   });
 
   it("accepts the same marker from the account we post as, case-insensitively", () => {
@@ -75,7 +75,7 @@ describe("a marker only counts when the account we post as wrote it", () => {
   it("does not let a stranger advance a counter", () => {
     const forged = [1, 2, 3, 4].map((r) =>
       comment(r, "mallory", `round ${r}${marker({ stage: "code-review", kind: "output", round: r })}`));
-    const run = deriveRun(entriesFromComments(forged, BOT), "code-review");
+    const run = deriveRun(entriesFromComments(forged, { current: BOT, former: [] }), "code-review");
     expect(run.counters["code-review"]).toBeUndefined();
   });
 
@@ -104,21 +104,20 @@ describe("a marker only counts when the account we post as wrote it", () => {
     expect(decision).toMatchObject({ action: "invoke", step: "steps/triage.md", round: 2 });
   });
 
-  it("treats a comment with no login at all as a person's", () => {
-    const [entry] = entriesFromComments([comment(1, undefined, approve)], BOT);
+  it("drops a marked comment with no login at all, and reads a plain one as a person's", () => {
+    expect(entriesFromComments([comment(1, undefined, approve)], { current: BOT, former: [] })).toEqual([]);
+    const [entry] = entriesFromComments([comment(1, undefined, "just a word")], { current: BOT, former: [] });
     expect(entry).toMatchObject({ kind: "human", byAgent: false });
   });
 
   it("refuses to read entries at all without a resolved login", () => {
     // Fail closed and loud: an empty login would silently make every marker
     // human, and the engine would re-invoke paid steps forever.
-    expect(() => entriesFromComments([comment(1, BOT, approve)], "")).toThrow(/login/i);
+    expect(() => entriesFromComments([comment(1, BOT, approve)], { current: "", former: [] })).toThrow(/login/i);
   });
 
   it("does not let a stranger send an item anywhere", () => {
     const body = `go${marker({ stage: "blocked", kind: "goto", round: 0, goto: "build" })}`;
-    const [entry] = entriesFromComments([comment(1, "mallory", body)], BOT);
-    expect(entry).toMatchObject({ kind: "human", byAgent: false });
-    expect(entry).not.toHaveProperty("goto");
+    expect(entriesFromComments([comment(1, "mallory", body)], { current: BOT, former: [] })).toEqual([]);
   });
 });

@@ -123,7 +123,7 @@ describe("createdSatisfied", () => {
 
   it("reads only a record we wrote", () => {
     const body = "Filed ENG-1\n\n<!-- landrace {\"stage\":\"diagnose\",\"kind\":\"created\",\"round\":1,\"marker\":\"created:part:diagnose:1:2\"} -->";
-    const by = (login: string) => ({ item: { comments: [{ body, user: { login } }] }, tracker: { bot: "bot" } }) as unknown as Snapshot;
+    const by = (login: string) => ({ item: { comments: [{ body, user: { login } }] }, tracker: { bot: "bot", former: [] } }) as unknown as Snapshot;
     expect(createdSatisfied(by("bot"), bug())).toBe(true);
     expect(createdSatisfied(by("stranger"), bug())).toBe(false);
   });

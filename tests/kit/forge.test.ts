@@ -5,14 +5,16 @@ import {
   isFinding, isReply, itemBranchesOf, itemBranchOf, itemsNamedBy, newest, placeFindings, prBranch, pullNode, pushSatisfied, threadCounts, threadsBrief,
   threadLine, where,
 } from "#kit/forge.js";
-import type { Graph, HistoryItem, ReviewThread, Snapshot, ThreadComment } from "#namespace.js";
+import type { Graph, HistoryItem, Logins, ReviewThread, Snapshot, ThreadComment } from "#namespace.js";
 
-const BOT = "landrace-bot";
+const LOGIN = "landrace-bot";
+/** Whose marks count: our login, and no former one unless a test says. */
+const BOT: Logins = { current: LOGIN, former: [] };
 
 const stamped = (text: string, kind: string, marker = `${kind}:review:1`): string =>
   text + renderMarker({ stage: "review", kind, round: 1, marker });
 
-const said = (body: string, author: string | null = BOT): ThreadComment => ({ body, author });
+const said = (body: string, author: string | null = LOGIN, created_at = "2026-01-01T00:00:00Z"): ThreadComment => ({ body, author, created_at, updated_at: created_at });
 
 const thread = (fields: Partial<ReviewThread> = {}): ReviewThread => ({
   id: "T1", resolved: false, path: null, line: null, first: said("a finding"), last: said("a finding"), comments: 1,
@@ -73,6 +75,47 @@ describe("threadCounts", () => {
     const yes = said(`Typo.${renderMarker({ stage: "review", kind: FINDING_KIND, round: 4, marker: "finding:review:4:0", wording: "yes" })}`);
     expect(threadCounts([thread({ first: yes, last: yes })], BOT).awaitingBehaviourFix).toBe(1);
     expect(threadCounts([thread({ first: null, last: null })], BOT).awaitingBehaviourFix).toBe(1);
+  });
+});
+
+/*
+ * #237: a former login's thread comment counts when written and last edited
+ * by its cutoff; after it, or with no time to judge by, it is foreign.
+ */
+describe("a former login's thread comments", () => {
+  const T = "2026-11-01T09:00:00Z";
+  const BEFORE = "2026-11-01T08:00:00Z";
+  const AFTER = "2026-11-01T10:00:00Z";
+  const logins: Logins = { current: "new", former: [{ login: LOGIN, until: T }] };
+  const by = (body: string, created: string, updated?: string): ThreadComment =>
+    ({ body, author: LOGIN, created_at: created, ...(updated === undefined ? {} : { updated_at: updated }) });
+  const fix = (created: string, updated?: string): ThreadComment => by(stamped("Done.", FIX_KIND), created, updated);
+
+  it("answers a thread with a fix reply within the cutoff", () => {
+    expect(answered(fix(BEFORE, BEFORE), logins)).toBe(true);
+    expect(threadCounts([thread({ last: fix(BEFORE, BEFORE) })], logins)).toEqual({ openThreads: 1, awaitingFix: 0, awaitingBehaviourFix: 0 });
+  });
+
+  it("does not, written after it, edited after it, or with no edit time", () => {
+    for (const reply of [fix(AFTER, AFTER), fix(BEFORE, AFTER), fix(BEFORE)]) {
+      expect(answered(reply, logins)).toBe(false);
+      expect(threadCounts([thread({ last: reply })], logins).awaitingFix).toBe(1);
+    }
+  });
+
+  it("names the reviewer, and its finding, only within the cutoff", () => {
+    const opening = by(stamped("Rename x.", FINDING_KIND), BEFORE, BEFORE);
+    expect(threadLine(thread({ first: opening, last: opening }), logins)).toMatch(/raised by Landrace's reviewer/);
+    const late = by(stamped("Rename x.", FINDING_KIND), BEFORE, AFTER);
+    expect(threadLine(thread({ first: late, last: late }), logins)).toMatch(/raised by @landrace-bot/);
+    expect(threadsBrief([1], new Map([[1, [thread({ first: late, last: late })]]]), logins)).not.toMatch(/raised by the reviewer/);
+    expect(threadsBrief([1], new Map([[1, [thread({ first: opening, last: opening })]]]), logins)).toMatch(/raised by the reviewer/);
+  });
+
+  it("reads a history comment as Landrace's only within the cutoff", () => {
+    const body = stamped("Entered spec.", "enter", "enter:spec:1");
+    expect(commentLine({ body, user: { login: LOGIN }, created_at: BEFORE, updated_at: BEFORE }, logins)).toMatch(/^Landrace \[enter:spec:1\]/);
+    expect(commentLine({ body, user: { login: LOGIN }, created_at: AFTER, updated_at: AFTER }, logins)).toMatch(/^@landrace-bot:/);
   });
 });
 
@@ -476,7 +519,7 @@ describe("ciBrief", () => {
 
 describe("commentLine", () => {
   it("is Landrace's by login and marker both, and anyone else's by name", () => {
-    expect(commentLine({ body: stamped("Entered spec.", "enter", "enter:spec:1"), user: { login: BOT } }, BOT))
+    expect(commentLine({ body: stamped("Entered spec.", "enter", "enter:spec:1"), user: { login: LOGIN } }, BOT))
       .toBe("Landrace [enter:spec:1]: Entered spec.");
     expect(commentLine({ body: stamped("Entered spec.", "enter", "enter:spec:1"), user: { login: "alice" } }, BOT))
       .toMatch(/^@alice: Entered spec\./);

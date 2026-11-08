@@ -6,7 +6,7 @@ import { repoDigest, sandboxRoot } from "#sandbox.js";
 const BOT = "landrace-bot";
 const posted = (body: string): TrackerComment =>
   ({ id: 1, body, created_at: "2026-01-01T00:00:00.000Z", user: { login: BOT } });
-const readBack = (m: Marker) => entriesFromComments([posted(`x${renderMarker(m)}`)], BOT)[0];
+const readBack = (m: Marker) => entriesFromComments([posted(`x${renderMarker(m)}`)], { current: BOT, former: [] })[0];
 
 const sha1 = (data: Uint8Array): Uint8Array => new Uint8Array(createHash("sha1").update(data).digest());
 

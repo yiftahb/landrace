@@ -16,7 +16,7 @@ const ours = (marker: string): string =>
   `please review${renderMarker({ stage: "spec", kind: "enter", round: 1, marker })}`;
 
 const snapshot = (comments: unknown[], bot: string | null = "landrace-bot"): Snapshot =>
-  ({ item: { labels: [], comments }, ...(bot === null ? {} : { tracker: { bot } }) }) as Snapshot;
+  ({ item: { labels: [], comments }, ...(bot === null ? {} : { tracker: { bot, former: [] } }) }) as Snapshot;
 
 describe("an effect counts as done only when we are the ones who did it", () => {
   const hook = () => {
@@ -72,6 +72,11 @@ describe("an effect counts as done only when we are the ones who did it", () => 
     expect(() => hook().satisfied(s, effect)).toThrow(/posts as/);
   });
 
+  it("refuses to answer when the snapshot does not say which former logins count", () => {
+    const s = { item: { labels: [], comments: [{ body: ours("awaiting-review"), user: { login: "landrace-bot" } }] }, tracker: { bot: "landrace-bot" } } as unknown as Snapshot;
+    expect(() => hook().satisfied(s, effect)).toThrow(/tracker\.former/);
+  });
+
   /*
    * An operator's reply is posted unmarked, because it genuinely is a human
    * turn — which means nothing on the item would ever say it had been
@@ -90,7 +95,7 @@ describe("an effect counts as done only when we are the ones who did it", () => 
     const [pre] = fake.registry.pre;
     if (!pre) throw new Error("the fake tracker registered no pre hook");
     const fragment = await pre.run({ item: 1 } as unknown as HookContext);
-    expect(fragment.tracker).toEqual({ bot: "yiftahb" });
-    expect(pre.provides).toContain("tracker.bot");
+    expect(fragment.tracker).toEqual({ bot: "yiftahb", former: [] });
+    expect(pre.provides).toEqual(expect.arrayContaining(["tracker.bot", "tracker.former"]));
   });
 });

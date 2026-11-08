@@ -2,13 +2,19 @@ import { LABELS, MAX_SUBGRAPH_NODES, renderMarker, renderOrigin } from "#convent
 import { deriveRel } from "#core/index.js";
 import { compose } from "#kit/compose.js";
 import {
-  BaseTracker, BRIEF_ITEM_CHARS, BRIEF_RELATED_CHARS, botLoginOf, closeSatisfied, commentSatisfied, commentsOf, createdAtOf, labelSatisfied,
+  BaseTracker, BRIEF_ITEM_CHARS, BRIEF_RELATED_CHARS, closeSatisfied, commentSatisfied, commentsOf, createdAtOf, labelSatisfied, loginsOf,
   nodesCloseSatisfied, priorityFromLabels, statusSatisfied, itemNode, updatedAtOf, wroteIt,
 } from "#kit/tracker.js";
 import { createExternalState, MemoryDocs, MemoryForge, MemoryTracker } from "#testing/index.js";
-import type { Effect, ExternalItem, Graph, HookContext, ItemRecord, Node, OpenRelations, RuntimeContext, Snapshot } from "#namespace.js";
+import type { Effect, ExternalItem, Graph, HookContext, ItemRecord, Logins, Node, OpenRelations, RuntimeContext, Snapshot } from "#namespace.js";
 
 const BOT = "landrace-bot";
+/** Whose marks count: our login, and no former one unless a test says. */
+const LOGINS: Logins = { current: BOT, former: [] };
+/** A former login's cutoff, and a moment either side of it. */
+const T = "2026-11-01T09:00:00Z";
+const BEFORE = "2026-11-01T08:00:00Z";
+const AFTER = "2026-11-01T10:00:00Z";
 
 const item = (fields: Partial<Node> = {}): Node => ({
   id: "7", kind: "item", title: "T", link: "https://tracker.example/7", closed: null, priority: null, origin: null,
@@ -33,20 +39,33 @@ describe("commentsOf", () => {
 
 describe("wroteIt", () => {
   it("is ours by login, either spelling of an app's, and never a stranger's", () => {
-    expect(wroteIt({ user: { login: BOT } }, BOT)).toBe(true);
-    expect(wroteIt({ user: { login: "someone" } }, BOT)).toBe(false);
-    expect(wroteIt({ user: null }, BOT)).toBe(false);
+    expect(wroteIt({ user: { login: BOT } }, LOGINS)).toBe(true);
+    expect(wroteIt({ user: { login: "someone" } }, LOGINS)).toBe(false);
+    expect(wroteIt({ user: null }, LOGINS)).toBe(false);
+  });
+
+  it("is a former login's within its cutoff, judged at the comment's own times", () => {
+    const logins: Logins = { current: BOT, former: [{ login: "old", until: T }] };
+    expect(wroteIt({ user: { login: "old" }, created_at: BEFORE, updated_at: BEFORE }, logins)).toBe(true);
+    expect(wroteIt({ user: { login: "old" }, created_at: BEFORE, updated_at: AFTER }, logins)).toBe(false);
+    expect(wroteIt({ user: { login: "old" }, created_at: BEFORE }, logins)).toBe(false);
   });
 });
 
-describe("botLoginOf", () => {
-  it("is the login the pre hook recorded, lower-cased", () => {
-    expect(botLoginOf(snapshotWith({ tracker: { bot: " Landrace-Bot " } }))).toBe("landrace-bot");
+describe("loginsOf", () => {
+  it("is the login the pre hook recorded, lower-cased, and the former ones", () => {
+    expect(loginsOf(snapshotWith({ tracker: { bot: " Landrace-Bot ", former: [] } }))).toEqual({ current: "landrace-bot", former: [] });
+    expect(loginsOf(snapshotWith({ tracker: { bot: BOT, former: [{ login: "old", until: T }] } })).former).toEqual([{ login: "old", until: T }]);
   });
 
   it("halts when the snapshot does not say who we post as", () => {
-    expect(() => botLoginOf(snapshotWith({}))).toThrow(/does not record the login landrace posts as/);
-    expect(() => botLoginOf(snapshotWith({ tracker: { bot: " " } }))).toThrow(/does not record/);
+    expect(() => loginsOf(snapshotWith({}))).toThrow(/does not record the login landrace posts as/);
+    expect(() => loginsOf(snapshotWith({ tracker: { bot: " ", former: [] } }))).toThrow(/does not record/);
+  });
+
+  it("halts when it does not say which former logins count: absent is not none", () => {
+    expect(() => loginsOf(snapshotWith({ tracker: { bot: BOT } }))).toThrow(/tracker\.former/);
+    expect(() => loginsOf(snapshotWith({ tracker: { bot: BOT, former: [{ login: "old", until: "2026-11-01" }] } }))).toThrow(/until/);
   });
 });
 
@@ -70,7 +89,7 @@ describe("statusSatisfied", () => {
 
 describe("commentSatisfied", () => {
   const effect: Effect = { type: "tracker.comment", marker: "enter:spec:1" };
-  const on = (...comments: unknown[]): Snapshot => snapshotWith({ tracker: { bot: BOT }, item: { comments } });
+  const on = (...comments: unknown[]): Snapshot => snapshotWith({ tracker: { bot: BOT, former: [] }, item: { comments } });
 
   it("is a comment we wrote carrying exactly this marker", () => {
     expect(commentSatisfied(on(marked("enter:spec:1")), effect)).toBe(true);
@@ -87,6 +106,17 @@ describe("commentSatisfied", () => {
 
   it("halts on a comment with no marker, which nothing could reconcile", () => {
     expect(() => commentSatisfied(on(), { type: "tracker.comment" })).toThrow(/with no marker cannot be reconciled/);
+  });
+
+  it("is a former login's comment within its cutoff, and nothing it wrote or edited after", () => {
+    const at = (created: string, updated?: string): Snapshot => snapshotWith({
+      tracker: { bot: BOT, former: [{ login: "old", until: T }] },
+      item: { comments: [{ ...marked("enter:spec:1", "old"), created_at: created, ...(updated === undefined ? {} : { updated_at: updated }) }] },
+    });
+    expect(commentSatisfied(at(BEFORE, BEFORE), effect)).toBe(true);
+    expect(commentSatisfied(at(AFTER, AFTER), effect)).toBe(false);
+    expect(commentSatisfied(at(BEFORE, AFTER), effect)).toBe(false);
+    expect(commentSatisfied(at(BEFORE), effect)).toBe(false);
   });
 });
 
@@ -138,7 +168,7 @@ describe("itemNode", () => {
   };
 
   it("is the item as the engine reads one", () => {
-    expect(itemNode(fields, BOT)).toEqual({
+    expect(itemNode(fields, LOGINS)).toEqual({
       id: "7", kind: "item", title: "Split", link: "https://tracker.example/7", closed: null, priority: 1, origin,
       state: { labels: ["P1", "lr:auto"], assignees: ["someone"] }, createdAt: Date.parse("2026-09-30T00:00:00Z"),
       updatedAt: Date.parse("2026-09-30T12:00:00Z"),
@@ -148,26 +178,55 @@ describe("itemNode", () => {
   // What `tracker.field`'s satisfied reads: the fields as read, a null among them, and none at all from a tracker that read none.
   it("carries the fields its tracker read as state.fields, and no fields when it read none", () => {
     const read = { customfield_1: ["R&D"], customfield_2: null, customfield_3: 3 };
-    expect(itemNode({ ...fields, fields: read }, BOT).state).toEqual({ labels: ["P1", "lr:auto"], assignees: ["someone"], fields: read });
-    expect(itemNode(fields, BOT).state).not.toHaveProperty("fields");
+    expect(itemNode({ ...fields, fields: read }, LOGINS).state).toEqual({ labels: ["P1", "lr:auto"], assignees: ["someone"], fields: read });
+    expect(itemNode(fields, LOGINS).state).not.toHaveProperty("fields");
   });
 
   it("carries no update time for an item whose tracker gave none", () => {
-    expect(itemNode({ ...fields, updatedAt: undefined }, BOT)).not.toHaveProperty("updatedAt");
+    expect(itemNode({ ...fields, updatedAt: undefined }, LOGINS)).not.toHaveProperty("updatedAt");
   });
 
   it("reads no origin from a body a stranger has edited since, nor one a stranger wrote", () => {
-    expect(itemNode({ ...fields, editor: "someone" }, BOT).origin).toBeNull();
-    expect(itemNode({ ...fields, editor: BOT }, BOT).origin).toEqual(origin);
-    expect(itemNode({ ...fields, author: "someone" }, BOT).origin).toBeNull();
+    expect(itemNode({ ...fields, editor: "someone" }, LOGINS).origin).toBeNull();
+    expect(itemNode({ ...fields, editor: BOT }, LOGINS).origin).toEqual(origin);
+    expect(itemNode({ ...fields, author: "someone" }, LOGINS).origin).toBeNull();
+  });
+
+  /*
+   * #237: an origin judges its author at createdAt and its editor at
+   * editedAt. One never edited needs no edit time.
+   */
+  describe("by a former login", () => {
+    const former: Logins = { current: "new", former: [{ login: BOT, until: T }] };
+    const byOld = { ...fields, createdAt: BEFORE };
+
+    it("keeps one written before the cutoff and never edited", () => {
+      expect(itemNode(byOld, former).origin).toEqual(origin);
+    });
+
+    it("keeps one edited by the former login before the cutoff, or by the current login at any time", () => {
+      expect(itemNode({ ...byOld, editor: BOT, editedAt: BEFORE }, former).origin).toEqual(origin);
+      expect(itemNode({ ...byOld, editor: "new", editedAt: AFTER }, former).origin).toEqual(origin);
+      expect(itemNode({ ...byOld, editor: "new" }, former).origin).toEqual(origin);
+    });
+
+    it("loses one written after the cutoff, or with no creation time", () => {
+      expect(itemNode({ ...byOld, createdAt: AFTER }, former).origin).toBeNull();
+      expect(itemNode({ ...byOld, createdAt: undefined }, former).origin).toBeNull();
+    });
+
+    it("loses one the former login edited after the cutoff, or at a time the tracker did not give", () => {
+      expect(itemNode({ ...byOld, editor: BOT, editedAt: AFTER }, former).origin).toBeNull();
+      expect(itemNode({ ...byOld, editor: BOT }, former).origin).toBeNull();
+    });
   });
 
   // Jira's priority field, and the in-memory tracker's: a tracker that has
   // one says so, and its P labels are then only labels.
   it("takes a tracker's own priority over the P labels, and its absence of one too", () => {
-    expect(itemNode({ ...fields, priority: 3 }, BOT).priority).toBe(3);
-    expect(itemNode({ ...fields, priority: null }, BOT).priority).toBeNull();
-    expect(itemNode({ ...fields, priority: undefined }, BOT).priority).toBe(1);
+    expect(itemNode({ ...fields, priority: 3 }, LOGINS).priority).toBe(3);
+    expect(itemNode({ ...fields, priority: null }, LOGINS).priority).toBeNull();
+    expect(itemNode({ ...fields, priority: undefined }, LOGINS).priority).toBe(1);
   });
 });
 
@@ -865,9 +924,9 @@ describe("relationships read both ways, and statuses", () => {
       id: "7", title: "T", link: "l", closed: null, labels: [], assignees: [], body: "", author: undefined, editor: undefined,
       createdAt: undefined, parent: null,
     };
-    expect(itemNode({ ...record, status: "Pending R&D Fix", statusCategory: "indeterminate" }, BOT).state)
+    expect(itemNode({ ...record, status: "Pending R&D Fix", statusCategory: "indeterminate" }, LOGINS).state)
       .toEqual({ labels: [], assignees: [], status: "Pending R&D Fix", statusCategory: "indeterminate" });
-    expect(itemNode(record, BOT).state).toEqual({ labels: [], assignees: [] });
+    expect(itemNode(record, LOGINS).state).toEqual({ labels: [], assignees: [] });
   });
 
   it("draws an inward relationship from the other end toward the item, in the listing and the read, with the placeholder's status", async () => {

@@ -39,8 +39,9 @@ export interface FakeIssue {
   state_reason?: "completed" | "not_planned" | null;
   /** Who opened it. A person, unless the hook created it under the bot's login. */
   author: string;
-  /** Who last edited the body, if anyone has since it was opened. */
+  /** Who last edited the body, if anyone has since it was opened, and when: GraphQL's `lastEditedAt`. */
   editor?: string;
+  lastEditedAt?: string;
   /** The issue this one is a sub-issue of, by number. */
   parent?: number;
   /** What it is blocked by: an issue in this repository by its number, or one in another. */
@@ -72,6 +73,8 @@ export interface FakeComment {
   id: number;
   body: string;
   created_at: string;
+  /** When it was last edited; REST answers its creation for one never edited. Absent only when a test leaves it out. */
+  updated_at?: string;
   user: { login: string };
 }
 
@@ -96,8 +99,10 @@ export interface FakeThread {
   author?: string;
   /** When it was opened. Absent, the fake stamps it the first time it is read, by the clock comments are dated by. */
   createdAt?: string;
-  /** The argument under the finding, oldest first. */
-  replies?: Array<{ author: string; body: string }>;
+  /** When its opening comment was last edited: null, or absent, for never. */
+  lastEditedAt?: string | null;
+  /** The argument under the finding, oldest first, each stamped like the opening when it says no time. */
+  replies?: Array<{ author: string; body: string; createdAt?: string; lastEditedAt?: string | null }>;
 }
 
 export interface FakePull {
@@ -124,7 +129,7 @@ export interface FakePull {
   /** What `GET /pulls/{n}/files` answers: the diff, a file at a time, a renamed one with its old path. */
   files?: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string; previous_filename?: string }>;
   /** Every review posted on it, as `POST /pulls/{n}/reviews` took them. */
-  reviews?: Array<{ body: string; event: string }>;
+  reviews?: Array<{ body: string; event: string; user?: string; submitted_at?: string }>;
   /** The head commit's `statusCheckRollup.state`; absent or null is a commit with no rollup at all. */
   checks?: "SUCCESS" | "FAILURE" | "ERROR" | "PENDING" | "EXPECTED" | null;
   /** What `GET /commits/{sha}/check-runs` answers. `app` is the app's slug, "github-actions" unless said; `status` "completed" unless said. */
@@ -212,7 +217,7 @@ export interface FakeTracker {
   /** Post as the bot, the way an effect would. */
   say(item: number, body: string): FakeComment;
   /** Post as somebody else, the way a person would. */
-  sayAs(login: string, item: number, body: string, at?: string): FakeComment;
+  sayAs(login: string, item: number, body: string, at?: string, edited?: string | null): FakeComment;
   entriesOf(item: number): Entry[];
   /** The pull requests that exist, by number. */
   pulls: Map<number, FakePull>;
@@ -341,13 +346,17 @@ export function createFakeTracker(
       ...(s.updatedAt === undefined ? {} : { updatedAt: s.updatedAt }),
       ...(s.parent === undefined ? {} : { parent: s.parent }),
       ...(s.editor === undefined ? {} : { editor: s.editor }),
+      ...(s.lastEditedAt === undefined ? {} : { lastEditedAt: s.lastEditedAt }),
       ...(s.blockedBy === undefined ? {} : { blockedBy: s.blockedBy }),
     });
     nextIssue = Math.max(nextIssue, n + 1);
   }
 
-  const post = (item: number, login: string, body: string, when?: string): FakeComment => {
-    const comment: FakeComment = { id: nextComment++, body, created_at: when ?? at(item), user: { login } };
+  const post = (item: number, login: string, body: string, when?: string, edited?: string | null): FakeComment => {
+    const created = when ?? at(item);
+    // As REST answers: never edited is updated when created. Null leaves it out, a time GitHub did not give.
+    const updated = edited === undefined ? created : edited;
+    const comment: FakeComment = { id: nextComment++, body, created_at: created, ...(updated === null ? {} : { updated_at: updated }), user: { login } };
     comments.set(item, [...(comments.get(item) ?? []), comment]);
     return comment;
   };
@@ -440,8 +449,11 @@ export function createFakeTracker(
       // `isResolved` and the last word, the briefing and the history the rest.
       nodes: page.map((t, i) => {
         t.createdAt ??= stamp();
-        const opening = { body: t.body, createdAt: t.createdAt, author: { login: t.author ?? BOT } };
-        const said = [opening, ...(t.replies ?? []).map((r) => ({ body: r.body, author: { login: r.author } }))];
+        const opening = { body: t.body, createdAt: t.createdAt, lastEditedAt: t.lastEditedAt ?? null, author: { login: t.author ?? BOT } };
+        const said = [opening, ...(t.replies ?? []).map((r) => {
+          r.createdAt ??= stamp();
+          return { body: r.body, createdAt: r.createdAt, lastEditedAt: r.lastEditedAt ?? null, author: { login: r.author } };
+        })];
         return {
           id: t.id ?? `thread-${pull.number}-${from + i}`,
           isResolved: t.isResolved,
@@ -462,6 +474,7 @@ export function createFakeTracker(
     body: i.body,
     author: { login: i.author },
     editor: i.editor === undefined ? null : { login: i.editor },
+    lastEditedAt: i.lastEditedAt ?? null,
     url: i.html_url,
     state: i.state.toUpperCase(),
     stateReason: i.stateReason ?? null,
@@ -933,8 +946,12 @@ export function createFakeTracker(
     if (onReviews) {
       const pull = pulls.get(Number(onReviews[1]));
       if (!pull) return new Response("Not Found", { status: 404 });
-      if (method === "GET") return json((pull.reviews ?? []).map((r, i) => ({ id: i + 1, body: r.body, state: "COMMENTED" })));
-      pull.reviews = [...(pull.reviews ?? []), { body: String(body.body ?? ""), event: String(body.event ?? "") }];
+      if (method === "GET") {
+        return json((pull.reviews ?? []).map((r, i) => ({
+          id: i + 1, body: r.body, state: "COMMENTED", user: { login: r.user ?? BOT }, submitted_at: r.submitted_at ?? null,
+        })));
+      }
+      pull.reviews = [...(pull.reviews ?? []), { body: String(body.body ?? ""), event: String(body.event ?? ""), user: BOT, submitted_at: stamp() }];
       for (const c of (body.comments as Array<{ path: string; line: number; body: string }> | undefined) ?? []) {
         pull.threads.push({ id: `thread-${pull.number}-${pull.threads.length}`, isResolved: false, body: c.body, path: c.path, line: c.line });
       }
@@ -1211,7 +1228,7 @@ export function createFakeTracker(
     bot: BOT,
     labelsOf: (item) => issues.get(item)?.labels ?? [],
     say: (item, body) => post(item, BOT, body),
-    sayAs: (login, item, body, when) => post(item, login, body, when),
-    entriesOf: (item) => entriesFromComments(comments.get(item) ?? [], BOT),
+    sayAs: (login, item, body, when, edited) => post(item, login, body, when, edited),
+    entriesOf: (item) => entriesFromComments(comments.get(item) ?? [], { current: BOT, former: [] }),
   };
 }

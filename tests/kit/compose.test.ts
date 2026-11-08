@@ -481,7 +481,7 @@ describe("the briefing", () => {
       override async threads(): Promise<ReviewThread[]> {
         return [{
           id: "T1", resolved: false, path: "src/a.ts", line: 3, comments: 1, at: "2026-01-01T00:00:30Z",
-          first: { body: "Rename this.", author: "a-reviewer" }, last: { body: "Rename this.", author: "a-reviewer" },
+          first: { body: "Rename this.", author: "a-reviewer", created_at: "2026-01-01T00:00:30Z" }, last: { body: "Rename this.", author: "a-reviewer", created_at: "2026-01-01T00:00:30Z" },
         }];
       }
     }
