@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -123,7 +123,7 @@ async function ranWithDeclaredSession(recorded: string | null): Promise<{ tracke
       routes: [{ when: { kind: "questions" }, effect: { type: "tracker.comment", marker: "questions:{round}" } }],
     },
   };
-  const result = await runStep({
+  const result = await runStep({ controls: null,
     step, item: "1", stageId: "spec", round: 1, snapshot: {},
     executor: {
       id: "step",
@@ -188,7 +188,7 @@ describe("conversation", () => {
         routes: [{ when: { kind: "questions" }, effect: { type: "tracker.comment", marker: "questions:{round}" } }],
       },
     };
-    const result = await runStep({
+    const result = await runStep({ controls: null,
       step, item: "1", stageId: "spec", round: 1, snapshot: {},
       executor: { id: "step", run: async () => ({ text: '```json\n{"kind":"questions"}\n```', sessionId: "sid-real" }) },
       signal: new AbortController().signal,
@@ -695,6 +695,55 @@ describe("a conversation turn is held to what its step declared", () => {
     expect(none.cwd).toBeUndefined();
     expect(none.denyWrite).toEqual(expect.arrayContaining([join(common, "config"), join(common, "hooks"), join(common, "info")]));
     expect((await asked(["repo:read"], { sandbox: { root: checkout } })).denyWrite).toBeUndefined();
+  });
+
+  // A Linux sandbox denies only the control paths that exist: one a turn makes is judged once it
+  // ends, however it ends, and refuses the turn before its reply is posted.
+  describe.each([["in a worktree", true], ["with no worktree", false]])("a turn on a step that may write, %s", (_where, worktree) => {
+    const ENDS = ["answers", "throws", "is aborted"] as const;
+    it.each(ENDS)("is refused when it leaves <common>/commondir holding something and %s, naming it", async (end) => {
+      const checkout = await gitRepo();
+      const planted = join(realpathSync(join(checkout, ".git")), "commondir");
+      const abort = new AbortController();
+      const planter: Executor = {
+        id: "planter",
+        run: async () => {
+          await writeFile(planted, "/elsewhere\n");
+          if (end === "answers") return { text: "Understood.", sessionId: null };
+          if (end === "is aborted") abort.abort();
+          throw new Error("the agent stopped");
+        },
+      };
+      const tracker = seeded();
+      const before = tracker.comments.get(1)?.length ?? 0;
+      try {
+        await expect(world(tracker, planter, {}, undefined, {
+          ...spec({ capabilities: ["repo:read", "repo:write"] }),
+          ...(worktree ? { sandbox: { root: checkout } } : { workspace: checkout }),
+        }).ask("1", "carry on", { signal: abort.signal })).rejects.toThrow(planted);
+        // The person's question is posted; the agent's reply is not.
+        expect(tracker.comments.get(1)?.length).toBe(before + 1);
+      } finally {
+        await rm(planted, { force: true });
+      }
+    });
+
+    it("is refused on Linux while extensions.worktreeConfig is on, naming it, and never runs", async () => {
+      const checkout = await gitRepo();
+      await promisify(execFile)("git", ["config", "extensions.worktreeConfig", "true"], { cwd: checkout });
+      let ran = false;
+      const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+      Object.defineProperty(process, "platform", { value: "linux" });
+      try {
+        await expect(world(seeded(), { id: "never", run: async () => { ran = true; return { text: "", sessionId: null }; } }, {}, undefined, {
+          ...spec({ capabilities: ["repo:read", "repo:write"] }),
+          ...(worktree ? { sandbox: { root: checkout } } : { workspace: checkout }),
+        }).ask("1", "carry on")).rejects.toThrow(/extensions\.worktreeConfig/);
+      } finally {
+        Object.defineProperty(process, "platform", was);
+      }
+      expect(ran).toBe(false);
+    });
   });
 
   it("runs the turn in a worktree of its own, never in the checkout the loop runs from", async () => {

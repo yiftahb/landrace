@@ -104,7 +104,10 @@ and one the work could remake alike — taken from the reader's own reference
 (git's `gitrepository-layout`), not from the attacks reproduced, and covers
 every way the work runs, the person's own checkout included; it is checked
 again before each trusted reader, the first included (setup commands), for the
-places the work made while it ran.
+places the work made while it ran, on every way the run ends (throw, timeout,
+abort). A place other untrusted work can still write while the reader reads —
+another item's run going on — is denied, or the setting that makes the reader
+read it refused: a check there is check-then-use, which a write in a loop beats.
 Examples use `example.com`, never a real domain. A page that hands out access on a person's click has
 a Done-when line for each way that click could be forged (framing, a foreign
 `Origin`, a replayed or missing one-time token) and one for each cookie's flags. A trigger or route the spec adds or

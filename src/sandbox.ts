@@ -1,10 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 
-import { GIT_GUARD_ARGS } from "#conventions.js";
+import { CommonDirRefused, gitCommonDir } from "#kit/git.js";
 
 /**
  * What identifies the repository a piece of local scratch state belongs to.
@@ -20,25 +19,33 @@ import { GIT_GUARD_ARGS } from "#conventions.js";
  * one's worktree mid-step.
  *
  * Outside a repository — or with no git on the machine — the resolved working
- * directory itself, which is still a place rather than a name.
+ * directory itself, which is still a place rather than a name. A `commondir`
+ * in `<root>/.git` is neither: it throws (`gitCommonDir`), never falls back.
  */
 function repoIdentity(dir: string): string {
   try {
-    const out = execFileSync("git", [...GIT_GUARD_ARGS, "rev-parse", "--git-common-dir"], {
-      cwd: dir,
-      encoding: "utf8",
-      // git prints its own diagnosis to stderr when this is not a repository,
-      // and that is an ordinary answer here, not something to show anybody.
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    // Relative to the directory it was asked from (".git", "../../.git") for
-    // an ordinary checkout, absolute for a linked worktree. Both resolve here.
-    if (out !== "") return realpathSync(resolve(dir, out));
-  } catch {
+    return commonDirOf(dir);
+  } catch (e) {
+    if (e instanceof CommonDirRefused) throw e;
     // Not a repository, or git is not installed. Either way there is nothing
     // to derive, and a root is still needed.
+    return realpathSync(dir);
   }
-  return realpathSync(dir);
+}
+
+const commons = new Map<string, string>();
+
+/**
+ * The common git directory of the checkout `dir` is in (`gitCommonDir`),
+ * found once per directory and kept: what the engine's git there is pinned
+ * to, so a `commondir` a step plants in it after is never followed.
+ */
+export function commonDirOf(dir: string): string {
+  const cached = commons.get(dir);
+  if (cached !== undefined) return cached;
+  const common = gitCommonDir(dir);
+  commons.set(dir, common);
+  return common;
 }
 
 /** The repository's own name, for a human reading $TMPDIR — never the identity itself. */

@@ -9,8 +9,9 @@
  * git configuration — along with scrubbing that credential out of whatever git
  * says back.
  */
-import { execFile } from "node:child_process";
-import { dirname } from "node:path";
+import { execFile, execFileSync } from "node:child_process";
+import { lstatSync, realpathSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { EffectRefused, GIT_GUARD_ARGS, isReservedId } from "#conventions.js";
@@ -66,12 +67,87 @@ export async function repositoryOf(file: string): Promise<string> {
   return (await gitIn(here)(["rev-parse", "--show-toplevel"])).trim();
 }
 
-/** git in the repository `root` answers, found the first time it is needed. */
+/** A repository whose own git directory holds a `commondir`: git would follow it, and the engine will not. */
+export class CommonDirRefused extends Error {}
+
+/**
+ * The repository's common git directory, resolved, for the checkout `dir` is
+ * in. Where `<root>/.git` is a directory, that directory, never git's answer:
+ * git reads `commondir` in the main git directory too, and a write step on
+ * Linux may make one there — its sandbox denies only paths that exist — to
+ * hand every git in the checkout a config of its own. One found there is
+ * refused, naming it, never followed. Where `.git` is a file, git's answer:
+ * the admin folder's `commondir` that answer follows exists, and so is denied.
+ *
+ * Throws git's own words outside a repository.
+ */
+export function gitCommonDir(dir: string): string {
+  for (let at = realpathSync(dir); ; at = dirname(at)) {
+    const dotGit = join(at, ".git");
+    let kind: "dir" | "file" | null = null;
+    try {
+      kind = statSync(dotGit).isDirectory() ? "dir" : "file";
+    } catch {
+      // Not here: git looks one folder up, and so does this.
+    }
+    if (kind === "dir") {
+      const common = realpathSync(dotGit);
+      commonDirIntact(common);
+      return common;
+    }
+    if (kind === "file" || dirname(at) === at) break;
+  }
+  try {
+    const out = execFileSync("git", [...GIT_GUARD_ARGS, "rev-parse", "--git-common-dir"], {
+      cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    // Relative to the directory it was asked from for an ordinary checkout, absolute for a linked worktree.
+    return realpathSync(resolve(dir, out));
+  } catch (e) {
+    const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
+    throw new Error(stderr || (e instanceof Error ? e.message : String(e)));
+  }
+}
+
+/**
+ * That the common directory holds no `commondir`, which git never makes
+ * there. `GIT_COMMON_DIR` pins where git reads its config, hooks and objects,
+ * but not where it reads branches: its ref store follows `<gitdir>/commondir`
+ * whatever the environment says, so git in a checkout whose `.git` is that
+ * directory would read and move branches in the step's. Refused, naming it.
+ */
+export function commonDirIntact(common: string): void {
+  const planted = join(common, "commondir");
+  try {
+    lstatSync(planted);
+  } catch {
+    return;
+  }
+  throw new CommonDirRefused(
+    `refusing to run git in the repository at ${common}: ${planted} exists, and git never makes one in a repository's ` +
+    "common directory; a step that may write could have put it there to hand git a directory of its own. Remove it and the item carries on",
+  );
+}
+
+/**
+ * git in the repository `root` answers, found the first time it is needed,
+ * with its common directory found then too and pinned on every call, so a
+ * `commondir` a step plants in it later hands git no config of its own —
+ * and refused while one is there, which git would still read branches through
+ * (`commonDirIntact`).
+ */
 export function ownGit(root: () => Promise<string>): Git {
-  let found: Promise<string> | undefined;
+  let found: Promise<{ dir: string; common: string }> | undefined;
   return async (args, env, opts) => {
-    found ??= root();
-    return gitIn(await found)(args, env, opts);
+    // A refusal is not kept: the message tells the operator to remove the
+    // file and carry on, so the next call asks again rather than needing a restart.
+    const asked = found ??= root().then((dir) => ({ dir, common: gitCommonDir(dir) }));
+    asked.catch(() => {
+      if (found === asked) found = undefined;
+    });
+    const { dir, common } = await asked;
+    commonDirIntact(common);
+    return gitIn(dir)(args, { ...env, GIT_COMMON_DIR: common }, opts);
   };
 }
 

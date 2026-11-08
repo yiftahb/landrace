@@ -22,9 +22,9 @@ import {
   unknownCapabilities,
   workDurationMs,
 } from "#conventions.js";
-import type { Executor, Screener, StepSandbox } from "#namespace.js";
+import type { ControlPaths, Executor, Screener, StepSandbox } from "#namespace.js";
 import { screenPrompt } from "#agent/screen.js";
-import { changedSince, worktreeIntact, worktreeState } from "#agent/worktree.js";
+import { changedSince, plantedControlPaths, worktreeIntact, worktreeState } from "#agent/worktree.js";
 import { extractJsonBlock } from "#agent/json-block.js";
 import { messageOf } from "#runner/errors.js";
 import { childServerFor } from "#runner/children.js";
@@ -216,10 +216,12 @@ export async function runStep(opts: {
   /**
    * For a step that may write: the git paths its agent may not write, so
    * neither the engine's git nor the operator's runs what it planted
-   * (`gitControlPaths`). Handed to the executor, which refuses a run it
-   * cannot keep them from.
+   * (`gitControlPaths`). `deny` is handed to the executor, which refuses a
+   * run it cannot keep them from; `absent` is judged once the run ends,
+   * however it ends. Null for a step that may not write, and a step that may
+   * is refused without them: required, so no caller forgets them.
    */
-  denyWrite?: readonly string[];
+  controls: ControlPaths | null;
   /**
    * The item's graph as it stands after the step, for the items:create
    * backstop. Absent, nothing is checked — like `sandbox`, it is what makes
@@ -286,6 +288,16 @@ export async function runStep(opts: {
     } catch (e) {
       return { ok: false, kind: "refused", reason: messageOf(e) };
     }
+  }
+
+  // A write run whose agent could plant a hook the engine's git runs, with
+  // nothing to keep it from or to check after: refused before anything is spent.
+  const controls = mayWriteRepo(step.capabilities) ? opts.controls : null;
+  if (mayWriteRepo(step.capabilities) && controls === null) {
+    return {
+      ok: false, kind: "refused",
+      reason: "a step that may write runs only once the engine has listed the git paths its agent may not write, and none were",
+    };
   }
 
   const start = await sandboxBefore(opts.sandbox, step.capabilities);
@@ -371,9 +383,9 @@ export async function runStep(opts: {
   const limit = AbortSignal.timeout(timeoutMs);
   const runSignal = AbortSignal.any([signal, limit]);
 
-  let answer: ExecutorAnswer;
+  let ran: { ok: true; answer: ExecutorAnswer } | { ok: false; error: unknown };
   try {
-    answer = await executor.run(prompt, {
+    ran = { ok: true, answer: await executor.run(prompt, {
       round,
       signal: runSignal,
       // Always present, never undefined: a step that declares no capabilities
@@ -391,11 +403,25 @@ export async function runStep(opts: {
       ...(step.plugins === undefined ? {} : { plugins: step.plugins }),
       timeoutMs,
       ...(opts.sandbox ? { cwd: opts.sandbox.path } : {}),
-      ...(opts.denyWrite === undefined ? {} : { denyWrite: opts.denyWrite }),
+      ...(controls === null ? {} : { denyWrite: controls.deny }),
       ...childOpt,
       ...(opts.onActivity ? { onActivity: opts.onActivity } : {}),
-    });
+    }) };
   } catch (e) {
+    ran = { ok: false, error: e };
+  }
+
+  // However the run ended — an answer, a throw, its limit, an abort — and
+  // before the engine's git runs there: a control path that was missing and
+  // now holds something. Recorded even for a run that was aborted (`planted`),
+  // since the next run's list finds it there and never judges it again.
+  if (controls !== null) {
+    const planted = await plantedControlPaths(controls.absent);
+    if (planted !== null) return { ok: false, kind: "refused", reason: planted, planted: true };
+  }
+
+  if (!ran.ok) {
+    const e = ran.error;
     // The executor itself failed — a limit, quota, an abort signal from a
     // Ctrl-C. Nothing was produced, so this is the "never ran" case, not a
     // rejected contract. Said as the limit, not as whatever the executor said
@@ -407,6 +433,7 @@ export async function runStep(opts: {
     const reason = limit.aborted && !signal.aborted ? `the agent ran past its ${timeoutMs}ms limit` : messageOf(e);
     return { ok: false, kind: "unavailable", reason };
   }
+  const answer = ran.answer;
 
   // A verdict, not an outage: durable and terminal, like a screening refusal.
   const trespass = await sandboxTrespass(opts.sandbox, before);

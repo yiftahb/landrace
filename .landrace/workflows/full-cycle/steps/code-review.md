@@ -76,11 +76,16 @@ missing, or wrong, with the file and line.
 
 **Step 4 — Look for what will break.** Edge cases, error paths, a caller the
 change did not update, a test that asserts nothing, anything that touches
-security. Where the change decides whom to trust, play the one it distrusts:
-every way they can write or edit, each vendor time read for what the vendor
-stamps it at (a draft's, not its submission's), a value an operator can
-mistype into wider trust, a count they can raise that a workflow routes on,
-and a log they can keep silent behind another's. A user-visible change without its `docs/` page updated, or reference
+security. A guard against untrusted work is reviewed by playing that work: it
+controls a file's identity as well as its text (a hard link writable by another
+name, when the sandbox denies by path), its type and size when the guard opens
+it (a link, a FIFO, a huge file), and when it writes (a process it left running
+after the check). And the engine's own work going on beside it — another item
+making a worktree — must not look like a plant. Where the change decides whom to
+trust, play the one it distrusts: every way they can write or edit, each vendor
+time read for what the vendor stamps it at (a draft's, not its submission's), a
+value an operator can mistype into wider trust, a count they can raise that a
+workflow routes on, and a log they can keep silent behind another's. A user-visible change without its `docs/` page updated, or reference
 material added to the README, is a finding too, by the "README and docs"
 standards in the agent instructions. You have no shell: the build step ran the tests and the lint checks
 in its own sandbox. Do not try to run anything, and do not send a subagent to —

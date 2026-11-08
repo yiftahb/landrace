@@ -71,7 +71,9 @@ written out by hand, a sentence on how it used to work — found by searching
 for the old, not only by reading what you edit. And it means the code that
 already does what you are adding — the same git command, a call to the same
 remote or host, a URL built from the same setting — found by searching for it:
-call it, or give yours every guard and flag it sets, each with its test. Likewise the code that shares what you
+call it, or give yours every guard and flag it sets, each with its test; a check
+that runs ahead of an existing guard on the same thing judges it by that guard's
+rule, or what it passes the guard later refuses, unrecorded. Likewise the code that shares what you
 change, and leaned on its old value — another element at the z-index you take,
 a scroll into view that assumed nothing covers the window's top, every
 existing caller and test of a function you give a side effect — a spawned
@@ -90,7 +92,8 @@ registered on something shared — a listener, a queue — is let go when anothe
 replaces it, and each check the old path ran still runs on the new one before
 it is reached. A value one pass keeps for the next — the set it last judged —
 is set or cleared on every branch of the pass, the shortcut for one or for none
-included.
+included; a lookup cached for later calls — a memoised promise — keeps only a
+success, so a failure the person fixes is asked again, never kept until a restart.
 
 **Step 2 — Bring the branch up to date with the default branch.** Merge
 origin's default branch: `git merge "$(git rev-parse --abbrev-ref origin/HEAD)"`.

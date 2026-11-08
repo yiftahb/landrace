@@ -1,15 +1,15 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, cp, link, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import {
-  ensureWorktree, gitControlPaths, gitDirsOf, keptSlot, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead, worktreeIntact,
-  worktreeState,
+  ensureWorktree, gitControlPaths, gitDirsOf, keptSlot, plantedControlPaths, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead,
+  worktreeIntact, worktreeState,
 } from "#agent/worktree.js";
 import { GIT_GUARD_ARGS } from "#conventions.js";
-import { branchHeads, fetchBranch, gitIn, pushBranch } from "#kit/git.js";
+import { branchHeads, commonDirIntact, fetchBranch, gitIn, ownGit, pushBranch } from "#kit/git.js";
 import { commitOn, gitRepoWithOrigin, removeRepos } from "#tests/support/repo.js";
 
 /*
@@ -224,12 +224,15 @@ describe("a write step that planted the common directory's own commondir", () =>
     expect(ran(t.marker)).toBe(true);
   });
 
-  it("is a path a write step may not write, listed while absent", async () => {
+  it("is a path a write step may not write while absent on macOS, and one checked after the run on Linux", async () => {
     const { root } = await gitRepoWithOrigin();
     const path = await ensureWorktree("10", root);
     const common = realpathSync(join(root, ".git"));
     expect(existsSync(join(common, "commondir"))).toBe(false);
-    expect(await gitControlPaths(path, root)).toContain(join(common, "commondir"));
+    expect((await gitControlPaths(path, root, "darwin")).deny).toContain(join(common, "commondir"));
+    const linux = await gitControlPaths(path, root, "linux");
+    expect(linux.deny).not.toContain(join(common, "commondir"));
+    expect(linux.absent).toContain(join(common, "commondir"));
   });
 });
 
@@ -302,11 +305,29 @@ describe("the admin folder the engine's git uses", () => {
     })).resolves.toBeUndefined();
   });
 
-  it("halts when it holds a config.worktree, naming it", async () => {
+  it.each([
+    ["an fsmonitor", "[core]\n\tfsmonitor = /bin/true\n"],
+    ["a filter", "[filter \"x\"]\n\tclean = evil\n"],
+  ])("halts when it holds a config.worktree setting %s, naming it", async (_what, body) => {
     const { root, path, admin } = await setup();
-    await writeFile(join(admin, "config.worktree"), "[core]\n\tfsmonitor = /bin/true\n");
+    await writeFile(join(admin, "config.worktree"), body);
     await expect(gitDirsOf(path, root)).rejects.toThrow(join(admin, "config.worktree"));
     await expect(worktreeState(path, root)).rejects.toThrow(/config\.worktree/);
+  });
+
+  // The stub a Linux sandbox leaves where it was told to deny a path that was not there: it sets nothing.
+  it.each([["empty", ""], ["whitespace", " \n\t\n"]])("passes a config.worktree that is %s, which sets nothing", async (_what, body) => {
+    const { root, path, admin } = await setup();
+    await writeFile(join(admin, "config.worktree"), body);
+    await expect(gitDirsOf(path, root)).resolves.toMatchObject({ GIT_DIR: admin });
+    await expect(worktreeIntact(path, root)).resolves.toBeUndefined();
+  });
+
+  it("halts on an empty config.worktree with a second name, which a step can fill through it", async () => {
+    const { root, path, common, admin } = await setup();
+    await writeFile(join(common, "description"), "");
+    await link(join(common, "description"), join(admin, "config.worktree"));
+    await expect(gitDirsOf(path, root)).rejects.toThrow(join(admin, "config.worktree"));
   });
 
   it("halts when two admin folders name the worktree, naming both", async () => {
@@ -389,7 +410,7 @@ describe("a worktree handed out or run in", () => {
 
   it("keeps the admin folder lookup's config.worktree halt", async () => {
     const { root, path, admin } = await setup();
-    await writeFile(join(admin, "config.worktree"), "");
+    await writeFile(join(admin, "config.worktree"), "[filter \"x\"]\n\tclean = evil\n");
     await expect(worktreeIntact(path, root)).rejects.toThrow(join(admin, "config.worktree"));
   });
 
@@ -416,7 +437,7 @@ describe("a worktree handed out or run in", () => {
 });
 
 describe("gitControlPaths", () => {
-  it("lists the repository's config, hooks and info, each admin folder's control files and the .git file — absent ones too", async () => {
+  it("lists the repository's config, hooks and info, each admin folder's control files and the .git file — absent ones too — on macOS", async () => {
     const { root } = await gitRepoWithOrigin();
     const path = await ensureWorktree("6", root);
     const other = await ensureWorktree("7", root);
@@ -424,26 +445,246 @@ describe("gitControlPaths", () => {
     const admins = (await readdir(join(common, "worktrees"))).sort();
     expect(admins).toHaveLength(2);
 
-    const paths = await gitControlPaths(path, root);
+    const { deny, absent } = await gitControlPaths(path, root, "darwin");
 
-    expect(paths).toEqual([
+    const all = [
       join(common, "config"), join(common, "config.worktree"), join(common, "commondir"), join(common, "hooks"), join(common, "info"),
       ...admins.flatMap((n) =>
         ["config", "config.worktree", "commondir", "gitdir", "hooks", "info"].map((f) => join(common, "worktrees", n, f))),
       join(path, ".git"),
-    ]);
-    expect(existsSync(join(common, "config.worktree"))).toBe(false);
-    expect(existsSync(join(common, "commondir"))).toBe(false);
+    ];
+    expect(deny).toEqual(all);
+    expect(absent).toEqual(all.filter((p) => !existsSync(p)));
+    expect(absent).toEqual(expect.arrayContaining([join(common, "config.worktree"), join(common, "commondir")]));
     // An admin folder git made has no config or hooks of its own: listed absent, since a step
     // that recreated the folder without `commondir` would have git read them as a repository's.
-    expect(existsSync(join(common, "worktrees", admins[0] ?? "", "config"))).toBe(false);
-    expect(paths).not.toContain(join(other, ".git"));
+    expect(absent).toContain(join(common, "worktrees", admins[0] ?? "", "config"));
+    expect(deny).not.toContain(join(other, ".git"));
+  });
+
+  // bwrap makes each missing path it is told to deny, as an empty file git then reads: an empty
+  // `<common>/commondir` stopped every git in the checkout, and no Linux write step finished.
+  it("denies only the paths that exist on Linux, and lists the rest as absent", async () => {
+    const { root } = await gitRepoWithOrigin();
+    const path = await ensureWorktree("6", root);
+    const { deny, absent } = await gitControlPaths(path, root, "linux");
+    expect(deny.length).toBeGreaterThan(0);
+    expect(deny.every((p) => existsSync(p))).toBe(true);
+    expect(absent.length).toBeGreaterThan(0);
+    expect(absent.every((p) => !existsSync(p))).toBe(true);
+    expect(new Set([...deny, ...absent])).toEqual(new Set((await gitControlPaths(path, root, "darwin")).deny));
+  });
+
+  // A sandbox denies by path: a control file with a second name is written through that one.
+  it.each(["linux", "darwin"] as const)("refuses a write run on %s while a control file has more than one link, naming it", async (platform) => {
+    const { root } = await gitRepoWithOrigin();
+    const path = await ensureWorktree("6", root);
+    const common = realpathSync(join(root, ".git"));
+    const linked = join(common, "config.worktree");
+    await writeFile(join(common, "description"), "");
+    await link(join(common, "description"), linked);
+    await expect(gitControlPaths(path, root, platform)).rejects.toThrow(linked);
+    await expect(gitControlPaths(path, root, platform)).rejects.toThrow(/more than one link/);
+    await rm(linked);
+    await expect(gitControlPaths(path, root, platform)).resolves.toBeDefined();
   });
 
   it("lists no .git file for a checkout whose .git is a directory", async () => {
     const { root } = await gitRepoWithOrigin();
     const common = realpathSync(join(root, ".git"));
-    expect(await gitControlPaths(realpathSync(root), root)).toEqual(
+    expect((await gitControlPaths(realpathSync(root), root, "darwin")).deny).toEqual(
       ["config", "config.worktree", "commondir", "hooks", "info"].map((f) => join(common, f)));
+  });
+
+  // With the extension on git reads every admin folder's config.worktree, those made while the step
+  // runs too, and a Linux sandbox cannot keep a step from making one: so no write run starts.
+  describe("on Linux, with extensions.worktreeConfig", () => {
+    it.each(["true", "yes", "on", "1"])("refuses a write run when it is %s, naming the setting and saying to turn it off", async (value) => {
+      const { root } = await gitRepoWithOrigin();
+      const path = await ensureWorktree("6", root);
+      await git(root, "config", "extensions.worktreeConfig", value);
+      await expect(gitControlPaths(path, root, "linux")).rejects.toThrow(/extensions\.worktreeConfig.*turn it off/);
+      // macOS denies every control path, absent or not, so the setting is the operator's own there.
+      await expect(gitControlPaths(path, root, "darwin")).resolves.toBeDefined();
+    });
+
+    it("refuses it set through an included file too", async () => {
+      const { root } = await gitRepoWithOrigin();
+      const path = await ensureWorktree("6", root);
+      const common = realpathSync(join(root, ".git"));
+      await writeFile(join(common, "extra"), "[extensions]\n\tworktreeConfig = true\n");
+      await git(root, "config", "include.path", "extra");
+      await expect(gitControlPaths(path, root, "linux")).rejects.toThrow(/extensions\.worktreeConfig/);
+    });
+
+    it("passes it off or unset", async () => {
+      const { root } = await gitRepoWithOrigin();
+      const path = await ensureWorktree("6", root);
+      await expect(gitControlPaths(path, root, "linux")).resolves.toBeDefined();
+      await git(root, "config", "extensions.worktreeConfig", "false");
+      await expect(gitControlPaths(path, root, "linux")).resolves.toBeDefined();
+    });
+
+    it("refuses when the repository's config cannot be read", async () => {
+      const { root } = await gitRepoWithOrigin();
+      const path = await ensureWorktree("6", root);
+      const config = join(realpathSync(join(root, ".git")), "config");
+      await chmod(config, 0o000);
+      try {
+        await expect(gitControlPaths(path, root, "linux")).rejects.toThrow(/extensions\.worktreeConfig/);
+      } finally {
+        await chmod(config, 0o644);
+      }
+    });
+
+    it("refuses a value git cannot read as a boolean", async () => {
+      const { root } = await gitRepoWithOrigin();
+      const path = await ensureWorktree("6", root);
+      await git(root, "config", "extensions.worktreeConfig", "maybe");
+      await expect(gitControlPaths(path, root, "linux")).rejects.toThrow(/extensions\.worktreeConfig/);
+    });
+  });
+});
+
+describe("an empty config.worktree in the common directory", () => {
+  it("breaks neither the engine's git nor the operator's git status", async () => {
+    const { root } = await gitRepoWithOrigin();
+    await writeFile(join(realpathSync(join(root, ".git")), "config.worktree"), "");
+    await expect(git(root, "status", "--short")).resolves.toBe("");
+    const path = await ensureWorktree("11", root, { branch: "landrace/11", write: true }, keptSlot("11"));
+    await expect(worktreeState(path, root)).resolves.toMatchObject({ changes: [] });
+    await expect(branchHeads(ownGit(async () => root))).resolves.toMatchObject({ local: { "landrace/11": expect.any(String) } });
+  });
+});
+
+describe("plantedControlPaths", () => {
+  async function setup(): Promise<{ root: string; path: string; common: string; admin: string; absent: string[] }> {
+    const { root } = await gitRepoWithOrigin();
+    const path = await ensureWorktree("12", root);
+    const { absent } = await gitControlPaths(path, root, "linux");
+    return { root, path, absent, ...(await dirsOf(root, path)) };
+  }
+
+  it("passes when nothing absent was made", async () => {
+    const { absent } = await setup();
+    await expect(plantedControlPaths(absent)).resolves.toBeNull();
+  });
+
+  it.each([
+    ["an empty file", async (p: string) => writeFile(p, "")],
+    ["a whitespace-only file", async (p: string) => writeFile(p, "  \n")],
+    ["an empty folder", async (p: string) => mkdir(p)],
+  ])("passes %s, which is what a Linux sandbox leaves and sets nothing", async (_what, make) => {
+    const { admin, absent } = await setup();
+    await make(join(admin, "config.worktree"));
+    await expect(plantedControlPaths(absent)).resolves.toBeNull();
+  });
+
+  // Every engine git refuses a `<common>/commondir` that exists at all
+  // (`commonDirIntact`), so one left empty is judged here, where it is
+  // recorded, rather than at the next snapshot, where it fails unrecorded.
+  it.each([
+    ["an empty file", async (p: string) => writeFile(p, "")],
+    ["a whitespace-only file", async (p: string) => writeFile(p, "  \n")],
+    ["an empty folder", async (p: string) => mkdir(p)],
+  ])("refuses %s at <common>/commondir, which stops every engine git", async (_what, make) => {
+    const { common, absent } = await setup();
+    const planted = join(common, "commondir");
+    expect(absent).toContain(planted);
+    await make(planted);
+    expect(() => commonDirIntact(common)).toThrow(planted);
+    const reason = await plantedControlPaths(absent);
+    expect(reason).toContain(planted);
+    expect(reason).toMatch(/a step that may write could have put it there/);
+  });
+
+  it.each([
+    ["<common>/commondir naming another directory", (c: string) => join(c, "commondir"), async (p: string) => writeFile(p, "/elsewhere\n")],
+    ["an admin config setting hooksPath", (_c: string, a: string) => join(a, "config"), async (p: string) => writeFile(p, "[core]\n\thooksPath = x\n")],
+    ["a non-empty info folder", (_c: string, a: string) => join(a, "info"), async (p: string) => {
+      await mkdir(p);
+      await writeFile(join(p, "attributes"), "* filter=x\n");
+    }],
+    ["a symlink", (_c: string, a: string) => join(a, "hooks"), async (p: string) => symlink("/nowhere", p)],
+    ["an admin config.worktree setting a filter", (_c: string, a: string) => join(a, "config.worktree"),
+      async (p: string) => writeFile(p, "[filter \"x\"]\n\tclean = evil\n")],
+  ])("refuses %s, naming it", async (_what, where: (c: string, a: string) => string, make) => {
+    const { common, admin, absent } = await setup();
+    const planted = where(common, admin);
+    expect(absent).toContain(planted);
+    await make(planted);
+    const reason = await plantedControlPaths(absent);
+    expect(reason).toContain(planted);
+    expect(reason).toMatch(/a step that may write could have put it there/);
+  });
+
+  // A hard link to a file the step may still write, such as `<common>/description`: empty when
+  // judged, bound read-only by path from the next run on, and filled through its other name.
+  it.each([
+    ["<common>/config.worktree", (c: string) => join(c, "config.worktree")],
+    ["an admin config.worktree", (_c: string, a: string) => join(a, "config.worktree")],
+    ["an admin config", (_c: string, a: string) => join(a, "config")],
+  ])("refuses an empty hard link at %s, which another name can fill", async (_what, where: (c: string, a: string) => string) => {
+    const { common, admin, absent } = await setup();
+    const planted = where(common, admin);
+    expect(absent).toContain(planted);
+    await writeFile(join(common, "description"), "");
+    await link(join(common, "description"), planted);
+    const reason = await plantedControlPaths(absent);
+    expect(reason).toContain(planted);
+    expect(reason).toMatch(/a step that may write could have put it there/);
+  });
+
+  // Read whole, a multi-gigabyte file would exhaust the engine's memory before the refusal is recorded.
+  it("refuses a file over 4 KiB without reading it, and reads one of exactly 4 KiB", async () => {
+    const { admin, absent } = await setup();
+    const planted = join(admin, "config.worktree");
+    await writeFile(planted, " ".repeat(4096));
+    await expect(plantedControlPaths(absent)).resolves.toBeNull();
+    await writeFile(planted, " ".repeat(4097));
+    expect(await plantedControlPaths(absent)).toContain(planted);
+  });
+
+  it("refuses a FIFO without opening it to read", async () => {
+    const { admin, absent } = await setup();
+    const planted = join(admin, "config.worktree");
+    await exec("mkfifo", [planted]);
+    expect(await plantedControlPaths(absent)).toContain(planted);
+  });
+
+  // Another item's `ensureWorktree` can be inside `git worktree add` as the list is taken: its admin
+  // folder is there, its `gitdir` and `commondir` not yet. Both exist after the run, and were read
+  // as planted, halting an item that did nothing.
+  it.each([
+    ["nothing in it yet", async () => undefined],
+    ["its gitdir but no commondir yet", async (folder: string, other: string) => writeFile(join(folder, "gitdir"), `${join(other, ".git")}\n`)],
+  ])("leaves out an admin folder being made, with %s, and passes once git finishes it", async (_what, before) => {
+    const { root, path, common } = await setup();
+    const other = join(realpathSync(await mkdtemp(join(tmpdir(), "lr-adding-"))), "wt");
+    made.push(other);
+    const folder = join(common, "worktrees", "adding");
+    await mkdir(folder);
+    await before(folder, other);
+    const { absent } = await gitControlPaths(path, root, "linux");
+    expect(absent.filter((p) => p.startsWith(`${folder}/`))).toEqual([]);
+    // What git writes next, as it finishes the add.
+    await writeFile(join(folder, "gitdir"), `${join(other, ".git")}\n`);
+    await writeFile(join(folder, "commondir"), "../..\n");
+    await writeFile(join(folder, "HEAD"), "ref: refs/heads/main\n");
+    await expect(plantedControlPaths(absent)).resolves.toBeNull();
+  });
+
+  it("refuses a path it cannot read, naming it", async () => {
+    const { admin, absent } = await setup();
+    const planted = join(admin, "info");
+    await mkdir(planted);
+    await chmod(planted, 0o000);
+    try {
+      const reason = await plantedControlPaths(absent);
+      expect(reason).toContain(planted);
+      expect(reason).toMatch(/could not be read/);
+    } finally {
+      await chmod(planted, 0o755);
+    }
   });
 });
