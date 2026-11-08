@@ -78,7 +78,7 @@ existing caller and test of a function you give a side effect — a spawned
 process, a network call — reaching it through the outermost entry point, each
 of which must be able to inject a stub. A value you hand what runs work — a
 person's credential, a setting, a sandbox's scope — reaches it on every path that builds it — a
-step, a screener, a tool's turn, each caller of the function that takes it, found by searching for its calls — and each path judges the value and catches its
+step, a screener, a tool's turn, each caller of the function that takes it, found by searching for its calls, a value read back from a snapshot or built without the schema included — and each path judges the value by every rule the first holds it to, a duplicate the schema refuses included, and catches its
 failure as the first does, blamed on the part that path built; a value that
 something renews — a refresher, a retry — is judged by each gate only after
 the renewal has had its chance, a gate at start before the first pass included. And when what was built once becomes
