@@ -1,40 +1,47 @@
-I wrote the spec for #232 and checked it against the validation list in Step 5. It mostly turns the item's two decided changes into precise changes to named functions. I added two guards the item doesn't ask for.
+I checked each point of the review against the code:
+- `ownGit` (`src/kit/git.ts:70`) and `repoIdentity` (`src/sandbox.ts:25`) both trust whatever `rev-parse --git-common-dir` returns when they first run.
+- After the agent runs, the existing checks happen only when the agent returns normally. If it throws or the run is aborted, nothing checks for planted files.
+- On an abort, converge returns without writing anything. A planted path then joins the next run's deny list and is never checked again.
 
-- **Linux with `extensions.worktreeConfig` on and no `<common>/config.worktree`:** write runs are refused, with a message telling the operator to create the file empty. With the missing paths no longer handed to the sandbox, a step could write a filter into that file while it runs, and the engine's git running at the same time would read it before the after-step check.
-- **A write step reaching `runStep` with no control paths:** the step is refused instead of running unchecked.
-
-The kit's git can't import `src/sandbox.ts`, so `ownGit` resolves the common directory itself, once, on its first call. That first call is a tick's snapshot, before any step runs.
+The revised spec covers all four points and closes these gaps.
 
 ## Problem
-On Linux, write runs leave empty git control files behind. Bubblewrap creates each missing denied path. An empty `<common>/commondir` kills the engine's git (`snapshot.failed`). Claude Code's empty `config.worktree` stub makes `adminDirOf` refuse the worktree. No write step completes on Linux.
+Linux write runs leave empty git control files. Bubblewrap creates each missing denied path. An empty `<common>/commondir` kills engine git (`snapshot.failed`). Claude Code's empty `config.worktree` stub makes `adminDirOf` refuse the worktree. No Linux write step completes.
 
 ## Decisions
-- Operator sees: write steps finish `ok` on Linux. No `snapshot.failed` while steps run. An item halts only when a step leaves a control path that holds something.
-- Linux: sandbox denies only control paths that exist. A missing one can't be denied without bubblewrap creating it. macOS still denies missing ones.
-- After every write run (step, conversation turn, pairing hand-in, worktree or `isolation: none`): a path missing before the run that now holds content halts or refuses the run, using the existing "a step that may write could have put it there" wording. Content means a regular file with a non-whitespace byte, a non-empty directory, or anything else (for example a symlink). A read that fails also refuses, because nothing was checked.
-- The engine's git is pinned to `GIT_COMMON_DIR`, resolved before any step runs. A `commondir` planted mid-step can't redirect it.
-- Empty or whitespace-only `config.worktree` counts as absent. It sets nothing.
-- Linux, `extensions.worktreeConfig` on, `<common>/config.worktree` missing: write run refused, naming the file to create empty. Without this, the engine's git running mid-step would read a planted filter before the after-run check.
+- Operator sees: Linux write steps finish `ok`. No `snapshot.failed` mid-step. Item halts only when a run leaves a control path holding something.
+- Linux sandbox denies existing control paths only. macOS unchanged.
+- After every write run (step, turn, hand-in; worktree or `isolation: none`), on every way out (ok, throw, timeout, abort), before engine's first git there: path missing before, now holding content → refused, "a step that may write could have put it there". Content: non-whitespace regular file, non-empty dir, any other type. Unreadable → refused.
+- Engine git pins `GIT_COMMON_DIR`.
+- Empty/whitespace `config.worktree` = absent: sets nothing.
+- Changed (review): Linux + `extensions.worktreeConfig` on → every write run refused, naming setting, saying turn it off. Replaces `<common>/config.worktree` rule. Git reads every admin `config.worktree`, and `gitDirsOf` checking it races.
+- Changed (review): `<root>/.git` directory = common dir. If it holds `commondir` → refused, never followed. `.git` file → git's answer (its admin `commondir` exists, denied). Timing irrelevant.
+- Changed (review): docs state residual risk.
 
 ## Technical design
-- `src/namespace.ts` — `ControlPaths { deny: string[]; absent: string[] }`.
-- `src/agent/worktree.ts` — `gitControlPaths(path, repoRoot, platform = process.platform): Promise<ControlPaths>`. `absent` = listed paths missing at the call, on every platform. `deny` = all paths, but only existing ones on `linux`. On Linux it throws when the worktreeConfig rule above fires. `checkoutControlPaths` merges `ControlPaths`. New `plantedControlPaths(absent): Promise<string | null>`. `adminDirOf` refuses `config.worktree` only when it holds content. `commonDirOf` reads the cached common dir from `sandbox.ts`. `git` and `gitRemote` set `GIT_COMMON_DIR`.
-- `src/sandbox.ts` — export `commonDirOf(dir): string | null`, cached with the identity (resolved with the lock root, before any step).
-- `src/kit/git.ts` — `ownGit` resolves `--git-common-dir` once, on its first call, beside the root, and sets `GIT_COMMON_DIR` on every call.
-- `src/runner/step.ts` — `denyWrite?` becomes `controls?: ControlPaths`. A write step without it is refused. After the run, a `plantedControlPaths` result is a `refused` result.
-- `src/runner/converge.ts`, `src/mcp/conversation.ts`, `src/runner/pair.ts` — pass `controls.deny` as `denyWrite` and check `absent` after the run.
-- `docs/security.md`, `docs/hooks.md` — Linux deny rule, after-run check, empty `config.worktree`, worktreeConfig refusal.
+- `src/namespace.ts` — `ControlPaths { deny: string[]; absent: string[] }`. Refused `StepResult` gains `planted?: true`.
+- `src/kit/git.ts` — `gitCommonDir(dir): string` applies common-dir rule. `ownGit` resolves it once beside root, sets `GIT_COMMON_DIR` each call.
+- `src/sandbox.ts` — `repoIdentity` uses `gitCommonDir`. Refusal throws, never falls back. Exports cached `commonDirOf(dir)`.
+- `src/agent/worktree.ts` — `gitControlPaths(path, repoRoot, platform = process.platform): Promise<ControlPaths>`. `absent` = missing, every platform. `deny` = existing-only on `linux`. Linux throws when `git config --file <common>/config` says worktreeConfig true, or read fails. `checkoutControlPaths` merges. New `plantedControlPaths(absent): Promise<string | null>`. `adminDirOf` refuses `config.worktree` only with content. `commonDirOf` reads sandbox's. `git`, `gitRemote` set `GIT_COMMON_DIR`.
+- `src/runner/step.ts` — required `controls: ControlPaths | null`. Write step with null refused. Check right after `executor.run` returns or throws, before `sandboxTrespass`.
+- `src/runner/converge.ts` — passes `controls`. `planted` refusal recorded even when aborted.
+- `src/mcp/conversation.ts`, `src/runner/pair.ts` — `controls.deny` as `denyWrite`. Same check, same place.
+- `docs/security.md` — above, plus residual: mid-run, other git in operator's checkout (editor) may read planted `<common>/commondir`. Engine killed mid-run skips check.
+- `docs/hooks.md` — Linux `denyWrite`: existing only.
 
 ## Done when
-- `gitControlPaths` with `linux`: `deny` holds only existing paths. With `darwin`: missing ones too.
-- A write step leaving `<common>/commondir` = `/elsewhere` halts the item with "a step that may write could have put it there".
-- The same for an admin folder's `config` = `[core]\n\thooksPath = x`, a non-empty `info/`, or a symlink.
-- An absent path that is unreadable after the run refuses it.
-- The check halts or refuses after a step, a conversation turn and a pairing hand-in, with or without a worktree.
-- A write step handed no `controls` is refused.
-- Engine git (`gitDirsOf`, `git`, `ownGit`) ignores a planted `<common>/commondir`.
-- Empty or whitespace-only admin `config.worktree` passes `gitDirsOf`. One with `[filter "x"]\n\tclean = evil` is refused.
-- Empty `<common>/config.worktree` breaks neither the engine's git nor `git status` in the operator's checkout.
-- Linux, worktreeConfig on, `<common>/config.worktree` missing: write run refused, naming it.
+- `gitControlPaths` `linux`: `deny` existing only. `darwin`: missing too.
+- Run leaving `<common>/commondir` = `/elsewhere` halts item.
+- Same: admin `config` = `[core]\n\thooksPath = x`, non-empty `info/`, symlink.
+- Planted `<admin>/config.worktree` filter halts with zero engine git in worktree after run.
+- Same halt on throw, timeout, abort.
+- Unreadable absent path refuses.
+- Fires after step, turn, hand-in, with and without worktree.
+- Write `runStep` with `controls: null` refused.
+- `gitDirsOf`, `git`, `ownGit` ignore planted `<common>/commondir`.
+- `<root>/.git/commondir` at startup: `sandboxRoot`, `ownGit` throw naming it.
+- Empty/whitespace admin `config.worktree` passes `gitDirsOf`. `[filter "x"]\n\tclean = evil` refused.
+- Empty `<common>/config.worktree` breaks neither engine git nor operator's `git status`.
+- Linux, worktreeConfig true: step, turn, hand-in, `isolation: none` each refused naming setting. Unreadable `<common>/config` refuses.
 
 // Generated by AI (claude-opus-5-5:high)
