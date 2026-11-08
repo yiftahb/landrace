@@ -390,6 +390,29 @@ describe("claude executor", () => {
     await expect(run("x", {}, { cwd: dir })).rejects.toThrow(/reported an error.*context limit/);
   });
 
+  // A sandbox that cannot start ends the run with an empty `result`; the
+  // cause is in `subtype` and `errors`, and an empty reason reached nobody.
+  describe("an error result whose text is empty", () => {
+    const failing = (event: Record<string, unknown>): string =>
+      withCfg({ raw: JSON.stringify({ type: "result", is_error: true, session_id: "sid-1", result: "", ...event }) });
+
+    it("names the subtype and each of its errors", async () => {
+      const dir = failing({ subtype: "error_during_execution", errors: ["X", { message: "sandbox required but unavailable" }] });
+      const refused = run("x", {}, { cwd: dir });
+      await expect(refused).rejects.toThrow(/agent reported an error: error_during_execution: X; {"message":"sandbox required but unavailable"}/);
+    });
+
+    it("names the subtype alone, and says so when there is nothing at all", async () => {
+      await expect(run("x", {}, { cwd: failing({ subtype: "error_max_turns" }) })).rejects.toThrow(/agent reported an error: error_max_turns$/m);
+      await expect(run("x", {}, { cwd: failing({}) })).rejects.toThrow(/agent reported an error, and gave no reason, subtype or errors$/m);
+    });
+
+    it("keeps the result's own text when there is one", async () => {
+      const dir = failing({ result: "context limit", subtype: "error_during_execution", errors: ["X"] });
+      await expect(run("x", {}, { cwd: dir })).rejects.toThrow(/agent reported an error: context limit$/m);
+    });
+  });
+
   it("rejects a session id that is not a string, instead of resolving a type lie", async () => {
     // A number resolves fine against a declared `string | null` and would
     // pass the argv guard whole on the next round's --resume — read validity

@@ -104,6 +104,22 @@ function toolLine(name: string, input: unknown, cwd: string): string {
   return key === undefined ? name : `${name} ${shortPath(args[key] as string, cwd)}`;
 }
 
+/**
+ * Why an error result failed: its text, or, when that is empty, its
+ * `subtype` and `errors`. A sandbox that cannot start ends the run with an
+ * empty `result` and the cause in `errors`, and a reason built from `result`
+ * alone read "agent reported an error: " with nothing after it.
+ */
+function errorOf({ result, subtype, errors }: { result?: unknown; subtype?: unknown; errors?: unknown }): string {
+  const text = String(result ?? "").trim();
+  if (text) return `agent reported an error: ${text}`;
+  const listed = (Array.isArray(errors) ? errors : errors === undefined || errors === null ? [] : [errors])
+    .map((err) => (typeof err === "string" ? err : JSON.stringify(err)))
+    .filter((err) => err !== "");
+  const parts = [...(typeof subtype === "string" && subtype !== "" ? [subtype] : []), ...(listed.length ? [listed.join("; ")] : [])];
+  return parts.length ? `agent reported an error: ${parts.join(": ")}` : "agent reported an error, and gave no reason, subtype or errors";
+}
+
 /** The name the CLI gives a directory's sessions: its path, every character but a letter or digit made "-". */
 const encoded = (cwd: string): string => cwd.replace(/[^A-Za-z0-9]/g, "-");
 
@@ -583,7 +599,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
         done: true,
         session: e.session_id,
         text: String(e.result ?? ""),
-        ...(e.is_error ? { error: `agent reported an error: ${String(e.result ?? "")}` } : {}),
+        ...(e.is_error ? { error: errorOf(e) } : {}),
       };
     }
     const content = e.message?.content;
