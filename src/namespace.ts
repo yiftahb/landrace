@@ -2121,6 +2121,17 @@ export interface ConnectionStatus {
 }
 
 /**
+ * One side of a var and a secret of one value, as `resolvePerson` judges the
+ * pair: the key's name and value, and what answered it — a connection, `null`
+ * for the key's own variable, or `undefined` for a key that is not per-person.
+ */
+export interface KeySide {
+  name: string;
+  value: string;
+  by: ConnectionDef | null | undefined;
+}
+
+/**
  * A person judged against the connections the hooks declare: every
  * per-person key's value, each required connection's status, and what is
  * wrong. `ready` is no `connection.*` problem — `people.env-ignored` is a

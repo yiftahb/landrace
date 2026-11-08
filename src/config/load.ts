@@ -51,10 +51,22 @@ export function redactionValues({ config, secretValues }: LoadedConfig): string[
  * workflow, so it reaches a tracker comment, an agent's prompt and the events
  * that record both, with nothing suppressing it. Empty values are ignored
  * rather than matched, since every one of them would equal every other.
+ *
+ * A pair with a per-person key on either side is not judged here but by
+ * `resolvePerson`: one identity field answering a var and a secret both is
+ * no credential in a var, and only the hooks, loaded later, say which kind
+ * of connection a field is.
  */
-export function varsHoldingSecrets({ vars, secretValues }: LoadedConfig): string[] {
-  const values = new Set([...secretValues.values()].map((v) => v.trim()).filter(Boolean));
-  return [...vars].filter(([, value]) => values.has(value.trim())).map(([name]) => name);
+export function varsHoldingSecrets({ config, vars, secretValues }: LoadedConfig): string[] {
+  const values = new Set([...secretValues].filter(([name]) => typeof config.secrets[name] === "string").map(([, v]) => v.trim()).filter(Boolean));
+  return [...vars].filter(([name, value]) => typeof config.vars[name] === "string" && values.has(value.trim())).map(([name]) => name);
+}
+
+/** Why a var whose value a secret holds is refused, by `configProblems` and by `resolvePerson` alike. */
+export function varHoldsSecret(name: string): string {
+  return `vars entry "${name}" resolves to the same value as a secret. Vars are not secrets: ` +
+    "the log redacts by value and knows only what `secrets` declares, while a var reaches a comment " +
+    "body, an agent's prompt and the events recording both — keep the value in secrets: and read it in a hook";
 }
 
 /**
@@ -97,13 +109,7 @@ export function configProblems(dir: string, loaded: LoadedConfig): Problem[] {
           ? "Nobody can sign in without the client the provider issued this instance"
           : "It names whose this instance's events are, and an unset or empty variable names no one"),
     })),
-    ...varsHoldingSecrets(loaded).map((name) => ({
-      rule: "vars",
-      message:
-        `vars entry "${name}" resolves to the same value as a secret. Vars are not secrets: ` +
-        "the log redacts by value and knows only what `secrets` declares, while a var reaches a comment " +
-        "body, an agent's prompt and the events recording both — keep the value in secrets: and read it in a hook",
-    })),
+    ...varsHoldingSecrets(loaded).map((name) => ({ rule: "vars", message: varHoldsSecret(name) })),
     ...(loaded.config.people?.oidc !== undefined && loaded.config.agent.isolation === "none" ? [{
       rule: "agent.isolation",
       message:

@@ -216,7 +216,7 @@ Every mistake is a load error, never a default:
 - a `{vars.x}` nothing defines is refused, naming the variable, the file and the field;
 - a `vars` entry nothing references is refused too — usually the same typo seen from the other end.
 
-**Vars are not secrets.** A secret is handed to a hook, cut by value from the text Landrace composes itself, and — when `log.redact` names it — cut from the log; what is and is not scrubbed is under [.env](#env). A var is substituted into the workflow, so it reaches tracker comments, agents' prompts and the events recording both, with nothing redacting it. `validate` reports, and `start` refuses, a var whose value equals a declared secret's.
+**Vars are not secrets.** A secret is handed to a hook, cut by value from the text Landrace composes itself, and — when `log.redact` names it — cut from the log; what is and is not scrubbed is under [.env](#env). A var is substituted into the workflow, so it reaches tracker comments, agents' prompts and the events recording both, with nothing redacting it. `validate` reports, and `start` refuses, a var whose value equals a declared secret's. A pair with a [per-person key](#per-person-keys) on either side is judged once that key has its value, as `connection.failed`, and is let through when one identity answers both: see that section.
 
 **Several developers, one repository.** Each instance exports its own assignee, and the workflow filters on it:
 
@@ -261,6 +261,7 @@ A key neither answers is reported by `validate` as `connection.missing`, naming 
 - `connection.missing`, `connection.expired` or `connection.failed` for a connection a hook marks `required: always`, whether a key names it or not;
 - `connection.expired` or `connection.failed` for any stored connection a hook defines, whether anything requires it or not;
 - `connection.duplicate`: two different connection objects with one id, in two workflows' hooks.
+- `connection.failed`: a var whose value a secret also holds, when either is a per-person key, in the words `validate` uses for two variables. Not when both are per-person keys answered by a field of a connection of `kind: identity`: an account id a predicate compares as `{vars.me}` and a tracker hook reads from `secrets` is looked up, not pasted, and is no credential. A key its variable answered is not exempt. The Integrations tab shows the reason on the row of each connection that answered either key.
 
 `landrace next` fills in a var from the store too.
 

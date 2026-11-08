@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { configProblems } from "#config/load.js";
 import { defineConnection } from "#hooks/contracts.js";
 import { createCredentialStore } from "#people/store.js";
 import { claudeConnection } from "landrace/integrations/claude";
@@ -228,8 +229,86 @@ describe("resolvePerson", () => {
   });
 });
 
+/*
+ * #229: one identity answering a per-person var and a per-person secret is
+ * no secret leaking into a var — the account id has to reach a predicate and
+ * a scoped tracker both. A credential shared with a var still is, and only
+ * this judging can tell the two apart: the kind is the hook's.
+ */
+describe("resolvePerson, over a var and a secret of one value", () => {
+  const ACCOUNT = "acc-5b10ac8d82e05b22cc7d4ef5";
+  const TOKEN = "glpat-person-token-0123456789";
+  const jira = defineConnection({ id: "jira", label: "Jira", kind: "identity", fields: ["accountId"] });
+  const gitlab = defineConnection({ id: "gitlab", label: "GitLab", kind: "credential", fields: ["token"] });
+  const both = new Map<string, ConnectionDef>([["jira", jira], ["gitlab", gitlab]]);
+  const stored = {
+    jira: value(1, { accountId: ACCOUNT }, { source: "lookup" }),
+    gitlab: value(1, { token: TOKEN }),
+  };
+  const twice = (field: string, env = ""): string =>
+    `vars: { me: { perPerson: true, env: LP_ME, connection: ${field} } }\n` +
+    `secrets: { shared: { perPerson: true, env: LP_SHARED, connection: ${field} } }\n${env}`;
+  const CLASH = /vars entry "me" resolves to the same value as a secret/;
+
+  it.each([false, true])("builds both from one identity field, each carrying the looked-up value (remote: %s)", async (remote) => {
+    const dir = await workspace(twice("jira.accountId"));
+    const r = await judged(dir, await store(stored), both, remote);
+    expect(r).toMatchObject({ ready: true, problems: [] });
+    expect(r.vars.get("me")).toBe(ACCOUNT);
+    expect(r.secretValues.get("shared")).toBe(ACCOUNT);
+    expect(r.statuses.map((s) => [s.id, s.state])).toEqual([["jira", "connected"], ["gitlab", "connected"]]);
+  });
+
+  it.each([false, true])("refuses both from one credential field, on that connection's row (remote: %s)", async (remote) => {
+    const r = await judged(await workspace(twice("gitlab.token")), await store(stored), both, remote);
+    expect(r.problems).toEqual([{ rule: "connection.failed", message: expect.stringMatching(CLASH) }]);
+    expect(r.ready).toBe(false);
+    expect(r.statuses.find((s) => s.id === "gitlab")).toEqual({ id: "gitlab", label: "GitLab", kind: "credential", state: "failed", detail: expect.stringMatching(CLASH) });
+    expect(r.statuses.find((s) => s.id === "jira")?.state).toBe("connected");
+  });
+
+  it("refuses an identity var that equals a credential secret, and names both rows", async () => {
+    const dir = await workspace(
+      "vars: { me: { perPerson: true, connection: jira.accountId } }\nsecrets: { shared: { perPerson: true, connection: gitlab.token } }\n");
+    const r = await judged(dir, await store({ ...stored, gitlab: value(1, { token: ACCOUNT }) }), both);
+    expect(r.problems).toEqual([{ rule: "connection.failed", message: expect.stringMatching(CLASH) }]);
+    expect(r.statuses.map((s) => [s.id, s.state])).toEqual([["gitlab", "failed"], ["jira", "failed"]]);
+  });
+
+  it("refuses an identity var that equals a secret `.env` or the file answers", async () => {
+    const dir = await workspace(`vars: { me: { perPerson: true, connection: jira.accountId } }\nsecrets: { plain: $LP_PLAIN }\n`, `LP_PLAIN=${ACCOUNT}\n`);
+    const r = await judged(dir, await store(stored), both);
+    expect(r.problems).toEqual([{ rule: "connection.failed", message: expect.stringMatching(CLASH) }]);
+    expect(r.statuses.find((s) => s.id === "jira")?.state).toBe("failed");
+    expect(r.statuses.find((s) => s.id === "gitlab")?.state).toBe("connected");
+  });
+
+  it("refuses a static var that equals an identity secret", async () => {
+    const dir = await workspace(`vars: { plain: $LP_PLAIN }\nsecrets: { shared: { perPerson: true, connection: jira.accountId } }\n`, `LP_PLAIN=${ACCOUNT}\n`);
+    const r = await judged(dir, await store(stored), both);
+    expect(r.problems).toEqual([{ rule: "connection.failed", message: expect.stringMatching(/vars entry "plain" resolves to the same value as a secret/) }]);
+  });
+
+  it("refuses both answered by their variables locally, which no identity answered", async () => {
+    const dir = await workspace(twice("jira.accountId"), `LP_ME=${ACCOUNT}\nLP_SHARED=${ACCOUNT}\n`);
+    const r = await judged(dir, await store(null), both);
+    expect(r.vars.get("me")).toBe(ACCOUNT);
+    expect(r.problems).toEqual([{ rule: "connection.failed", message: expect.stringMatching(CLASH) }]);
+    expect(r.ready).toBe(false);
+    // No connection answered either, so no row is the one to blame.
+    expect(r.statuses).toEqual([]);
+  });
+
+  it("leaves a configuration whose per-person keys clash to this judging, so the local load does not refuse it first", async () => {
+    const dir = await workspace(twice("jira.accountId"));
+    const local = await loadLocalConfig(dir, await store(stored));
+    expect(local.loaded.vars.get("me")).toBe(ACCOUNT);
+    expect(configProblems(dir, local.loaded)).toEqual([]);
+  });
+});
+
 describe("connectionsOf", () => {
-  const registry = (...cs: ConnectionDef[]) => ({ connections: new Map(cs.map((c) => [c.id, c])) }) as unknown as Registry;
+  const registry =(...cs: ConnectionDef[]) => ({ connections: new Map(cs.map((c) => [c.id, c])) }) as unknown as Registry;
 
   it("merges every workflow's connections, one object shared by two being one", () => {
     const { connections, problems } = connectionsOf([{ id: "a", registry: registry(forge) }, { id: "b", registry: registry(forge) }]);
