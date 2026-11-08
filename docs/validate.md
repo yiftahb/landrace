@@ -32,7 +32,7 @@ In a checkout with no `.env` and no generated `.mcp.json` — CI, or a step's wo
 
 | Rule | Catches |
 |---|---|
-| `config` | A `landrace.yaml` that exists but cannot be read or does not match the schema |
+| `config` | A `landrace.yaml` that exists but cannot be read or does not match the schema. That includes a [`tracker.formerLogins`](configuration.md#landraceyaml) entry with a blank `login`, a login listed twice, an `until` that is missing or has no offset (`2026-11-01` names a different instant in every timezone), or any other key |
 | `branch` | A `branch` in `landrace.yaml` that is no item branch template: `{item}` other than exactly once, no fixed text before `{item}`, any other `{placeholder}`, or a name git would refuse once `{item}` is filled — see [`branch`](configuration.md#landraceyaml); a `branchVariants` name that is not lower-case letters and digits, is named twice, or whose filled branch is no template |
 | `secret` | A secret whose `$VAR` does not resolve; a `.env` that exists and git does not ignore |
 | `vars` | A var that does not resolve or resolves to an empty value; an `agent.git` `$VAR` that does not resolve or resolves to an empty value; a `{vars.x}` nothing defines; a declared var nothing references; a var holding a secret's value, when neither is a [per-person key](configuration.md#per-person-keys) |

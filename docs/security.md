@@ -211,6 +211,16 @@ Every step and turn loads the instructions and skills of the branch it runs on: 
 
 **Briefings.** Text fetched for a prompt — an item's body, review threads, a diff, CI logs — is escaped, bounded, and never merged into the snapshot, so it can inform a step but decide nothing. The shipped steps frame it as requirements or evidence, never as instructions.
 
+### A former tracker login
+
+A marker counts only when its author is the login Landrace posts as. When that login changes, the records the old one wrote would read as nobody's, and finished stages would run again. [`tracker.formerLogins`](configuration.md#landraceyaml) keeps them counting. A former login is trusted only up to its `until`, never for ever. Whoever still holds that account after the switch could otherwise post or edit a record that completes a stage, blocks an item or moves a counter.
+
+- **Times come from the tracker.** A former login's mark counts when the tracker says it was created and last edited at or before `until`. A time written in the body is never read: the body is text its author chose. A former login's comment, thread reply or note with no edit time, or an item origin it edited with no edit time, is not trusted.
+- **The current login has no cutoff.** Its marks count whenever they were written.
+- **Everything else is foreign.** A mark by a login on neither list, or by a former one after `until`, is neither a record nor a reply. The engine logs `records.foreign` once per item, with each author and why.
+- **GitHub reviews.** GitHub's REST API gives a review no edit time, so a review by a former login is always foreign. The worst it costs is one review posted again.
+- **Jira's marker property.** On Jira, Landrace reads a comment's and a worklog's marker from their `landrace.marker` property, and judges them by the comment's or the worklog's own `created` and `updated`. Landrace reads no time for a change to the property itself. So an account that can still edit its own comments after the switch could rewrite the marker on a comment it wrote before `until`, and the rewrite would count. Before the switch, remove "Edit Own Comments" (and "Edit Own Worklogs") from the former account's permissions, or deactivate a former bot account.
+
 ### Screening prompts
 
 Every agent that can act is screened first: every step declaring a capability, and every turn typed through the MCP — the place an operator pastes text someone sent them is not a place to start trusting it. The **screener** is a separate agent run, with no tools, servers or plugins, that reads the whole rendered prompt and says whether it carries an injection. `security.screen`, `security.adapter` and `security.model` configure it — see [Configuration](configuration.md#landraceyaml).
