@@ -111,7 +111,7 @@ The functions the bases are made of stay exported, over the same plain shapes, f
 
 - A comment's `created_at`, and its last edit as `updated_at`, which is the creation time for a comment never edited. A missing time is left out, and a former login's mark is then `no-time`.
 - An item's `createdAt`, and `editedAt`, when `editor` last edited the body. An item never edited needs no `editedAt`.
-- A thread comment's or a review's `created_at` (`""` when the forge gives none) and `updated_at`. A forge that gives no edit time for reviews leaves `updated_at` out, and a former login's review is then foreign. On GitHub the worst this costs is one duplicate review.
+- A thread comment's or a review's `created_at` (`""` when the forge gives none) and `updated_at`. A forge that gives no edit time for reviews leaves `updated_at` out, and a former login's review is then foreign. On GitHub the worst this costs is a round's review posted a second time, its findings as new threads, when a round cut off before the switch is applied again after it.
 
 **What stays the integration's.** The client, the queries and their paging, the vendor's shapes and the mapping from them, which push URLs it trusts with a token and the scrubbing of it from what git says, and every event and word in its own name (GitHub's `github.issue.skipped`, `github.pages.unknown`). The kit's functions never log; a base logs only in its role's name (`forge.review.*`, `docs.skipped`). An integration under `integrations/` imports only `landrace/kit`, `landrace/hooks`, `node:*` and its own files — exactly what a third party could write.
 

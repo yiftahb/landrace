@@ -625,7 +625,7 @@ export class GitHubForge extends BaseForge {
   /**
    * Each review with its author and when it was submitted. REST gives no
    * edit time, so none is said: a former login's review is then foreign, and
-   * the worst it costs is one review posted again.
+   * the worst it costs is a round's review, and its findings, posted again.
    */
   async reviews(pull: number, ctx: RuntimeContext): Promise<ThreadComment[]> {
     return (await this.gh(ctx).listReviews(pull)).map((r) => ({ body: r.body ?? "", author: r.user?.login ?? null, created_at: r.submitted_at ?? "" }));
