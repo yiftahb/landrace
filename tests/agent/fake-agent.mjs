@@ -26,6 +26,14 @@ if (cfg.grandchild) {
   writeFileSync(join(process.cwd(), "grandchild.pid"), String(gc.pid));
 }
 
+if (cfg.leave) {
+  // A process the agent leaves behind as it answers and exits, in its own
+  // process group: what could plant a path after the run's check.
+  const left = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  left.unref();
+  writeFileSync(join(process.cwd(), "left.pid"), String(left.pid));
+}
+
 if (cfg.flood) {
   // A runaway agent that never stops talking. Bounded by floodMax so a test
   // whose fix is broken fails fast (jest's own test timeout) rather than

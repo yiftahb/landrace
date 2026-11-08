@@ -539,6 +539,33 @@ describe("claude executor", () => {
     expect(isAlive(pid)).toBe(false);
   }, 20_000);
 
+  // A process left behind by an agent that answered could plant a control
+  // path after the check that follows the run, or swap one mid-check. So the
+  // group is killed on a normal close too, and gone before the run settles:
+  // checked at once, with no wait, for a run that must already have waited.
+  it("kills what the agent left running when it answers, and waits for it to exit before returning", async () => {
+    const dir = withCfg({ leave: true, out: "done" });
+    await expect(run("x", {}, { cwd: dir })).resolves.toMatchObject({ text: "done" });
+    const pid = Number(readFileSync(join(dir, "left.pid"), "utf8"));
+    expect(pid).toBeGreaterThan(0);
+    expect(isAlive(pid)).toBe(false);
+  }, 20_000);
+
+  it("waits for the group to exit before a timeout rejects too", async () => {
+    const dir = withCfg({ grandchild: true });
+    const started = run("x", {}, { cwd: dir, timeoutMs: 3_000 });
+    const pid = await until(() => {
+      try {
+        const got = Number(readFileSync(join(dir, "grandchild.pid"), "utf8"));
+        return Number.isInteger(got) && got > 0 ? got : null;
+      } catch {
+        return null;
+      }
+    }, "the fake agent to spawn its grandchild");
+    await expect(started).rejects.toThrow(/exceeded 3000ms/);
+    expect(isAlive(pid)).toBe(false);
+  }, 20_000);
+
   it("reports a missing binary as a startup failure", async () => {
     await expect(
       createClaudeExecutor({ bin: "/nonexistent/agent" }).run("x", {
