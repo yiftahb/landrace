@@ -202,13 +202,13 @@ export const codex = new Codex();
   });
 
   /*
-   * #230: on a Linux host where Claude Code's sandbox cannot start, every
-   * write step failed with an empty reason while `validate` passed. The hook
-   * is a Claude for a Linux host whose PATH holds neither bwrap nor socat;
-   * `validate` reports what `start` refuses, naming the step, and the same
-   * workflow with only a read step passes.
+   * #230: whether Claude Code's sandbox can start is a fact about the host,
+   * which `start` checks; `validate` judges the configuration. Checking the
+   * host here failed `validate` on every Linux machine without bubblewrap, CI
+   * and this repository's own tests included. The hook is a Claude for a Linux
+   * host whose PATH holds neither bwrap nor socat, and `start` refuses it.
    */
-  it("reports a write step whose sandbox cannot start on a Linux host, and passes a read step there", async () => {
+  it("passes a write step on a Linux host whose sandbox cannot start", async () => {
     const problems = async (capabilities: string): Promise<Problem[]> => {
       const dir = join(await mkdtemp(join(tmpdir(), "lr-validate-")), ".landrace");
       const empty = await mkdtemp(join(tmpdir(), "lr-empty-path-"));
@@ -227,11 +227,7 @@ export const claude = new Claude({ platform: "linux", searchPath: ${JSON.stringi
         .replace("capabilities: [repo:read]", `capabilities: [${capabilities}]`));
       return (await runValidate(dir)).problems.filter((p) => p.rule === "executor");
     };
-    expect(await problems("repo:read, repo:write")).toEqual([{
-      rule: "executor",
-      message: 'executor "claude" could not start: steps/spec.md may write the repository, in Claude Code\'s sandbox, which cannot start on this host: ' +
-        "bwrap and socat are not on PATH. Install bubblewrap and socat (on Debian or Ubuntu: apt install bubblewrap socat)",
-    }]);
+    expect(await problems("repo:read, repo:write")).toEqual([]);
     expect(await problems("repo:read")).toEqual([]);
   });
 

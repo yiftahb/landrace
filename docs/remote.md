@@ -18,7 +18,7 @@ You need:
 - **The repository, checked out** where `landrace start` runs, with its `.landrace/` folder. Every person's steps cut their worktrees from this one checkout.
 - **The list of who may sign in**: each person's email, or a whole email domain. See [Who can sign in](#who-can-sign-in).
 - **A key to seal the credentials with**: a systemd credential named `landrace-credentials-key`, a container secret of that name in the folder `CREDENTIALS_DIRECTORY` names, or, on a desktop, the Keychain or Secret Service, where `start` makes one. A remote `start` with none is refused. See [Sealed at rest](security.md#sealed-at-rest).
-- **On Linux, a sandbox for write steps**: Claude Code runs a write step's commands in bubblewrap, and needs `bwrap` and `socat` on `PATH`. On Debian or Ubuntu, install them with `sudo apt install bubblewrap socat`. Ubuntu 24.04 also refuses bwrap a user namespace unless an AppArmor profile allows one. Without these, every write step fails while read-only steps run, so `start` and `validate` check them when a workflow has a write step. See [A write step's sandbox](security.md#a-write-steps-sandbox).
+- **On Linux, a sandbox for write steps**: Claude Code runs a write step's commands in bubblewrap, and needs `bwrap` and `socat` on `PATH`. On Debian or Ubuntu, install them with `sudo apt install bubblewrap socat`. Ubuntu 24.04 also refuses bwrap a user namespace unless an AppArmor profile allows one. Without these, every write step fails while read-only steps run, so `start` checks them when a workflow has a write step. `validate` does not. See [A write step's sandbox](security.md#a-write-steps-sandbox).
 
 On Ubuntu 24.04, this profile lets `/usr/bin/bwrap` create a user namespace. Save it as `/etc/apparmor.d/bwrap`:
 

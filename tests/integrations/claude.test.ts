@@ -1562,6 +1562,7 @@ describe("the sandbox a write step runs in, at startup", () => {
   const ctxOf = async (steps: Map<string, Step>, adapter = "claude"): Promise<ExecutorContext> => ({
     config: { agent: { adapter } } as unknown as ExecutorContext["config"],
     secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: await gitRepo(), redact: () => {}, steps, frontDoor: { hosts: [], origins: [] },
+    checksHost: true,
   });
   /** A folder for PATH holding each named script, made executable. */
   const binDir = (scripts: Record<string, string>): string => {
@@ -1604,6 +1605,11 @@ describe("the sandbox a write step runs in, at startup", () => {
     await expect(linux(empty).create(await ctxOf(reading))).resolves.toBeDefined();
     await expect(linux(empty).create(await ctxOf(writing, "codex"))).resolves.toBeDefined();
     await expect(new Claude({ bin, platform: "darwin", searchPath: empty }).create(await ctxOf(writing))).resolves.toBeDefined();
+  });
+
+  it("does not run for a context that does not check the host, as validate's does not", async () => {
+    const validating: ExecutorContext = { ...(await ctxOf(writing)), checksHost: false };
+    await expect(linux(binDir({})).create(validating)).resolves.toBeDefined();
   });
 });
 

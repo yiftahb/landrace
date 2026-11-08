@@ -633,9 +633,11 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
 
   /**
    * Why the sandbox a step that may write runs in cannot start on this host,
-   * one sentence each, given the paths of those steps. Asked at startup, only
-   * when one is loaded: a read-only step runs without it, so an instance
-   * whose sandbox cannot start looks healthy until each write step fails.
+   * one sentence each, given the paths of those steps. Asked when `start`
+   * builds the runtime (`ctx.checksHost`), only when one is loaded: a
+   * read-only step runs without it, so an instance whose sandbox cannot
+   * start looks healthy until each write step fails. Never asked by
+   * `validate`: it is a fact about the host, not the configuration.
    * Absent, nothing is checked.
    */
   protected writeSandboxProblems?(paths: readonly string[]): Promise<string[]>;
@@ -810,7 +812,7 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
       }
     }
     const writing = [...(ctx.steps ?? [])].filter(([, step]) => mayWriteRepo(step.capabilities)).map(([path]) => path);
-    if (writing.length && this.writeSandboxProblems) {
+    if (writing.length && ctx.checksHost === true && this.writeSandboxProblems) {
       try {
         problems.push(...(await this.writeSandboxProblems(writing)));
       } catch (e) {

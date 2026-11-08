@@ -337,25 +337,38 @@ describe("BaseExecutor", () => {
           }
         }
 
+        const starting = (agent: Record<string, unknown>, given: Map<string, Step>): ExecutorContext => ({ ...ctxFor(agent, given), checksHost: true });
+
         it("is asked with the steps that may write, and what it answers refuses the start", async () => {
           const checking = new Checking("tiny");
           checking.answer = () => Promise.resolve(["the sandbox cannot start: install bubblewrap"]);
-          await expect(checking.create(ctxFor({ adapter: "tiny" }, steps))).rejects.toThrow(/^the sandbox cannot start: install bubblewrap$/);
+          await expect(checking.create(starting({ adapter: "tiny" }, steps))).rejects.toThrow(/^the sandbox cannot start: install bubblewrap$/);
           expect(checking.asked).toEqual([["steps/build.md"]]);
+        });
+
+        // A fact about the host, not the configuration: `validate` judges the
+        // configuration, and checking the host there failed it on every Linux
+        // machine without bubblewrap, CI's included.
+        it("is not asked unless the context checks the host, as only start's does", async () => {
+          const checking = new Checking("tiny");
+          checking.answer = () => Promise.resolve(["the sandbox cannot start: install bubblewrap"]);
+          await expect(checking.create(ctxFor({ adapter: "tiny" }, steps))).resolves.toBeDefined();
+          await expect(checking.create({ ...ctxFor({ adapter: "tiny" }, steps), checksHost: false })).resolves.toBeDefined();
+          expect(checking.asked).toEqual([]);
         });
 
         it("is not asked with no step that may write, nor for an executor built only to screen", async () => {
           const checking = new Checking("tiny");
           const reading = new Map([...steps].filter(([p]) => p !== "steps/build.md"));
-          await expect(checking.create(ctxFor({ adapter: "tiny" }, reading))).resolves.toBeDefined();
-          await expect(checking.create(ctxFor({ adapter: "other" }, steps))).resolves.toBeDefined();
+          await expect(checking.create(starting({ adapter: "tiny" }, reading))).resolves.toBeDefined();
+          await expect(checking.create(starting({ adapter: "other" }, steps))).resolves.toBeDefined();
           expect(checking.asked).toEqual([]);
         });
 
         it("refuses the start, saying so, when the check itself throws", async () => {
           const checking = new Checking("tiny");
           checking.answer = () => Promise.reject(new Error("EACCES"));
-          await expect(checking.create(ctxFor({ adapter: "tiny" }, steps))).rejects.toThrow(
+          await expect(checking.create(starting({ adapter: "tiny" }, steps))).rejects.toThrow(
             /^the sandbox the steps that may write run in could not be checked: EACCES$/);
         });
       });
