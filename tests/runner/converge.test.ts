@@ -1140,6 +1140,54 @@ describe("converge", () => {
   });
 });
 
+/*
+ * #231: a pause lets a step already going finish, and starts no next one. The
+ * slot is asked before every step, so one already held can still say no.
+ */
+describe("the agent slot, asked before every step", () => {
+  const answering = (kind: string): Step => ({
+    prompt: `${kind} #{node.id}`,
+    output: { discriminator: "kind", shapes: { [kind]: {} }, routes: [{ when: { kind }, effect: { type: "tracker.comment", marker: `${kind}:{round}` } }] },
+  });
+  const twoSteps: Workflow = {
+    version: 1, name: "t", description: "test",
+    stages: [
+      { id: "spec", entry: true, step: "spec", triggers: [{ when: { "run.stage": null } }], on_enter: [{ type: "tracker.status", value: "spec" }] },
+      { id: "plan", step: "plan", triggers: [{ when: { "run.outputs.spec": { $exists: true } } }], on_enter: [{ type: "tracker.status", value: "plan" }] },
+      { id: "done", terminal: true, triggers: [{ when: { "run.outputs.plan": { $exists: true } } }], on_enter: [{ type: "tracker.status", value: "done" }] },
+    ],
+  };
+
+  it("runs the first step, then stops before the second when the slot it holds says no, and gives it back once", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: [] }] });
+    const ran: string[] = [];
+    const answers: Array<string | null> = [null, "alice paused their runs"];
+    let asked = 0;
+    let given = 0;
+    const executor: Executor = {
+      id: "e",
+      run: async (prompt) => {
+        const kind = prompt.trim().split(" #")[0] ?? "";
+        ran.push(kind);
+        return { text: "```json\n" + JSON.stringify({ kind }) + "\n```", sessionId: null };
+      },
+    };
+    const r = await converge("1", {
+      workflow: twoSteps, steps: new Map([["spec", answering("spec")], ["plan", answering("plan")]]),
+      source: state.source, pre: [state.pre], dispatcher: createDispatcher([state.post]), executor,
+      ctx: { item: "1", config: {} as HookContext["config"], secrets: new Map(), signal: new AbortController().signal, log: () => {} },
+      log: createLogger({ sink: () => {} }),
+      slot: { take: async () => answers[asked++] ?? null, give: () => { given += 1; } },
+    });
+
+    expect(ran).toEqual(["spec"]);
+    expect(asked).toBe(2);
+    expect(r).toEqual(expect.objectContaining({ settled: "wait", why: "alice paused their runs" }));
+    expect(state.stage("1")).toBe("plan");
+    expect(given).toBe(1);
+  });
+});
+
 /**
  * A briefing is fetched for an invocation, not for a pass.
  *

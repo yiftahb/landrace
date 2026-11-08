@@ -451,7 +451,7 @@ function askSlot(runtime: WorkspaceRuntime, node: Node): Promise<boolean> {
 function drain(runtime: WorkspaceRuntime, by: TickWait): void {
   const pool = poolOf(runtime);
   const person = personOf(runtime);
-  while (!runtime.stop.signal.aborted && !retired.has(runtime)) {
+  while (!runtime.stop.signal.aborted && !retired.has(runtime) && runtime.paused === undefined) {
     const next = runtime.turnedAway[0];
     if (next === undefined || !pool.take(person)) return;
     runtime.turnedAway.shift();
@@ -476,7 +476,7 @@ function listen(runtime: WorkspaceRuntime): void {
   const person = personOf(runtime);
   const asking = (): number => (batches.get(pool)?.left.get(person) ?? 0) + (waitingAsks.get(pool)?.get(person) ?? 0);
   listeners.set(runtime, pool.onFree(person, {
-    waiting: () => !retired.has(runtime) && (runtime.checking || runtime.turnedAway.length > 0 || asking() > 0),
+    waiting: () => !retired.has(runtime) && runtime.paused === undefined && (runtime.checking || runtime.turnedAway.length > 0 || asking() > 0),
     drain: () => {
       const by = freeing ?? lastTick.get(runtime);
       if (by) drain(runtime, by);
@@ -524,8 +524,9 @@ function giveBack(runtime: WorkspaceRuntime, by: TickWait): void {
 
 /** Keep `turnedAway` most urgent first, one entry an item, and hand it a slot if one came free meanwhile. */
 function turnAway(runtime: WorkspaceRuntime, entry: TurnedAway, by: TickWait): void {
-  // A check still going when its runtime was retired: the next runtime's tick owns the item now.
-  if (retired.has(runtime)) return;
+  // A check still going when its runtime was retired: the next runtime's tick
+  // owns the item now. Paused, nothing waits for a slot: a resume's tick checks it again.
+  if (retired.has(runtime) || runtime.paused !== undefined) return;
   const queue = runtime.turnedAway.filter((t) => t.node.id !== entry.node.id);
   const at = queue.findIndex((t) => compareWork(entry.node, t.node) < 0);
   queue.splice(at === -1 ? queue.length : at, 0, entry);
@@ -616,9 +617,13 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
       let refused: string | null = null;
       const slot: AgentSlot = {
         take: async () => {
+          // Paused before this step: the one before it, if any, has finished.
+          if (runtime.paused !== undefined) return (refused = runtime.paused);
           if (!holding) {
             if (!(await askSlot(runtime, node))) return (refused = waitingForSlot(poolOf(runtime).capacity));
             holding = true;
+            // Paused while it waited: the slot goes back as the run ends.
+            if (runtime.paused !== undefined) return (refused = runtime.paused);
           }
           checked();
           return null;
@@ -715,6 +720,15 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
 
     const moved = stopStopped(runtime, listed);
 
+    // Its person paused their runs: listed, so their board and everyone's
+    // claims stay current, and nothing more — no item checked, no lock, no
+    // write. A run already going finishes its step under its own lock.
+    if (runtime.paused !== undefined) {
+      log("tick.skipped", { reason: runtime.paused });
+      runtime.turnedAway = [];
+      return [];
+    }
+
     // With two sources or more, one that could not list leaves every clash
     // unjudged: an id the others list may be one it reports too. Nothing is
     // worked until it lists again, rather than settling a clash for whichever
@@ -793,6 +807,8 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
       // beside the old. Bounded by the old run honouring the abort it was just
       // sent, as Ctrl-C's own wait for every run is.
       await moved.get(node.id);
+      // Paused while this tick checked: what it has not reached waits for a resume.
+      if (runtime.paused !== undefined) return;
       await work(node, w, false, tick);
     });
   } finally {

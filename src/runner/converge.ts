@@ -96,12 +96,14 @@ export async function converge(item: string, deps: ConvergeDeps): Promise<Conver
   // ends: the passes after a step are the same run's, and a slot given back
   // between two steps could go to another item while this one still works.
   // Nothing before the first step takes one — reading an item, entering a
-  // stage, a merge — so those never wait behind running agents.
+  // stage, a merge — so those never wait behind running agents. Asked again
+  // before each later step all the same: a person who paused their runs
+  // while this one worked lets its step finish, and starts no next one.
   let slotted = false;
   const take = async (): Promise<string | null> => {
-    if (slotted || !deps.slot) return null;
+    if (!deps.slot) return null;
     const refused = await deps.slot.take();
-    slotted = refused === null;
+    if (refused === null) slotted = true;
     return refused;
   };
 

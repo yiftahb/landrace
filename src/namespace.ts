@@ -1847,7 +1847,7 @@ export type EventName =
   | "wake.failed"
   | "notify.sent" | "notify.failed"
   | "agent.limited" | "integration.limited"
-  | "person.connected" | "person.disconnected"
+  | "person.connected" | "person.disconnected" | "person.paused" | "person.resumed"
   | "connection.expiring" | "connection.failed" | "connection.refreshed"
   | "signin.ok" | "signin.refused" | "request.refused";
 
@@ -2323,6 +2323,15 @@ export interface Roster {
    */
   signIn(person: Person): Promise<void>;
   tick(): Promise<void>;
+  /**
+   * Pause or resume the person's runs: written to their credentials file,
+   * logged once as `person.paused` or `person.resumed` when it changes, and
+   * their current runtime stops working at once. A resume is worked from the
+   * next tick.
+   */
+  pause(person: Person, paused: boolean): Promise<void>;
+  /** Whether the person's file says their runs are paused. */
+  paused(personId: string): Promise<boolean>;
   /** The items the last judged tick found claimed by more than one person, each with who: what a write from the page or the MCP goes by. */
   ambiguous(): ReadonlyMap<string, string[]>;
 }
@@ -3132,8 +3141,10 @@ export interface TurnedAway {
 }
 
 /**
- * One converge's agent slot. `take` answers null once it holds one, or why
- * not; `give` hands it back, and does nothing when none is held.
+ * One converge's agent slot. `take` is asked before every step the converge
+ * runs, not only the first: it answers null while it holds one — taking it
+ * the first time — or why not, which a pause can say of a slot already
+ * held; `give` hands it back, and does nothing when none is held.
  */
 export interface AgentSlot {
   take: () => Promise<string | null>;
@@ -3221,6 +3232,15 @@ export interface WorkspaceRuntime {
    * empty, and stays so.
    */
   asking: SlotAsk[];
+  /**
+   * Why this runtime works nothing now — its person paused their runs, or
+   * their file could not be read to tell — or absent while it works. Its
+   * ticks still list, so the board and everyone's claims stay current; no
+   * item is checked, no step starts, and a slot freed starts nothing for it.
+   * A run already going finishes its step. Set by the roster from the
+   * person's file before every tick, and at once by a pause.
+   */
+  paused?: string;
   /**
    * What the latest checks turned away for want of a slot, most urgent
    * first: a slot a run of this process frees goes to the first. Starts empty.
