@@ -45,10 +45,12 @@ function malformedBody(reason: string, scrub: (text: string) => string, kind: st
 const scrubberFor = (deps: ConvergeDeps): ((text: string) => string) => scrubberOf(deps.ctx.secrets, deps.scrub);
 
 /**
- * The items each runtime's logger has said `records.foreign` of. Keyed by
- * the logger, which a runtime makes once, so it is once per item for as long
- * as the runtime runs — not once per tick, which would say the same thing
- * every interval until the operator stopped reading it.
+ * The (item, author, why) each runtime's logger has said `records.foreign`
+ * of. Keyed by the logger, which a runtime makes once, so it is once per
+ * author and reason on an item for as long as the runtime runs — not once
+ * per tick, which would say the same thing every interval until the operator
+ * stopped reading it. Not once per item: a migration's first `old`/`unlisted`
+ * would then silence a later forged marker by another account on that item.
  */
 const foreignSaid = new WeakMap<Logger, Set<string>>();
 
@@ -64,8 +66,13 @@ function sayForeign(item: string, snapshot: Snapshot, log: Logger): void {
   if (typeof foreign?.count !== "number" || foreign.count <= 0) return;
   const said = foreignSaid.get(log) ?? new Set<string>();
   foreignSaid.set(log, said);
-  if (said.has(item)) return;
-  said.add(item);
+  const authors = Array.isArray(foreign.authors) ? (foreign.authors as Array<{ login?: unknown; why?: unknown }>) : [];
+  // JSON, so no login can be spelled to collide with another pair's key.
+  // A count with no authors to key by is still said, once for the item.
+  const keys = authors.length ? authors.map((a) => JSON.stringify([item, a.login, a.why])) : [JSON.stringify([item])];
+  const fresh = keys.filter((k) => !said.has(k));
+  if (fresh.length === 0) return;
+  for (const k of fresh) said.add(k);
   log("records.foreign", { item, count: foreign.count, authors: foreign.authors });
 }
 

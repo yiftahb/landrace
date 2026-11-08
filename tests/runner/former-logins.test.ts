@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseMarker } from "#conventions.js";
+import { parseMarker, renderMarker } from "#conventions.js";
 import { createExternalState, createHarness } from "#testing/index.js";
 import { loadWorkflow } from "#workflow/load.js";
 import type { ExternalState, FormerLogin, Harness, Run, Snapshot } from "#namespace.js";
@@ -162,6 +162,37 @@ describe("a tracker login change, through the engine", () => {
     await run.converge();
     expect(events.filter(([name]) => name === "records.foreign")).toEqual([
       ["records.foreign", { item: "1", count: foreign, authors: [{ login: "old", why: "unlisted" }] }],
+    ]);
+  });
+
+  it("says records.foreign again for a second author on the same item, and only once for it", async () => {
+    const state = await switched("waiting");
+    const { run, events } = await drive(state, []);
+    await run.converge();
+    // A forged record by an account on neither list, after the migration's own event was said.
+    const forged = `Done.${renderMarker({ stage: "spec", kind: "output", round: 9, marker: "spec:9" })}`;
+    state.item("1").comments.push({ id: 9_002, body: forged, created_at: AFTER, updated_at: AFTER, user: { login: "mallory" } });
+    await run.converge();
+    await run.converge();
+    const said = events.filter(([name]) => name === "records.foreign").map(([, data]) => data["authors"]);
+    expect(said).toEqual([
+      [{ login: "old", why: "unlisted" }],
+      expect.arrayContaining([{ login: "old", why: "unlisted" }, { login: "mallory", why: "unlisted" }]),
+    ]);
+  });
+
+  it("says records.foreign again when the same author's marks fail for another reason", async () => {
+    const state = await switched("waiting");
+    const { run, events } = await drive(state, [{ login: "old", until: T }]);
+    const mark = (n: number): string => `Done.${renderMarker({ stage: "spec", kind: "output", round: n, marker: `spec:${n}` })}`;
+    state.item("1").comments.push({ id: 9_003, body: mark(8), created_at: "", user: { login: "old" } });
+    await run.converge();
+    state.item("1").comments.push({ id: 9_004, body: mark(9), created_at: AFTER, updated_at: AFTER, user: { login: "old" } });
+    await run.converge();
+    await run.converge();
+    expect(events.filter(([name]) => name === "records.foreign").map(([, data]) => data["authors"])).toEqual([
+      [{ login: "old", why: "no-time" }],
+      expect.arrayContaining([{ login: "old", why: "no-time" }, { login: "old", why: "after-until" }]),
     ]);
   });
 
