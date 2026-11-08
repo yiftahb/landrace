@@ -2016,6 +2016,8 @@ export interface ConnectionValue {
 export interface PersonCredentials {
   person: Person;
   connections: Record<string, ConnectionValue>;
+  /** Set while the person has paused their runs from the board, since when: their runtime's ticks still list their items, and work none. */
+  paused?: { at: string };
   problem?: string;
 }
 
@@ -2106,6 +2108,8 @@ export interface CredentialStore {
   /** Writes who the person is, keeping what they connected; makes their file when there is none. */
   remember(person: Person): Promise<void>;
   remove(personId: string, connId: string): Promise<void>;
+  /** Writes who the person is and their pause — since `at`, or none for null — keeping what they connected; makes their file when there is none. */
+  pause(person: Person, at: string | null): Promise<void>;
   /** Every person with a file, readable or not — one that is not, by its id alone. */
   list(): Promise<Person[]>;
 }
