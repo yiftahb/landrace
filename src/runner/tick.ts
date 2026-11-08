@@ -628,6 +628,7 @@ export async function tickWorkspace(opts: WorkspaceTickOptions): Promise<TickRow
           checked();
           return null;
         },
+        paused: () => runtime.paused ?? null,
         // However the run ends, once: converge gives back the slot it took,
         // and the run gives back one handed to it that converge never took.
         give: () => {

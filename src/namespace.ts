@@ -3159,6 +3159,11 @@ export interface TurnedAway {
 export interface AgentSlot {
   take: () => Promise<string | null>;
   give: () => void;
+  /**
+   * Why the run's person has paused it, asked before every pass: a pause
+   * lets the step going finish and record its answer, and writes nothing more.
+   */
+  paused: () => string | null;
 }
 
 /**

@@ -583,7 +583,11 @@ describe("pausing a person's runs", () => {
     expect(w.runs).toEqual([{ person: "alice", item: first?.item, stopped: false }]);
     // The slot it freed took no lock on the item turned away: not checked again at all.
     expect(w.events.slice(paused).filter((e) => e.name === "lock.acquired")).toEqual([]);
-    expect(w.state.stage(first?.item ?? "")).toBe("done");
+    // Its step's answer is recorded, and the stage it leads to is not entered:
+    // `done`'s on_enter is a tracker write, and a paused person gets none.
+    expect(w.state.entriesOf(first?.item ?? "").some((e) => e.stage === "spec" && e.kind === "output")).toBe(true);
+    expect(w.state.stage(first?.item ?? "")).toBe("spec");
+    expect(w.events.slice(paused).filter((e) => e.name === "effect.applied" && e.type === "tracker.status")).toEqual([]);
   });
 
   it("skips a person whose file stops reading, since whether they paused is unknown", async () => {
