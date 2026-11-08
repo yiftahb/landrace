@@ -3,6 +3,7 @@ import {
   EffectRefused,
   effectBranch,
   entriesFromComments,
+  formerLoginsOf,
   parseMarker,
   PULL_OPEN_EFFECT,
   PULL_REQUEST_KIND,
@@ -16,7 +17,7 @@ import { defineSource } from "#hooks/contracts.js";
 import { compose } from "#kit/compose.js";
 import { BaseDocs } from "#kit/docs.js";
 import { BaseForge, conflictCount, isFinding, itemBranchesOf, itemBranchOf, placeFindings, prBranch } from "#kit/forge.js";
-import { BaseTracker, commentSatisfied, createdSatisfied } from "#kit/tracker.js";
+import { BaseTracker } from "#kit/tracker.js";
 import type {
   BranchHeads,
   ChangedFiles,
@@ -43,6 +44,7 @@ import type {
   RuntimeConfig,
   RuntimeContext,
   Source,
+  ThreadComment,
   ThreadCounts,
   ItemPatch,
   ItemRecord,
@@ -109,8 +111,9 @@ const recordOf = (row: ExternalItem, rows: ReadonlyMap<string, ExternalItem>): I
   assignees: [...row.assignees],
   body: row.body,
   author: row.author,
-  editor: undefined,
-  createdAt: undefined,
+  editor: row.editor,
+  editedAt: row.editedAt,
+  createdAt: row.createdAt,
   parent: row.parent,
   priority: row.priority ?? null,
   related: row.related.map((r) => {
@@ -131,9 +134,9 @@ const recordOf = (row: ExternalItem, rows: ReadonlyMap<string, ExternalItem>): I
  * A tracker in memory, on the kit's base like any tracker integration: its
  * vendor calls are reads and writes of a map.
  *
- * It overrides only what a tracker with no network behind it cannot do the
- * base's way: it knows its own login without asking, so its pre hook records
- * none, and its comment check asks its own login rather than the snapshot's.
+ * Its login is its own, `landrace`, and its pre hook, its effects and their
+ * `satisfied()` are the base's: whose marks count is `tracker.formerLogins`
+ * as the context's configuration says, judged at each comment's own times.
  *
  * `readOnly` makes it a tracker a workflow may read and never write — a
  * company's list of the reviews waiting on a person, say. Every write it is
@@ -311,32 +314,6 @@ export class MemoryTracker extends BaseTracker {
     if (fields.body !== undefined) row.body = fields.body;
     if (fields.state !== undefined) row.closed = fields.state === "closed" ? "done" : null;
   }
-
-  /*
-   * Exactly what `observe` below puts in the snapshot — tests/hooks/provides.test.ts
-   * holds the two level. No `tracker.bot`: the login is this class's own.
-   */
-  override provides(): string[] {
-    return ["item", "item.body", "item.comments", "entries"];
-  }
-
-  override async observe({ item }: HookContext): Promise<Record<string, unknown>> {
-    const comments = await this.comments(item);
-    return { item: { body: this.row(item).body, comments }, entries: entriesFromComments(comments, BOT) };
-  }
-
-  override effects(): EffectTable {
-    const effects = super.effects();
-    const comment = effects[RECORD_EFFECT] as EffectHandler;
-    const create = effects[TRACKER_CREATE_EFFECT] as EffectHandler;
-    // The kit's own checks — ours, by login, and the marker parsed whole —
-    // against the login this tracker posts as, which its snapshot does not carry.
-    return {
-      ...effects,
-      [RECORD_EFFECT]: { apply: comment.apply, satisfied: (snapshot, effect) => commentSatisfied({ ...snapshot, tracker: { bot: BOT } }, effect) },
-      [TRACKER_CREATE_EFFECT]: { apply: create.apply, satisfied: (snapshot, effect) => createdSatisfied({ ...snapshot, tracker: { bot: BOT } }, effect) },
-    };
-  }
 }
 
 /**
@@ -437,9 +414,9 @@ export class MemoryForge extends BaseForge {
     return [...this.rows.values()].filter((p) => branches.has(p.branch ?? "") || (p.items ?? []).includes(item)).map(pullRecordOf);
   }
 
-  // ponytail: counts, not threads — briefed as none open, whatever the count says; hold thread text here if a test ever briefs it.
-  async threads(): Promise<ReviewThread[]> {
-    return [];
+  // ponytail: counts, not threads — the node's counts are the seed's, and these are only what a test seeded for a brief or a history.
+  async threads(pull: number): Promise<ReviewThread[]> {
+    return [...(this.rows.get(`pr-${pull}`)?.threads ?? [])];
   }
 
   /** What a test said it changes — nothing unless it said — and listed whole unless it said not. */
@@ -448,8 +425,9 @@ export class MemoryForge extends BaseForge {
     return { files: [...(row.files ?? [])], complete: row.filesComplete !== false };
   }
 
-  async reviews(): Promise<string[]> {
-    throw countsOnly();
+  /** What a test seeded, with each author and time; nothing unless it did. */
+  async reviews(pull: number): Promise<ThreadComment[]> {
+    return [...(this.pull(`pr-${pull}`).reviewed ?? [])];
   }
 
   async postReview(): Promise<void> {
@@ -713,7 +691,7 @@ export function createExternalState(
     pull: (id) => forge.pull(id),
     pushes: () => forge.pushes(),
     comments: (n) => tracker.row(n).comments.map((c) => c.body),
-    entriesOf: (n) => entriesFromComments(tracker.row(n).comments, BOT),
+    entriesOf: (n) => entriesFromComments(tracker.row(n).comments, { current: BOT, former: formerLoginsOf(seed.config) }),
     stage: (n) => stageFromLabels(tracker.row(n).labels).stage,
     label: (n, label) => {
       const row = tracker.row(n);

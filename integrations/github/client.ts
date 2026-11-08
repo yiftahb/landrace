@@ -57,6 +57,8 @@ export interface Comment {
   id: number;
   body: string;
   created_at: string;
+  /** When it was last edited — REST answers its creation for one never edited. A former login's marker is judged by it. */
+  updated_at?: string;
   user?: { login?: string } | null;
 }
 
@@ -516,7 +518,7 @@ export function createClient(opts: GitHubOptions) {
       return { files, complete: false };
     },
     // ponytail: the first hundred reviews only; past that a round's marker could be missed and posted twice.
-    listReviews: (n: number) => call<Array<{ body: string | null }>>("GET", `/pulls/${n}/reviews?per_page=100`),
+    listReviews: (n: number) => call<Array<{ body: string | null; user?: { login?: string } | null; submitted_at?: string | null }>>("GET", `/pulls/${n}/reviews?per_page=100`),
     postReview: (n: number, body: string, comments: ReviewComment[]) =>
       named(call("POST", `/pulls/${n}/reviews`, { event: "COMMENT", body, comments }), `"Pull requests: Read and write" on ${repo}`),
     commentOnFile: (n: number, path: string, body: string, commitId: string) =>

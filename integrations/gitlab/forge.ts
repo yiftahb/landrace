@@ -4,10 +4,10 @@
  * push URL it trusts with a token. Everything else a forge does is
  * `BaseForge`'s.
  */
-import { type HookContext, parseMarker, type RuntimeContext, sameLogin } from "landrace/hooks";
+import { type HookContext, parseMarker, type RuntimeContext } from "landrace/hooks";
 import {
   BaseForge, branchHeads, DONE_WINDOW_MS, EffectRefused, fetchBranch, MAX_ISSUE_PAGES, MAX_THREAD_PAGES, originPushUrl, ownGit, prBranch, pushBranch,
-  httpReason, itemBranchesOf, repositoryOf, ITEM_PAGE,
+  httpReason, itemBranchesOf, repositoryOf, ITEM_PAGE, wroteThread,
   type BranchHeads, type ChangedFile, type ChangedFiles, type CheckState, type FailedCheck, type ForgeOptions, type Git, type MergeAnswer, type PullRecord,
   type ReviewThread, type ThreadComment,
 } from "landrace/kit";
@@ -83,6 +83,8 @@ interface Note {
   body: string | null;
   author?: { username?: string } | null;
   created_at?: string;
+  /** When it was last edited, or written if never. */
+  updated_at?: string;
   system: boolean;
   resolvable?: boolean;
   resolved?: boolean;
@@ -122,7 +124,10 @@ const recordOf = (mr: MergeRequest): PullRecord => ({
 });
 
 const commentOf = (n: Note | undefined): ThreadComment | null =>
-  n === undefined ? null : { body: n.body ?? "", author: n.author?.username ?? null };
+  n === undefined ? null : {
+    body: n.body ?? "", author: n.author?.username ?? null, created_at: n.created_at ?? "",
+    ...(n.updated_at === undefined ? {} : { updated_at: n.updated_at }),
+  };
 
 /**
  * A discussion as the kit reads a review thread — when it is one. Only a
@@ -413,15 +418,12 @@ export class GitLab extends BaseForge {
     return { files: items.map(fileOf), complete: whole, ...(!more && counted === null ? { settling: true } : {}) };
   }
 
-  /** Our own notes only, by login: anyone can paste a round's marker into theirs. */
-  async reviews(pull: number, ctx: RuntimeContext): Promise<string[]> {
+  /** Every note anybody wrote, with its author and times: the base keeps ours, since anyone can paste a round's marker into theirs. */
+  async reviews(pull: number, ctx: RuntimeContext): Promise<ThreadComment[]> {
     const gl = this.gl(ctx);
     const { items, more } = await gl.pages<Note>(`/merge_requests/${pull}/notes?order_by=created_at&sort=asc`, MAX_THREAD_PAGES);
     if (more) throw tooMany(`merge request !${pull} has more than ${MAX_THREAD_PAGES * PER_PAGE} notes`);
-    const bot = await gl.login();
-    return items
-      .filter((n) => !n.system && typeof n.author?.username === "string" && sameLogin(n.author.username, bot))
-      .map((n) => n.body ?? "");
+    return items.filter((n) => !n.system).flatMap((n) => commentOf(n) ?? []);
   }
 
   private async diffs(pull: number, ctx: RuntimeContext): Promise<Diff[]> {
@@ -687,9 +689,9 @@ export class GitLab extends BaseForge {
       if (typeof base_sha !== "string" || typeof start_sha !== "string" || typeof head_sha !== "string") {
         throw new Error(`merge request !${pull} has no diff yet for GitLab to place findings on`);
       }
-      const bot = await gl.login();
+      const logins = await this.logins(ctx);
       const posted = new Set((await this.threads(pull, ctx)).flatMap((t) => {
-        const marker = t.first?.author != null && sameLogin(t.first.author, bot) ? parseMarker(t.first.body)?.marker : undefined;
+        const marker = wroteThread(t.first, logins) ? parseMarker(t.first?.body ?? "")?.marker : undefined;
         return marker === undefined ? [] : [marker];
       }));
       const fresh = <T extends { body: string }>(list: T[]): T[] => list.filter((f) => !posted.has(parseMarker(f.body)?.marker ?? ""));

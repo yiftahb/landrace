@@ -11,14 +11,14 @@
  * mapping what they answer into the plain fields `itemNode` takes.
  */
 import {
-  allClosed, CLOSE_EFFECT, COMMENT_VISIBILITIES, CREATED_KIND, distinctRelations, edgeDirection, EffectRefused, entriesFromComments, itemIdProblem, LABEL_EFFECT, LABELS,
-  labelsOf, MAX_SUBGRAPH_NODES,
+  allClosed, CLOSE_EFFECT, COMMENT_VISIBILITIES, CREATED_KIND, distinctRelations, edgeDirection, EffectRefused, entriesFromComments, foreignRecords, formerLoginsOf, itemIdProblem, LABEL_EFFECT, LABELS,
+  labelsOf, markTrust, MAX_SUBGRAPH_NODES,
   neutraliseMarkers, NODES_CLOSE_EFFECT, parseMarker, parseOrigin, RECORD_EFFECT, recordMarker, RELATED_FACTS, RELATIONS, renderMarker,
-  renderOrigin, sameLogin, STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND, TRACKER_CREATE_EFFECT,
+  renderOrigin, STAGE_LABEL_PREFIX, STATUS_EFFECT, stripMarker, ITEM_KIND, TRACKER_CREATE_EFFECT,
 } from "#conventions.js";
 import { commentLine } from "#kit/forge.js";
 import type {
-  BriefTable, CommentVisibility, CreateRequest, Effect, EffectTable, Graph, HistoryItem, HookContext, NewItem, Node, OpenRelations, RelatedRecord,
+  BriefTable, CommentVisibility, CreateRequest, Effect, EffectTable, Graph, HistoryItem, HookContext, Logins, NewItem, Node, OpenRelations, RelatedRecord,
   RelationDecl, Relationship, PreflightContext, RuntimeContext, Snapshot, SnapshotComment, ItemPatch, ItemRecord, TrackerComment,
 } from "#namespace.js";
 
@@ -132,17 +132,45 @@ export const commentsOf = (s: Snapshot): SnapshotComment[] =>
  * satisfied" re-posts a comment on every tick. Halting is the third option,
  * and the dispatcher attributes the throw to the hook.
  */
-export function botLoginOf(s: Snapshot): string {
-  const bot = (s.tracker as { bot?: unknown } | undefined)?.bot;
+export function loginsOf(s: Snapshot): Logins {
+  const { bot, former } = (s.tracker as { bot?: unknown; former?: unknown } | undefined) ?? {};
   if (typeof bot !== "string" || !bot.trim()) {
     throw new Error("the snapshot does not record the login landrace posts as, so no effect can be checked");
   }
-  return bot.trim().toLowerCase();
+  // Absent is not "none": a pre hook that never recorded them would read a
+  // former login's record as a stranger's, and re-post what it already said.
+  if (!Array.isArray(former)) {
+    throw new Error("the snapshot does not record the logins landrace posted as before (tracker.former), so no effect can be checked");
+  }
+  return { current: bot.trim().toLowerCase(), former: formerLoginsOf({ tracker: { formerLogins: former } }) };
 }
 
-/** sameLogin, for the reason entriesFromComments uses it: an app has two spellings. */
-export const wroteIt = (c: SnapshotComment, bot: string): boolean =>
-  typeof c.user?.login === "string" && sameLogin(c.user.login, bot);
+/** Ours by `markTrust`, judged at the comment's own times: the current login, or a former one within its cutoff. */
+export const wroteIt = (c: SnapshotComment, logins: Logins): boolean =>
+  markTrust(c.user?.login, { created: c.created_at, edited: c.updated_at }, logins) === "ours";
+
+/**
+ * The items whose foreign marks this process has already said, by the
+ * tracker's configuration and the item. Module-wide rather than an
+ * instance's: a hook reload builds a new tracker, and the operator was told
+ * once already. A changed `tracker` block is a new key, so a new list of
+ * former logins is judged and said afresh.
+ */
+const foreignSaid = new Set<string>();
+
+/**
+ * `records.foreign`, once per item per process: how many marks on its
+ * comments do not count, and each author with why — `unlisted`,
+ * `after-until` or `no-time` — so the operator knows what to fix.
+ */
+export function sayForeign(ctx: HookContext, comments: TrackerComment[], logins: Logins): void {
+  const { count, authors } = foreignRecords(comments, logins);
+  if (count === 0) return;
+  const key = JSON.stringify([ctx.config.tracker ?? null, ctx.item]);
+  if (foreignSaid.has(key)) return;
+  foreignSaid.add(key);
+  ctx.log("records.foreign", { item: ctx.item, count, authors });
+}
 
 /*
  * The labels the source read, not a second copy of them from the pre hook:
@@ -193,9 +221,9 @@ export function commentSatisfied(snapshot: Snapshot, effect: Effect): boolean {
   // entry record, and a stage with no new entry record reads as complete
   // and is never run again. The same scan also made "enter:x:1"
   // satisfied by a comment recording "enter:x:10".
-  const bot = botLoginOf(snapshot);
+  const logins = loginsOf(snapshot);
   const marker = String(effect.marker);
-  return commentsOf(snapshot).some((c) => wroteIt(c, bot) && parseMarker(c.body ?? "")?.marker === marker);
+  return commentsOf(snapshot).some((c) => wroteIt(c, logins) && parseMarker(c.body ?? "")?.marker === marker);
 }
 
 /**
@@ -217,9 +245,9 @@ export function createdMarker(effect: Effect): string {
 /** `tracker.create`: a record we wrote on the item, naming the issue this effect filed. */
 export function createdSatisfied(snapshot: Snapshot, effect: Effect): boolean {
   const marker = createdMarker(effect);
-  const bot = botLoginOf(snapshot);
+  const logins = loginsOf(snapshot);
   return commentsOf(snapshot).some((c) => {
-    if (!wroteIt(c, bot)) return false;
+    if (!wroteIt(c, logins)) return false;
     const m = parseMarker(c.body ?? "");
     return m?.kind === CREATED_KIND && m.marker === marker;
   });
@@ -289,11 +317,11 @@ export function updatedAtOf(at: string | undefined): { updatedAt?: number } {
 
 /**
  * The one mapping from an item, as an integration reads its tracker's, to an
- * item node. `bot` is the login we post as: an origin counts only in a body
+ * item node. `logins` are whose marks count: an origin counts only in a body
  * we wrote, because a re-run closes whatever claims it. The parent is an
  * edge, not a field, so it is not asked for here.
  */
-export function itemNode(item: Omit<ItemRecord, "parent">, bot: string): Node {
+export function itemNode(item: Omit<ItemRecord, "parent">, logins: Logins): Node {
   return {
     id: item.id,
     kind: ITEM_KIND,
@@ -303,10 +331,12 @@ export function itemNode(item: Omit<ItemRecord, "parent">, bot: string): Node {
     priority: item.priority !== undefined ? item.priority : priorityFromLabels(item.labels).priority,
     // Nobody but us may have touched the body since: a person keeps the
     // bot's authorship when they edit it, and could otherwise rewrite the
-    // marker to claim another stage or round.
-    origin: item.editor !== undefined && !sameLogin(item.editor, bot)
+    // marker to claim another stage or round. Its author is judged when it
+    // wrote the body, its editor when it last edited it: a former login's
+    // edit after its cutoff, or at a time the tracker did not give, is not ours.
+    origin: item.editor !== undefined && markTrust(item.editor, { created: item.editedAt, edited: null }, logins) !== "ours"
       ? null
-      : parseOrigin(item.body, item.author, bot),
+      : parseOrigin(item.body, item.author, item.createdAt, logins),
     // Always lists, and empty rather than absent: an eligibility rule reading
     // a path the node does not carry is one the tick cannot answer, and it
     // abstains on those — so an unassigned item would be worked by every
@@ -760,18 +790,31 @@ export abstract class BaseTracker {
    * hold: the title, labels and assignees are the node's.
    */
   provides(): string[] {
-    return ["item", "item.body", "item.comments", "entries", "tracker", "tracker.bot"];
+    return ["item", "item.body", "item.comments", "entries", "tracker", "tracker.bot", "tracker.former"];
   }
 
   /**
-   * The item's body and records, and the login we post as — recorded
+   * Whose marks count: the login we post as, and `tracker.formerLogins`,
+   * each trusted up to its `until`.
+   */
+  protected async logins(ctx: RuntimeContext): Promise<Logins> {
+    return { current: await this.login(ctx), former: formerLoginsOf(ctx.config) };
+  }
+
+  /**
+   * The item's body and records, and the logins whose marks count — recorded
    * because `satisfied()` is synchronous and must know which comments are ours.
+   * A foreign mark is said once per item, in `records.foreign`, so the
+   * operator learns which login to list or which `until` to move.
    */
   async observe(ctx: HookContext): Promise<Record<string, unknown>> {
     const item = await this.item(ctx.item, ctx);
     const comments = await this.comments(ctx.item, ctx);
-    const bot = await this.login(ctx);
-    return { item: { body: item.body, comments }, entries: entriesFromComments(comments, bot), tracker: { bot } };
+    const logins = await this.logins(ctx);
+    sayForeign(ctx, comments, logins);
+    return {
+      item: { body: item.body, comments }, entries: entriesFromComments(comments, logins), tracker: { bot: logins.current, former: logins.former },
+    };
   }
 
   effects(): EffectTable {
@@ -858,8 +901,8 @@ export abstract class BaseTracker {
 
   /** The item's comments, for the history's one timeline. */
   async history(ctx: HookContext): Promise<HistoryItem[]> {
-    const bot = await this.login(ctx);
-    return (await this.comments(ctx.item, ctx)).map((c) => ({ at: c.created_at, text: commentLine(c, bot) }));
+    const logins = await this.logins(ctx);
+    return (await this.comments(ctx.item, ctx)).map((c) => ({ at: c.created_at, text: commentLine(c, logins) }));
   }
 
   /**
@@ -872,7 +915,7 @@ export abstract class BaseTracker {
    * cannot be read: one item's walk does not fail every item's listing.
    */
   async list(ctx: RuntimeContext): Promise<Graph> {
-    const bot = await this.login(ctx);
+    const logins = await this.logins(ctx);
     const items = await this.items(ctx);
     const listed = new Map(items.map((t) => [t.id, t]));
     const relations = openRelationsOf(items, RELATIONS.blockedBy);
@@ -892,7 +935,7 @@ export abstract class BaseTracker {
       } catch {
         walk = { cycle: false, whole: false };
       }
-      nodes.push(withFacts(itemNode(t, bot), { unreadable: !whole || !walk.whole, cycle: walk.cycle }));
+      nodes.push(withFacts(itemNode(t, logins), { unreadable: !whole || !walk.whole, cycle: walk.cycle }));
     }
     return { nodes: [...nodes, ...placeholders.values()], relationships: [...edges.values()] };
   }
@@ -914,7 +957,7 @@ export abstract class BaseTracker {
    * Nothing the walk meets becomes a node.
    */
   async read(id: string, ctx: RuntimeContext): Promise<Graph> {
-    const bot = await this.login(ctx);
+    const logins = await this.logins(ctx);
     const root = await this.item(id, ctx);
     if (root.priority === undefined) {
       const { found } = priorityFromLabels(root.labels);
@@ -950,8 +993,8 @@ export abstract class BaseTracker {
     const walk = blockerCycle(root, relations, owns);
     return {
       nodes: [
-        withFacts(itemNode(root, bot), { unreadable: !whole || !walk.whole, cycle: walk.cycle }),
-        ...read.slice(1).map((t) => itemNode(t, bot)),
+        withFacts(itemNode(root, logins), { unreadable: !whole || !walk.whole, cycle: walk.cycle }),
+        ...read.slice(1).map((t) => itemNode(t, logins)),
         ...placeholders.values(),
       ],
       relationships: [...relationships, ...edges.values()],
@@ -998,7 +1041,7 @@ export abstract class BaseTracker {
       throw new Error(`#${id} was created, but relating it failed: ${failed.join("; ")}; ${closing}`);
     }
     if ((labels ?? []).length > 0) await this.addLabels(id, labels ?? [], ctx);
-    return itemNode(await this.item(id, ctx), await this.login(ctx));
+    return itemNode(await this.item(id, ctx), await this.logins(ctx));
   }
 
   async updateItem(id: string, { title, body, state, addLabels, removeLabels }: ItemPatch, ctx: RuntimeContext): Promise<Node> {
@@ -1010,6 +1053,6 @@ export abstract class BaseTracker {
       ...(state === undefined ? {} : { state }),
     };
     if (Object.keys(fields).length > 0) await this.update(id, fields, ctx);
-    return itemNode(await this.item(id, ctx), await this.login(ctx));
+    return itemNode(await this.item(id, ctx), await this.logins(ctx));
   }
 }

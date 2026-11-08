@@ -2825,6 +2825,11 @@ export interface ExternalItem {
   closed: Closed;
   /** Who opened it, as a login. */
   author: string;
+  /** When it was opened; absent unless a test says. */
+  createdAt?: string | undefined;
+  /** Who last edited its body, and when; absent unless a test says. */
+  editor?: string | undefined;
+  editedAt?: string | undefined;
   /**
    * What it relates to, by id. The related item's title, link and state are
    * read from its own row when there is one, so closing it shows; otherwise
@@ -2869,6 +2874,10 @@ export interface ExternalPull {
   raised?: number;
   /** The markers of the reviews `pull.review` posted, so a round is posted once. */
   reviews?: string[];
+  /** Review threads with their text, authors and times, as a test seeds them for a brief or a history: the node's counts stay the fields above. */
+  threads?: ReviewThread[];
+  /** Reviews with their authors and times, as a test seeds them: what `reviews` answers. */
+  reviewed?: ThreadComment[];
   /** The head commit, `sha-<number>` unless a test says: what a merge is guarded by, and what a push moves. */
   headSha: string;
   /** Its checks on that head, `none` unless a test says. */
@@ -2897,7 +2906,7 @@ export interface ExternalPull {
 export type ExternalPullSeed = Partial<Pick<
   ExternalPull,
   "merged" | "openThreads" | "awaitingFix" | "awaitingWordingFix" | "closed" | "branch" | "items" | "headSha" | "checks" | "failed" | "mergeable" | "conflicts" |
-  "files" | "filesComplete" | "reviewerStatuses" | "opened"
+  "files" | "filesComplete" | "reviewerStatuses" | "opened" | "threads" | "reviewed"
 >>;
 
 /**

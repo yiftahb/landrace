@@ -103,7 +103,7 @@ export async function branchHeads(git: Git): Promise<BranchHeads> {
 
 /**
  * The branch heads the pre hook read this pass. Absent is a halt, for the
- * reason `botLoginOf` gives: "satisfied" would drop a push that never
+ * reason `loginsOf` gives: "satisfied" would drop a push that never
  * happened, and "not satisfied" would push on every tick.
  */
 export function headsOf(s: Snapshot): { local: Record<string, unknown>; remote: Record<string, unknown> } {

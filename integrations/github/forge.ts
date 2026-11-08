@@ -95,8 +95,8 @@ query LandraceThreads($owner: String!, $name: String!, $number: Int!, $cursor: S
           isResolved
           path
           line
-          comments(first: 1) { totalCount nodes { body createdAt author { login } } }
-          lastReply: comments(last: 1) { nodes { body author { login } } }
+          comments(first: 1) { totalCount nodes { body createdAt lastEditedAt author { login } } }
+          lastReply: comments(last: 1) { nodes { body createdAt lastEditedAt author { login } } }
         }
       }
     }
@@ -174,6 +174,8 @@ type Page<T> = { pageInfo: { hasNextPage: boolean; endCursor: string | null }; n
 interface ThreadNodeComment {
   body: string | null;
   createdAt?: string;
+  /** Null for a comment never edited. */
+  lastEditedAt?: string | null;
   author: { login: string } | null;
 }
 
@@ -206,8 +208,12 @@ const recordOf = (pull: PullNode): PullRecord => ({
 });
 
 /** A thread comment as GraphQL answers it, as the kit reads one: a deleted account is no author at all. */
-const commentOf = (c: ThreadNodeComment | undefined): ThreadComment | null =>
-  c === undefined ? null : { body: c.body ?? "", author: c.author?.login ?? null };
+const commentOf = (c: ThreadNodeComment | undefined): ThreadComment | null => {
+  if (c === undefined) return null;
+  // Never edited is last edited when it was written; no creation time is no time at all.
+  const edited = c.lastEditedAt ?? c.createdAt;
+  return { body: c.body ?? "", author: c.author?.login ?? null, created_at: c.createdAt ?? "", ...(edited === undefined ? {} : { updated_at: edited }) };
+};
 
 /** A review thread as GraphQL answers it, as the kit reads one, placed in time by its opening comment. */
 const threadOf = (t: ThreadNode): ReviewThread => ({
@@ -616,8 +622,13 @@ export class GitHubForge extends BaseForge {
     };
   }
 
-  async reviews(pull: number, ctx: RuntimeContext): Promise<string[]> {
-    return (await this.gh(ctx).listReviews(pull)).map((r) => r.body ?? "");
+  /**
+   * Each review with its author and when it was submitted. REST gives no
+   * edit time, so none is said: a former login's review is then foreign, and
+   * the worst it costs is one review posted again.
+   */
+  async reviews(pull: number, ctx: RuntimeContext): Promise<ThreadComment[]> {
+    return (await this.gh(ctx).listReviews(pull)).map((r) => ({ body: r.body ?? "", author: r.user?.login ?? null, created_at: r.submitted_at ?? "" }));
   }
 
   async openPull(
