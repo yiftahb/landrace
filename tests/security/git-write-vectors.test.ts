@@ -652,6 +652,28 @@ describe("plantedControlPaths", () => {
     expect(await plantedControlPaths(absent)).toContain(planted);
   });
 
+  // Another item's `ensureWorktree` can be inside `git worktree add` as the list is taken: its admin
+  // folder is there, its `gitdir` and `commondir` not yet. Both exist after the run, and were read
+  // as planted, halting an item that did nothing.
+  it.each([
+    ["nothing in it yet", async (_folder: string) => undefined],
+    ["its gitdir but no commondir yet", async (folder: string, other: string) => writeFile(join(folder, "gitdir"), `${join(other, ".git")}\n`)],
+  ])("leaves out an admin folder being made, with %s, and passes once git finishes it", async (_what, before) => {
+    const { root, path, common } = await setup();
+    const other = join(realpathSync(await mkdtemp(join(tmpdir(), "lr-adding-"))), "wt");
+    made.push(other);
+    const folder = join(common, "worktrees", "adding");
+    await mkdir(folder);
+    await before(folder, other);
+    const { absent } = await gitControlPaths(path, root, "linux");
+    expect(absent.filter((p) => p.startsWith(`${folder}/`))).toEqual([]);
+    // What git writes next, as it finishes the add.
+    await writeFile(join(folder, "gitdir"), `${join(other, ".git")}\n`);
+    await writeFile(join(folder, "commondir"), "../..\n");
+    await writeFile(join(folder, "HEAD"), "ref: refs/heads/main\n");
+    await expect(plantedControlPaths(absent)).resolves.toBeNull();
+  });
+
   it("refuses a path it cannot read, naming it", async () => {
     const { admin, absent } = await setup();
     const planted = join(admin, "info");

@@ -397,7 +397,20 @@ export async function gitControlPaths(path: string, repoRoot: string, platform: 
       "Replace it with a copy of its own, or remove it, and the item carries on",
     );
   }
-  return { deny: platform === "linux" ? all.filter((at) => !absent.includes(at)) : all, absent };
+  // An admin folder with no `gitdir` or `commondir` yet is another item's
+  // `git worktree add` under way, which writes both after making the folder:
+  // judged after the run, they read as planted and halted an item that did
+  // nothing. Its control files are judged before each use instead
+  // (`adminDirOf`, `worktreeIntact`), as those of a folder made while the
+  // step ran are. So no admin `commondir` is ever absent, and only
+  // `<common>/commondir` is judged by existence (`plantedControlPaths`).
+  const making = names
+    .map((n) => join(under, n))
+    .filter((folder) => absent.includes(join(folder, "gitdir")) || absent.includes(join(folder, "commondir")));
+  return {
+    deny: platform === "linux" ? all.filter((at) => !absent.includes(at)) : all,
+    absent: absent.filter((at) => !making.includes(dirname(at))),
+  };
 }
 
 /** That `extensions.worktreeConfig` is not on in the repository at `common`, as git reads it there; why not, thrown. */
@@ -468,6 +481,8 @@ export async function plantedControlPaths(absent: readonly string[]): Promise<st
       // every engine git refuses one in the common directory that exists
       // (`commonDirIntact`), so one left empty would pass here and stop the
       // next snapshot instead, with the run unrecorded and paid for again.
+      // Only the common directory's is ever absent: an admin folder missing
+      // its own is left out (`gitControlPaths`).
       if (basename(path) === "commondir" ? await exists(path) : await holdsSomething(path)) planted.push(path);
     } catch (e) {
       unreadable.push(`${path} (${messageOf(e)})`);
