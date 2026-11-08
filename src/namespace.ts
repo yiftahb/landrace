@@ -996,6 +996,13 @@ export type ExecutorContext = RuntimeContext & {
    * and their runs keep leaving transcripts. Absent, only what the sandbox lists.
    */
   denyPaths?: () => Promise<RunDenials>;
+  /**
+   * Set by `start`, whose runtime runs the steps: the factory also judges
+   * this host — whether the sandbox a write step runs in can start here.
+   * Absent for `validate`, which judges the configuration: checking the host
+   * there failed it on every Linux machine without bubblewrap, CI's included.
+   */
+  checksHost?: boolean;
 };
 
 /**

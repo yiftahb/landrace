@@ -580,6 +580,8 @@ export { claudeConnection } from "landrace/integrations/claude";
 export const claude = new Claude();
 ```
 
+`new Claude()` reads the host's platform and `PATH` from Landrace's own process, for the [Linux sandbox check](security.md#a-write-steps-sandbox). A test can pass `platform` and `searchPath` instead.
+
 **Your own Claude login.** `claudeConnection` puts a Claude row in the board's Integrations tab. Run `claude setup-token`, sign in, and paste the token it prints (`sk-ant-oat01-…`). From then on, every step and turn runs with that token as `CLAUDE_CODE_OAUTH_TOKEN`, and uses your Claude subscription's limits rather than the operator's. Without it, locally, steps run on the operator's own `claude` login, as before. On a remote instance it is required: a person who never connected it has no items run. No run is handed `ANTHROPIC_API_KEY`, and no run passes `--bare`, which would ignore the token.
 
 - The token lasts a year. From 30 days before its end, `start` logs `connection.expiring` once a day. After it, the row is Expired, and nothing runs until you paste a new one.
