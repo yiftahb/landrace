@@ -6,7 +6,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { claude } from "#landrace/hooks/claude.js";
-import { createClaudeExecutor } from "landrace/integrations/claude";
+import { Claude, createClaudeExecutor } from "landrace/integrations/claude";
 import type { Executor, ExecutorContext, Step } from "#namespace.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
 import { frontDoorOrigins } from "#front/hosts.js";
@@ -1545,6 +1545,65 @@ describe("a step's own skills, at startup", () => {
     await expect(claude.create(ctxIn(dir, unknown))).rejects.toThrow(
       'steps/build.md lists skill "notes", which no .claude/skills/*/SKILL.md defines\n' +
       'steps/build.md lists skill "ghost", which no .claude/skills/*/SKILL.md defines');
+  });
+});
+
+/*
+ * On Linux, Claude Code's sandbox is bubblewrap with socat, and a write step
+ * whose sandbox cannot start fails with nothing to show why. A host is
+ * chosen by `platform` and `searchPath`; the bwrap run is a real process.
+ */
+describe("the sandbox a write step runs in, at startup", () => {
+  const writing = new Map<string, Step>([
+    ["steps/build.md", { capabilities: ["repo:read", "repo:write"], prompt: "" } as Step],
+    ["steps/review.md", { capabilities: ["repo:read"], prompt: "" } as Step],
+  ]);
+  const reading = new Map([...writing].filter(([path]) => path !== "steps/build.md"));
+  const ctxOf = async (steps: Map<string, Step>, adapter = "claude"): Promise<ExecutorContext> => ({
+    config: { agent: { adapter } } as unknown as ExecutorContext["config"],
+    secrets: new Map(), signal: new AbortController().signal, log: () => {}, dir: await gitRepo(), redact: () => {}, steps, frontDoor: { hosts: [], origins: [] },
+  });
+  /** A folder for PATH holding each named script, made executable. */
+  const binDir = (scripts: Record<string, string>): string => {
+    const dir = mkdtempSync(join(tmpdir(), "sandbox-bin-"));
+    dirs.push(dir);
+    for (const [name, body] of Object.entries(scripts)) writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    return dir;
+  };
+  const linux = (searchPath: string): Claude => new Claude({ bin, platform: "linux", searchPath });
+
+  it("refuses the start when bwrap is not on PATH, naming the step and what to install", async () => {
+    const path = binDir({ socat: "exit 0" });
+    await expect(linux(path).create(await ctxOf(writing))).rejects.toThrow(
+      /^steps\/build\.md may write the repository, in Claude Code's sandbox, which cannot start on this host: bwrap is not on PATH\. Install bubblewrap and socat/);
+  });
+
+  it("names both when neither is on PATH, and runs no trial", async () => {
+    const empty = binDir({});
+    await expect(linux(empty).create(await ctxOf(writing))).rejects.toThrow(/: bwrap and socat are not on PATH\. Install bubblewrap and socat/);
+  });
+
+  it("refuses the start when bwrap's trial run fails, quoting what it said, with the user-namespace fix", async () => {
+    const path = binDir({ socat: "exit 0", bwrap: "echo 'bwrap: setting up uid map: Permission denied' >&2\nexit 1" });
+    const refused = linux(path).create(await ctxOf(writing));
+    await expect(refused).rejects.toThrow(/cannot start on this host: bwrap --unshare-net --unshare-pid --ro-bind \/ \/ true failed \(exit 1\): bwrap: setting up uid map: Permission denied\./);
+    await expect(refused).rejects.toThrow(
+      new RegExp(`If bwrap cannot create a user namespace: on Ubuntu 24\\.04, give ${join(path, "bwrap").replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")} an AppArmor profile that allows \`userns\``));
+  });
+
+  it("starts when bwrap and socat are there and the trial runs, with exactly the trial's arguments", async () => {
+    const out = mkdtempSync(join(tmpdir(), "sandbox-args-"));
+    dirs.push(out);
+    const path = binDir({ socat: "exit 0", bwrap: `echo "$@" > '${join(out, "args")}'` });
+    await expect(linux(path).create(await ctxOf(writing))).resolves.toBeDefined();
+    expect(readFileSync(join(out, "args"), "utf8")).toBe("--unshare-net --unshare-pid --ro-bind / / true\n");
+  });
+
+  it("does not run with no step that may write, when Claude only screens for another executor, or off Linux", async () => {
+    const empty = binDir({});
+    await expect(linux(empty).create(await ctxOf(reading))).resolves.toBeDefined();
+    await expect(linux(empty).create(await ctxOf(writing, "codex"))).resolves.toBeDefined();
+    await expect(new Claude({ bin, platform: "darwin", searchPath: empty }).create(await ctxOf(writing))).resolves.toBeDefined();
   });
 });
 

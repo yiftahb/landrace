@@ -631,6 +631,15 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
    */
   protected skillProblems?(root: string, listed: readonly string[]): Promise<string[]>;
 
+  /**
+   * Why the sandbox a step that may write runs in cannot start on this host,
+   * one sentence each, given the paths of those steps. Asked at startup, only
+   * when one is loaded: a read-only step runs without it, so an instance
+   * whose sandbox cannot start looks healthy until each write step fails.
+   * Absent, nothing is checked.
+   */
+  protected writeSandboxProblems?(paths: readonly string[]): Promise<string[]>;
+
   private extrasOf(agent: Record<string, unknown>): { extras: E; problems: string[] } {
     return this.readExtras?.(agent) ?? { extras: {} as E, problems: [] };
   }
@@ -798,6 +807,14 @@ export abstract class BaseExecutor<E extends object = Record<never, never>> impl
         for (const [path, skills] of skilled) problems.push(...(await this.skillProblems(root, skills)).map((p) => `${path} ${p}`));
       } catch (e) {
         problems.push(`the steps' skills could not be checked: ${messageOf(e)}`);
+      }
+    }
+    const writing = [...(ctx.steps ?? [])].filter(([, step]) => mayWriteRepo(step.capabilities)).map(([path]) => path);
+    if (writing.length && this.writeSandboxProblems) {
+      try {
+        problems.push(...(await this.writeSandboxProblems(writing)));
+      } catch (e) {
+        problems.push(`the sandbox the steps that may write run in could not be checked: ${messageOf(e)}`);
       }
     }
     if (problems.length) throw new Error(problems.join("\n"));

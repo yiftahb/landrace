@@ -534,6 +534,38 @@ describe("buildWorkspaceRuntime", () => {
     await expect(buildMain(await startWith("repo:read"), {})).resolves.toBeDefined();
   });
 
+  /*
+   * #230: on a Linux host where Claude Code's sandbox cannot start, read
+   * steps ran and each write step failed with an empty reason. `start`
+   * refuses before any step runs, naming the step and what to install; a
+   * workflow with only read steps starts there.
+   */
+  it("refuses a write step whose sandbox cannot start on a Linux host, and starts a read step there", async () => {
+    const claude = JSON.stringify(join(process.cwd(), "integrations", "claude", "index.ts"));
+    const empty = JSON.stringify(await mkdtemp(join(tmpdir(), "lr-empty-path-")));
+    const startWith = async (capabilities: string): Promise<string> => {
+      const { dir } = await fixture({});
+      await writeFile(join(dir, "hooks", "claude.ts"), `import { pathToFileURL } from "node:url";
+const { Claude } = await import(pathToFileURL(${claude}).href);
+export const claude = new Claude({ platform: "linux", searchPath: ${empty} });
+`);
+      await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+      await writeFile(join(workflowIn(dir), "steps", "build.md"), [
+        "---", `capabilities: [${capabilities}]`, "output:", "  discriminator: kind", "  shapes: { done: {} }",
+        "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+        "---", "", "build", "",
+      ].join("\n"));
+      await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW
+        .replace("    terminal: true\n", "    step: steps/build.md\n")
+        .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+      return dir;
+    };
+
+    await expect(buildMain(await startWith("repo:read, repo:write"), {})).rejects.toThrow(
+      /executor "claude" could not start: steps\/build\.md may write the repository, in Claude Code's sandbox, which cannot start on this host: bwrap and socat are not on PATH\. Install bubblewrap and socat/);
+    await expect(buildMain(await startWith("repo:read"), {})).resolves.toBeDefined();
+  });
+
   // Not only the kit's: a plain Executor hook with no handoff could never be
   // paired with either, and the item would sit in Needs you for good.
   it("refuses a stage that waits for a pairing under a plain executor hook with no handoff, and accepts one with", async () => {
