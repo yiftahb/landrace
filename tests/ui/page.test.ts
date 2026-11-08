@@ -1843,7 +1843,27 @@ describe("the page", () => {
   it("has a folder chip in the header, set from the board view", () => {
     const header = /<header[^>]*>[\s\S]*?<\/header>/.exec(PAGE_HTML)?.[0] ?? "";
     expect(header).toContain('id="folder"');
-    expect(APP_JS).toContain('getElementById("folder").textContent = view.folder');
+    expect(fnSource("render")).toContain("showFolder(view.folder)");
+  });
+
+  // An empty chip is still a bordered box beside the title: before the first
+  // poll lands, and on a board whose view carries no folder name.
+  it("starts the folder chip hidden, so it never shows empty before the first poll", () => {
+    const chip = /<span id="folder"[^>]*>/.exec(PAGE_HTML)?.[0] ?? "";
+    expect(chip).toMatch(/\shidden[\s>]/);
+  });
+
+  it("hides the folder chip for an empty name and shows it again for a later one", () => {
+    const folder = { textContent: "", hidden: true };
+    const show = runInNewContext(`${fnSource("showFolder")}showFolder`, {
+      document: { getElementById: (id: string) => (id === "folder" ? folder : null) },
+    }) as (name: string) => void;
+    show("landrace");
+    expect(folder).toEqual({ textContent: "landrace", hidden: false });
+    show("");
+    expect(folder).toEqual({ textContent: "", hidden: true });
+    show("other");
+    expect(folder).toEqual({ textContent: "other", hidden: false });
   });
 
   it("shows a quiet empty state, through textContent, when there is nothing to show", () => {

@@ -128,7 +128,7 @@ export const PAGE_HTML = `<!doctype html>
 ${MARK}
 <h1 class="text-sm font-semibold">Landrace</h1>
 </a>
-<span id="folder" class="min-w-0 truncate rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400"></span>
+<span id="folder" hidden class="min-w-0 truncate rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 font-mono text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400"></span>
 <span id="meta" class="hidden text-xs text-neutral-400 dark:text-neutral-500 lg:inline"></span>
 </div>
 <div class="flex flex-wrap items-center gap-2">
@@ -1721,6 +1721,14 @@ for (const lane of document.querySelectorAll("details[data-lane]")) {
   lane.querySelector("summary").addEventListener("click", () => chooseLane(lane));
 }
 
+// An empty chip still draws its border and background, a blank box beside the
+// title; the remote board's view carries no folder name.
+function showFolder(name) {
+  const folder = document.getElementById("folder");
+  folder.textContent = name;
+  folder.hidden = name === "";
+}
+
 function render(view) {
   lastView = view;
   syncLoading(view);
@@ -1779,7 +1787,7 @@ function render(view) {
   const status = document.getElementById("no-match");
   const said = search !== null && matched === 0 ? "Nothing matches." : "";
   if (status.textContent !== said) status.textContent = said;
-  document.getElementById("folder").textContent = view.folder;
+  showFolder(view.folder);
   // Empty unless a poll failed: a view that landed means landrace is answering.
   document.getElementById("meta").textContent = "";
   nextTickAt = view.nextTickAt;
