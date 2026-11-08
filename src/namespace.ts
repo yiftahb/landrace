@@ -3497,12 +3497,6 @@ export interface WorktreeState {
 }
 
 /**
- * Where git finds a step's worktree, as the engine names it rather than as
- * the worktree's own `.git` file does: a step that may write can rewrite that
- * file, or its admin folder's `commondir`, to hand the engine's git a config
- * of its own.
- */
-/**
  * The git paths a write run's agent may not write (`gitControlPaths`), in
  * two lists. `deny` goes to the executor as `denyWrite`: every one on macOS,
  * only those that exist on Linux, where bwrap makes each missing path it
@@ -3515,6 +3509,12 @@ export interface ControlPaths {
   absent: string[];
 }
 
+/**
+ * Where git finds a step's worktree, as the engine names it rather than as
+ * the worktree's own `.git` file does: a step that may write can rewrite that
+ * file, or its admin folder's `commondir`, to hand the engine's git a config
+ * of its own.
+ */
 export interface GitDirs {
   /** The one admin folder under `<common>/worktrees` whose `gitdir` names the worktree. */
   GIT_DIR: string;
