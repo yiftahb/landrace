@@ -1,5 +1,8 @@
 import { createHash, createSign, generateKeyPairSync, randomBytes } from "node:crypto";
 
+/** A userinfo answer: its claims, or the HTTP status of a refusal. */
+type UserInfo = Record<string, unknown> | number;
+
 /**
  * An OpenID Connect provider as a `fetch`: discovery, its keys, and a token
  * endpoint that checks the PKCE verifier and answers an RS256 ID token
@@ -10,9 +13,6 @@ import { createHash, createSign, generateKeyPairSync, randomBytes } from "node:c
  * endpoint answers for the access token that code buys: claims (with the
  * ID token's `sub` unless they name another), or a bare error status.
  */
-/** A userinfo answer: its claims, or the HTTP status of a refusal. */
-type UserInfo = Record<string, unknown> | number;
-
 export function fakeOidc(o: { issuer?: string; clientId?: string } = {}) {
   const issuer = o.issuer ?? "https://id.example.invalid/realms/team";
   const clientId = o.clientId ?? "landrace";
