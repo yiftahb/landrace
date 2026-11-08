@@ -6,7 +6,8 @@ import { promisify } from "node:util";
 
 import { GIT_GUARD_ARGS, INHERITED_ENV_KEYS } from "#conventions.js";
 import type { GitDirs, RemoteGuard, WorktreeBranch, WorktreePreparation, WorktreeSetup, WorktreeState } from "#namespace.js";
-import { sandboxRoot } from "#sandbox.js";
+import { CommonDirRefused, commonDirIntact } from "#kit/git.js";
+import { commonDirOf as sandboxCommonDir, sandboxRoot } from "#sandbox.js";
 import { containedPath } from "#workflow/load.js";
 import { messageOf } from "#runner/errors.js";
 
@@ -112,7 +113,7 @@ function scopeDir(scope: string): string {
  */
 async function git(args: string[], cwd: string, what: string, dirs?: GitDirs): Promise<string> {
   try {
-    const { stdout } = await exec("git", [...GIT_GUARD_ARGS, ...args], { cwd, ...(dirs === undefined ? {} : { env: { ...process.env, ...dirs } }) });
+    const { stdout } = await exec("git", [...GIT_GUARD_ARGS, ...args], { cwd, env: { ...process.env, ...(dirs ?? pinned(cwd)) } });
     return stdout;
   } catch (e) {
     const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
@@ -120,10 +121,36 @@ async function git(args: string[], cwd: string, what: string, dirs?: GitDirs): P
   }
 }
 
-/** The repository's common git directory, resolved, as the operator's checkout at `repoRoot` answers it. */
-async function commonDirOf(repoRoot: string, what: string): Promise<string> {
-  const out = (await git(["rev-parse", "--git-common-dir"], repoRoot, what)).trim();
-  return realpath(resolve(repoRoot, out));
+/**
+ * The common directory every git the engine runs in `cwd` is pinned to, as
+ * the sandbox found it the first time (`commonDirOf` in `#sandbox.js`): a
+ * `commondir` a step planted in it since hands git no config of its own, and
+ * is refused while it is there, since git still reads branches through it
+ * (`commonDirIntact`). Nothing outside a repository, where git says so in its
+ * own words. In a worktree, `gitDirsOf` pins its admin folder instead, whose
+ * own `commondir` is the one git's branches follow there.
+ */
+function pinned(cwd: string): { GIT_COMMON_DIR?: string } {
+  try {
+    const common = sandboxCommonDir(cwd);
+    commonDirIntact(common);
+    return { GIT_COMMON_DIR: common };
+  } catch (e) {
+    if (e instanceof CommonDirRefused) throw e;
+    return {};
+  }
+}
+
+/** git's environment for a command in `cwd` that `git` does not run: the operator's, pinned. */
+const envAt = (cwd: string): NodeJS.ProcessEnv => ({ ...process.env, ...pinned(cwd) });
+
+/** The repository's common git directory, resolved, as the operator's checkout at `repoRoot` answers it (`gitCommonDir`). */
+function commonDirOf(repoRoot: string, what: string): string {
+  try {
+    return sandboxCommonDir(repoRoot);
+  } catch (e) {
+    throw new Error(`${what}: ${messageOf(e)}`);
+  }
 }
 
 /**
@@ -176,7 +203,7 @@ async function adminDirOf(path: string, common: string, what: string): Promise<s
  */
 export async function gitDirsOf(path: string, repoRoot: string): Promise<GitDirs> {
   const what = `could not find the git directories of ${path}`;
-  const common = await commonDirOf(repoRoot, what);
+  const common = commonDirOf(repoRoot, what);
   return { GIT_DIR: await adminDirOf(path, common, what), GIT_COMMON_DIR: common, GIT_WORK_TREE: path };
 }
 
@@ -200,7 +227,7 @@ export async function worktreeIntact(path: string, repoRoot: string): Promise<vo
   const dotGit = join(path, ".git");
   if (await lstat(dotGit).then((s) => s.isDirectory(), () => false)) return;
   const what = `refusing to hand out or run in ${path}`;
-  const common = await commonDirOf(repoRoot, what);
+  const common = commonDirOf(repoRoot, what);
   const admin = await adminDirOf(path, common, what);
   // The .git file is what a person's or a setup command's git reads first: pointed anywhere
   // else, it hands that git a directory of the step's, whatever the admin folder holds.
@@ -260,7 +287,7 @@ const ADMIN_CONTROL_FILES = ["config", "config.worktree", "commondir", "gitdir",
  */
 export async function gitControlPaths(path: string, repoRoot: string): Promise<string[]> {
   const what = `could not list the git paths a write step may not write in ${path}`;
-  const common = await commonDirOf(repoRoot, what);
+  const common = commonDirOf(repoRoot, what);
   const under = join(common, "worktrees");
   const names = await readdir(under).catch((e: unknown) => {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [] as string[];
@@ -307,7 +334,7 @@ async function gitRemote(args: string[], cwd: string, what: string, guard: Remot
   try {
     const { stdout } = await exec("git", [...GIT_GUARD_ARGS, ...args], {
       cwd,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+      env: { ...envAt(cwd), GIT_TERMINAL_PROMPT: "0" },
       timeout: guard.timeoutMs,
       ...(guard.signal === undefined ? {} : { signal: guard.signal }),
     });
@@ -343,7 +370,7 @@ export async function repositoryRoot(dir: string): Promise<string> {
 /** The commit `ref` names, or null when there is no such ref. */
 async function commitOf(ref: string, cwd: string, what: string): Promise<string | null> {
   try {
-    const { stdout } = await exec("git", [...GIT_GUARD_ARGS, "rev-parse", "--verify", "-q", `${ref}^{commit}`], { cwd });
+    const { stdout } = await exec("git", [...GIT_GUARD_ARGS, "rev-parse", "--verify", "-q", `${ref}^{commit}`], { cwd, env: envAt(cwd) });
     return stdout.trim();
   } catch (e) {
     // `-q` makes a ref that is not there exit 1 and say nothing. Anything
@@ -369,7 +396,7 @@ async function commitOf(ref: string, cwd: string, what: string): Promise<string 
 async function caughtUp(branch: string, local: string, repoRoot: string, what: string): Promise<string> {
   const theirs = await commitOf(`refs/remotes/origin/${branch}`, repoRoot, what);
   if (theirs === null || theirs === local) return local;
-  const behind = await exec("git", [...GIT_GUARD_ARGS, "merge-base", "--is-ancestor", local, theirs], { cwd: repoRoot }).then(
+  const behind = await exec("git", [...GIT_GUARD_ARGS, "merge-base", "--is-ancestor", local, theirs], { cwd: repoRoot, env: envAt(repoRoot) }).then(
     () => true,
     (e: unknown) => {
       // Exit 1 is "not an ancestor"; anything else is a failure, not an answer.
@@ -389,7 +416,7 @@ async function caughtUp(branch: string, local: string, repoRoot: string, what: s
  */
 async function defaultBranch(repoRoot: string, what: string, guard: RemoteGuard): Promise<string> {
   const named = async (): Promise<string | null> => {
-    const ref = await exec("git", [...GIT_GUARD_ARGS, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { cwd: repoRoot }).then(
+    const ref = await exec("git", [...GIT_GUARD_ARGS, "symbolic-ref", "-q", "refs/remotes/origin/HEAD"], { cwd: repoRoot, env: envAt(repoRoot) }).then(
       ({ stdout }) => stdout.trim(),
       (e: unknown) => {
         // `-q` makes an unset ref exit 1 and say nothing; anything else is a failure, not an absence.
@@ -611,13 +638,21 @@ export async function removeWorktree(item: string, repoRoot: string, slot: strin
   // would be reporting it from the unwind of something else.
   const path = await pathFor(slot, repoRoot, scope).catch(() => null);
   if (path === null) return;
-  await exec("git", [...GIT_GUARD_ARGS, "worktree", "remove", "--force", path], { cwd: repoRoot }).catch(() => undefined);
+  // Pinned like every other git; one that cannot be pinned is not run, and that is one more failure left unsaid.
+  const quiet = async (args: string[]): Promise<void> => {
+    try {
+      await exec("git", [...GIT_GUARD_ARGS, ...args], { cwd: repoRoot, env: envAt(repoRoot) });
+    } catch {
+      // See below.
+    }
+  };
+  await quiet(["worktree", "remove", "--force", path]);
   // The registration and the directory can outlive each other — a remove that
   // failed because the repository moved leaves the directory behind, and that
   // is the disk leak. Both are cleared, and neither failure is reported: the
   // caller is usually already unwinding from something else.
   await rm(path, { recursive: true, force: true }).catch(() => undefined);
-  await exec("git", [...GIT_GUARD_ARGS, "worktree", "prune"], { cwd: repoRoot }).catch(() => undefined);
+  await quiet(["worktree", "prune"]);
 }
 
 /**
