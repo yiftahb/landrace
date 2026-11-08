@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { durationMs, ITEM_BRANCH } from "#conventions.js";
+import { durationMs, isOffsetTime, ITEM_BRANCH, OFFSET_TIME_HINT, sameLogin } from "#conventions.js";
 
 /** A URL's hostname on loopback, as `new URL` spells it: an IPv6 address bracketed. */
 const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -65,8 +65,38 @@ export const runtimeConfigSchema = z.object({
    * engine has no business having an opinion about it. It is carried through
    * to `ctx.config` unread. There is no `adapter` here either: hooks are
    * imported by path, so there is no id left to name.
+   *
+   * Except `formerLogins`, which is the engine's: whose records count is
+   * decided by `markTrust`, not by a hook. Each is an account the tracker
+   * posted as before, trusted only for what it wrote and last edited at or
+   * before `until`. An `until` with no offset is refused, because a bare date
+   * names a different instant in every timezone; one login listed twice is
+   * refused, because two cutoffs for one account is an ambiguity.
    */
-  tracker: z.record(z.unknown()).default({}),
+  tracker: z
+    .object({
+      formerLogins: z
+        .array(
+          z
+            .object({
+              login: z.string().refine((l) => l.trim() !== "", { message: "must name the account, not be blank" }),
+              // `isOffsetTime` beside zod's: zod also takes `+02` and `+0200`,
+              // and the reader that trusts by it must agree with what passed.
+              until: z.string().datetime({ offset: true, message: OFFSET_TIME_HINT }).refine(isOffsetTime, { message: OFFSET_TIME_HINT }),
+            })
+            .strict(),
+        )
+        .superRefine((list, ctx) => {
+          list.forEach((f, i) => {
+            if (list.slice(0, i).some((e) => sameLogin(e.login, f.login))) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: [i, "login"], message: `"${f.login}" is listed twice; one account has one cutoff` });
+            }
+          });
+        })
+        .default([]),
+    })
+    .catchall(z.unknown())
+    .default({}),
   /**
    * The branch an item's work is on, `{item}` filled with the tracker's id as
    * it gives it. Here and not a forge option: `validate` holds every

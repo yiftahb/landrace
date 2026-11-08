@@ -39,6 +39,20 @@ export type Closed = null | "done" | "dropped";
 
 export interface Origin { parent: string; stage: string; round: number }
 
+/** An account the tracker posted as before, trusted for what it wrote and last edited at or before `until`: `tracker.formerLogins`. */
+export interface FormerLogin { login: string; until: string }
+
+/** Whose marks count: the login landrace posts as now, with no time check, and each former one up to its cutoff. */
+export interface Logins { current: string; former: readonly FormerLogin[] }
+
+/**
+ * How far a mark is trusted, by its author and its times: `ours` counts, and
+ * every other is foreign — `unlisted`, by an account in neither list;
+ * `after-until`, by a former login, written or edited after its cutoff;
+ * `no-time`, by a former login, with no time the tracker gave to judge it by.
+ */
+export type MarkTrust = "ours" | "unlisted" | "after-until" | "no-time";
+
 export interface Node {
   id: string;
   kind: string;
@@ -484,6 +498,8 @@ export interface TrackerComment {
   id?: number | string | undefined;
   body: string;
   created_at: string;
+  /** When it was last edited, or created if never: a former login's mark counts only when this is at or before its cutoff. */
+  updated_at?: string | undefined;
   user?: { login?: string } | null;
 }
 
@@ -499,6 +515,9 @@ export interface WorklogRecord {
   author: string | null;
   seconds: number;
   marker: string | null;
+  /** When it was logged, and last changed: a former login's counts only up to its cutoff. */
+  created?: string | undefined;
+  updated?: string | undefined;
 }
 
 /* ---------------------------------------------------------------- config -- */
@@ -1258,12 +1277,19 @@ export interface BranchHeads {
 export interface SnapshotComment {
   body?: string;
   user?: { login?: string } | null;
+  /** Its times, which a former login's comment is judged by. */
+  created_at?: string | undefined;
+  updated_at?: string | undefined;
 }
 
-/** One comment on a review thread. `author` is null for an account since deleted. */
+/** One comment on a review thread, or a review. `author` is null for an account since deleted. */
 export interface ThreadComment {
   body: string;
   author: string | null;
+  /** When it was written, "" where the forge did not say: a former login's mark is judged by it. */
+  created_at: string;
+  /** When it was last edited, or written if never; absent where the forge does not say, and a former login's mark is not trusted without it. */
+  updated_at?: string | undefined;
 }
 
 /** A review thread on a pull request, as a forge integration maps its own answer into it. */
@@ -1351,6 +1377,8 @@ export interface ItemRecord {
   author: string | undefined;
   /** Who last edited the body, or undefined if nobody has since it was opened. */
   editor: string | undefined;
+  /** When `editor` last edited the body: a former login's edit counts only at or before its cutoff. */
+  editedAt?: string | undefined;
   createdAt: string | undefined;
   /** Optional, so an integration whose tracker cannot say still compiles. */
   updatedAt?: string | undefined;
@@ -1856,7 +1884,8 @@ export type EventName =
   | "agent.limited" | "integration.limited"
   | "person.connected" | "person.disconnected" | "person.paused" | "person.resumed"
   | "connection.expiring" | "connection.failed" | "connection.refreshed"
-  | "signin.ok" | "signin.refused" | "request.refused";
+  | "signin.ok" | "signin.refused" | "request.refused"
+  | "records.foreign";
 
 export interface LandraceEvent {
   name: EventName;

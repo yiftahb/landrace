@@ -4,7 +4,9 @@
  * back as the engine's. None of it belongs to a tracker — any tracker's hook
  * uses the same names — so none of it lives in a hook.
  */
-import type { Effect, Entry, Graph, HandoffArg, Marker, Node, Origin, Relationship, TrackerComment, Trailing } from "#namespace.js";
+import type {
+  Effect, Entry, FormerLogin, Graph, HandoffArg, Logins, Marker, MarkTrust, Node, Origin, Relationship, TrackerComment, Trailing,
+} from "#namespace.js";
 
 /*
  * No admission label among them: what starts an item is each workflow's own
@@ -1049,19 +1051,108 @@ export function sameLogin(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
+/** An instant, from a time the tracker gave; null for none, or one that does not parse. */
+const instant = (at: string | null | undefined): number | null => {
+  if (typeof at !== "string" || at === "") return null;
+  const ms = Date.parse(at);
+  return Number.isNaN(ms) ? null : ms;
+};
+
+/**
+ * Whether a mark by `author` is ours, and if not, why not.
+ *
+ * The current login is ours with no time check. A former login is ours only
+ * for what it wrote and last edited at or before its `until`: its person may
+ * still hold the account after the switch, and a former login trusted for
+ * ever is one they could forge records with. The times are the tracker's,
+ * never the body's — a body is text its author chose. `edited` is null for a
+ * thing known never to have been edited, which needs no edit time; absent,
+ * or unparseable, is a time the tracker did not give, and nothing is
+ * trusted on a time it cannot read.
+ */
+export function markTrust(
+  author: string | null | undefined, { created, edited }: { created: string | undefined; edited: string | null | undefined }, logins: Logins,
+): MarkTrust {
+  // Fail closed, and loudly. An empty login would make every marker read as
+  // foreign — the engine would believe no step had ever run and re-invoke paid
+  // steps forever, which has cost real money on this project once.
+  if (!logins.current.trim()) throw new Error("reading markers needs the login landrace posts as; refusing to read them without it");
+  if (typeof author !== "string") return "unlisted";
+  // sameLogin: an app is `myapp[bot]` on its comments and may be configured as
+  // `myapp`, and reading our own records as a person's re-runs every paid step.
+  if (sameLogin(author, logins.current)) return "ours";
+  const former = logins.former.find((f) => sameLogin(f.login, author));
+  if (former === undefined) return "unlisted";
+  const until = instant(former.until);
+  const made = instant(created);
+  const changed = edited === null ? made : instant(edited);
+  if (until === null || made === null || changed === null) return "no-time";
+  return made <= until && changed <= until ? "ours" : "after-until";
+}
+
+/**
+ * `tracker.formerLogins`, as the configuration holds it — `[]` without the
+ * key. The schema already refused a malformed one; a configuration built
+ * some other way, by a test or an embedder, is judged again rather than
+ * trusted, because a former login read wrong is one trusted for ever.
+ */
+export function formerLoginsOf(config: { tracker?: unknown } | undefined): readonly FormerLogin[] {
+  const list = (config?.tracker as { formerLogins?: unknown } | undefined)?.formerLogins;
+  if (list === undefined) return [];
+  if (!Array.isArray(list)) throw new Error("tracker.formerLogins is a list of { login, until }");
+  return list.map((f: unknown, i): FormerLogin => {
+    const { login, until } = (f ?? {}) as { login?: unknown; until?: unknown };
+    if (typeof login !== "string" || login.trim() === "") throw new Error(`tracker.formerLogins.${i}.login must name the account`);
+    if (!isOffsetTime(until)) throw new Error(`tracker.formerLogins.${i}.until ${OFFSET_TIME_HINT}`);
+    return { login, until };
+  });
+}
+
+/** What an `until` must be, in the words the schema and this reader both refuse with. */
+export const OFFSET_TIME_HINT = 'must be a date and time with its offset, like "2026-11-01T09:00:00Z"';
+
+/**
+ * A date and time that names its offset — `Z`, or `±hh:mm` — and that
+ * parses. A bare date names a different instant in every timezone.
+ */
+export const isOffsetTime = (at: unknown): at is string =>
+  typeof at === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(at) && instant(at) !== null;
+
+/** How a comment's marker is trusted: judged at its creation and its last edit. */
+const commentTrust = (c: Pick<TrackerComment, "user" | "created_at" | "updated_at">, logins: Logins): MarkTrust =>
+  markTrust(c.user?.login, { created: c.created_at, edited: c.updated_at }, logins);
+
+/**
+ * The marks on these comments that do not count — each author once per
+ * reason, so the operator knows what to fix: list a login, move its `until`,
+ * or accept that a tracker gave no time. A plain comment is a reply, never
+ * foreign.
+ */
+export function foreignRecords(comments: TrackerComment[], logins: Logins): { count: number; authors: Array<{ login: string; why: Exclude<MarkTrust, "ours"> }> } {
+  let count = 0;
+  const authors: Array<{ login: string; why: Exclude<MarkTrust, "ours"> }> = [];
+  for (const c of comments) {
+    if (parseMarker(c.body ?? "") === null) continue;
+    const why = commentTrust(c, logins);
+    if (why === "ours") continue;
+    count++;
+    const login = c.user?.login ?? "?";
+    if (!authors.some((a) => a.login === login && a.why === why)) authors.push({ login, why });
+  }
+  return { count, authors };
+}
+
 /**
  * Who created this item, when it was a step — or null.
  *
  * Authorship first, exactly as entriesFromComments: an origin is control
  * state, because a breakdown re-run closes whatever claims it. A person who
  * could write one into an issue body could have their issue — and everything
- * hanging off it — cascaded closed by somebody else's item.
+ * hanging off it — cascaded closed by somebody else's item. Its author is
+ * judged at `created`; who edited it since is the caller's to judge.
  */
-export function parseOrigin(body: string, author: string | undefined, botLogin: string): Origin | null {
-  if (!botLogin.trim()) {
-    throw new Error("parseOrigin needs the login landrace posts as; refusing to read markers without it");
-  }
-  if (typeof author !== "string" || !sameLogin(author, botLogin)) return null;
+export function parseOrigin(body: string, author: string | undefined, created: string | undefined, logins: Logins): Origin | null {
+  if (markTrust(author, { created, edited: null }, logins) !== "ours") return null;
   const m = parseMarker(body);
   if (!m || m.kind !== CHILD_KIND) return null;
   const { parent, round, stage } = m as { parent?: unknown; round: number; stage: string };
@@ -1283,22 +1374,22 @@ const headOf = (m: Marker): { head?: string } => (typeof m.head === "string" && 
  * The trailing-marker rule does not help there: it stops a *quoted* example
  * being mistaken for a real one, not someone who deliberately puts one last.
  * Authorship is the check; syntax is not.
+ *
+ * Ours is `markTrust`'s: the current login, or a former one within its
+ * cutoff. Every other marked comment is dropped, neither a record nor a
+ * reply. Read as a reply, a login change made each old record a person's
+ * turn — firing every reply trigger at once — and a stranger's pasted
+ * marker is no more a person speaking than it is a record.
  */
-export function entriesFromComments(comments: TrackerComment[], botLogin: string): Entry[] {
-  // Fail closed, and loudly. An empty login would make every marker read as
-  // human — the engine would believe no step had ever run and re-invoke paid
-  // steps forever, which has cost real money on this project once.
-  if (!botLogin.trim()) {
+export function entriesFromComments(comments: TrackerComment[], logins: Logins): Entry[] {
+  if (!logins.current.trim()) {
     throw new Error("entriesFromComments needs the login landrace posts as; refusing to read markers without it");
   }
-  return comments.map((c) => {
-    // sameLogin, as parseOrigin reads a child's author: an app is `myapp[bot]`
-    // on its comments and may be configured as `myapp`, and reading our own
-    // records as a person's re-runs every paid step it has already finished.
+  return comments.flatMap((c): Entry[] => {
     const author = c.user?.login;
-    const ours = typeof author === "string" && sameLogin(author, botLogin);
-    const marker = ours ? parseMarker(c.body ?? "") : null;
-    return marker
+    const marker = parseMarker(c.body ?? "");
+    if (marker !== null && commentTrust(c, logins) !== "ours") return [];
+    return [marker
       ? {
           stage: marker.stage,
           kind: marker.kind,
@@ -1320,6 +1411,6 @@ export function entriesFromComments(comments: TrackerComment[], botLogin: string
           at: c.created_at,
           byAgent: false,
           text: c.body ?? "",
-        };
+        }];
   });
 }
