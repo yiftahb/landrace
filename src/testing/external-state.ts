@@ -206,7 +206,9 @@ export class MemoryTracker extends BaseTracker {
   /** A comment on an item, under `author`'s login, dated after every one already there. */
   post(id: string, author: string, body: string): void {
     const row = this.row(id);
-    row.comments.push({ id: this.nextComment++, body, created_at: this.at(row.comments), user: { login: author } });
+    // Updated when created, as a tracker answers for one never edited.
+    const at = this.at(row.comments);
+    row.comments.push({ id: this.nextComment++, body, created_at: at, updated_at: at, user: { login: author } });
   }
 
   private add(s: Partial<ExternalItem>, id: string): ExternalItem {
