@@ -139,8 +139,13 @@ export function commonDirIntact(common: string): void {
 export function ownGit(root: () => Promise<string>): Git {
   let found: Promise<{ dir: string; common: string }> | undefined;
   return async (args, env, opts) => {
-    found ??= root().then((dir) => ({ dir, common: gitCommonDir(dir) }));
-    const { dir, common } = await found;
+    // A refusal is not kept: the message tells the operator to remove the
+    // file and carry on, so the next call asks again rather than needing a restart.
+    const asked = found ??= root().then((dir) => ({ dir, common: gitCommonDir(dir) }));
+    asked.catch(() => {
+      if (found === asked) found = undefined;
+    });
+    const { dir, common } = await asked;
     commonDirIntact(common);
     return gitIn(dir)(args, { ...env, GIT_COMMON_DIR: common }, opts);
   };

@@ -86,6 +86,28 @@ describe("a commondir in <root>/.git at startup", () => {
     await expect(ownGit(async () => root)(["rev-parse", "HEAD"])).rejects.toThrow(join(realpathSync(join(root, ".git")), "commondir"));
   });
 
+  it("lets ownGit carry on once it is removed, without a restart", async () => {
+    const root = await gitRepo();
+    const planted = join(root, ".git", "commondir");
+    await writeFile(planted, `${await elsewhere()}\n`);
+    const own = ownGit(async () => root);
+    await expect(own(["rev-parse", "HEAD"])).rejects.toThrow(join(realpathSync(join(root, ".git")), "commondir"));
+    await rm(planted);
+    await expect(own(["rev-parse", "HEAD"])).resolves.toMatch(/^[0-9a-f]{40}/);
+  });
+
+  it("asks for the root again after it failed once", async () => {
+    const root = await gitRepo();
+    let calls = 0;
+    const own = ownGit(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("not yet");
+      return root;
+    });
+    await expect(own(["rev-parse", "HEAD"])).rejects.toThrow("not yet");
+    await expect(own(["rev-parse", "HEAD"])).resolves.toMatch(/^[0-9a-f]{40}/);
+  });
+
   it("leaves a directory outside any repository its own identity", async () => {
     const dir = realpathSync(await mkdtemp(join(tmpdir(), "lr-plain-")));
     made.push(dir);
