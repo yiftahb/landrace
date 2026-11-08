@@ -1120,6 +1120,18 @@ export function formerLoginsOf(config: { tracker?: unknown } | undefined): reado
   return read;
 }
 
+/**
+ * Each `tracker.formerLogins` entry whose `until` is later than `now`, named.
+ * An `until` is the moment of a switch already made: one in the future —
+ * 2062 typed for 2026 — trusts the former account for decades. `validate`
+ * has no clock, so the caller that has one, `start`, refuses on these.
+ */
+export function futureUntilProblems(config: { tracker?: unknown } | undefined, now: Date): string[] {
+  return formerLoginsOf(config).flatMap((f, i) => Date.parse(f.until) > now.getTime()
+    ? [`tracker.formerLogins.${i} ("${f.login}"): until ${f.until} is later than now (${now.toISOString()}); an until is the moment of the switch, already past`]
+    : []);
+}
+
 /** What an `until` must be, in the words the schema and this reader both refuse with. */
 export const OFFSET_TIME_HINT = 'must be a date and time with its offset, like "2026-11-01T09:00:00Z"';
 

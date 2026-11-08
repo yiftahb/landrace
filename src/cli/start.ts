@@ -24,7 +24,7 @@ import { createSlotPool } from "#runner/pool.js";
 import { send as sendPage } from "#ui/server.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
-import { CREDENTIALS_ROOT, durationMs, LOCAL_PERSON_ID, RECORD_EFFECT } from "#conventions.js";
+import { CREDENTIALS_ROOT, durationMs, futureUntilProblems, LOCAL_PERSON_ID, RECORD_EFFECT } from "#conventions.js";
 import { stepTimeoutMs } from "#runner/budget.js";
 import type {
   ActivityLog,
@@ -961,6 +961,9 @@ export async function personGate(
   // A remote door that lists nobody in `people.allow` would admit nobody: `validate` reports the same words.
   const unserved = [...serveProblems(loaded.config.serve, loaded.config.people?.oidc), ...allowProblems(loaded.config.people)];
   if (unserved.length) throw new Error(unserved.map((p) => `${p.rule}: ${p.message}`).join("\n"));
+  // `validate` has no clock; the gate does, so a future `until` is refused here.
+  const future = futureUntilProblems(loaded.config, new Date());
+  if (future.length) throw new Error(future.join("\n"));
   // The redaction list, as the build judges it, but for a per-person secret:
   // one nothing answers yet is the Integrations tab's to mend, and the build
   // judges it once it is. Left to the build, a name no secret defines would

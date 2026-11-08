@@ -1,4 +1,4 @@
-import { entriesFromComments, foreignRecords, formerLoginsOf, markTrust, parseOrigin, renderMarker, renderOrigin } from "#conventions.js";
+import { entriesFromComments, foreignRecords, formerLoginsOf, futureUntilProblems, markTrust, parseOrigin, renderMarker, renderOrigin } from "#conventions.js";
 import type { Logins, RuntimeConfig, TrackerComment } from "#namespace.js";
 
 /*
@@ -81,6 +81,26 @@ describe("formerLoginsOf", () => {
     const twice = config({ formerLogins: [{ login: "old", until: T }, { login: "other", until: T }, { login: "OLD[bot]", until: AFTER }] });
     expect(() => formerLoginsOf(twice)).toThrow(/formerLogins\.0 \("old"\) and tracker\.formerLogins\.2 \("OLD\[bot\]"\)/);
     expect(formerLoginsOf(config({ formerLogins: [{ login: "old", until: T }, { login: "older", until: T }] }))).toHaveLength(2);
+  });
+});
+
+describe("futureUntilProblems", () => {
+  const config = (tracker: unknown): RuntimeConfig => ({ tracker } as unknown as RuntimeConfig);
+  const NOW = new Date("2026-11-08T10:00:00Z");
+
+  it("names each entry whose until is later than now — 2062 typed for 2026 — and none already past", () => {
+    const list = config({ formerLogins: [{ login: "gone", until: "2026-11-08T09:59:59Z" }, { login: "old", until: "2062-11-01T09:00:00Z" }] });
+    expect(futureUntilProblems(list, NOW)).toEqual([
+      expect.stringMatching(/^tracker\.formerLogins\.1 \("old"\): until 2062-11-01T09:00:00Z is later than now \(2026-11-08T10:00:00\.000Z\)/),
+    ]);
+  });
+
+  it("judges by the instant, offset included, and lets an until of exactly now pass", () => {
+    expect(futureUntilProblems(config({ formerLogins: [{ login: "old", until: "2026-11-08T11:30:00+02:00" }] }), NOW)).toEqual([]);
+    expect(futureUntilProblems(config({ formerLogins: [{ login: "old", until: "2026-11-08T10:00:00Z" }] }), NOW)).toEqual([]);
+    expect(futureUntilProblems(config({ formerLogins: [{ login: "old", until: "2026-11-08T10:30:00+00:30" }] }), NOW)).toEqual([]);
+    expect(futureUntilProblems(config({ formerLogins: [{ login: "old", until: "2026-11-08T10:00:01Z" }] }), NOW)).toHaveLength(1);
+    expect(futureUntilProblems(config({}), NOW)).toEqual([]);
   });
 });
 
