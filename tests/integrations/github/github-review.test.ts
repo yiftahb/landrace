@@ -423,9 +423,13 @@ describe("a former login's thread comments and reviews, on GitHub", () => {
   const AFTER = "2026-01-01T13:00:00Z";
   const fixed = `Fixed.${renderMarker({ stage: "fix-review", kind: "fix", round: 1, marker: "fix:fix-review:1:T1" })}`;
   /** The times of `old`'s reply: within the cutoff, then each way outside it. "" is a time GitHub did not give. */
+  type Times = { createdAt: string; publishedAt?: string | null; lastEditedAt: string | null };
   const within = { createdAt: BEFORE, lastEditedAt: null };
-  const outside: Array<[string, { createdAt: string; lastEditedAt: string | null }]> = [
+  const outside: Array<[string, Times]> = [
     ["created after the until", { createdAt: AFTER, lastEditedAt: null }],
+    // A review comment is stamped when it is drafted, and a pending review never expires.
+    ["drafted before the until and submitted after it", { createdAt: BEFORE, publishedAt: AFTER, lastEditedAt: null }],
+    ["with no publish time", { createdAt: BEFORE, publishedAt: null, lastEditedAt: null }],
     ["edited after the until", { createdAt: BEFORE, lastEditedAt: AFTER }],
     ["with no time", { createdAt: "", lastEditedAt: null }],
   ];
@@ -445,7 +449,7 @@ describe("a former login's thread comments and reviews, on GitHub", () => {
   };
   const fixRound = (output: unknown): Effect => ({ type: "pull.review", branch: "landrace/7", marker: "fix:1", stage: "fix-review", round: 1, body: "Fixed.", output });
   const prState = (s: Snapshot) => ((s.graph as Graph | undefined)?.nodes.find((n: Node) => n.id === "pr-20"))?.state;
-  const withOldReply = (times: { createdAt: string; lastEditedAt: string | null }): FakeTracker =>
+  const withOldReply = (times: Times): FakeTracker =>
     withPull([{ id: "T1", isResolved: false, body: `off by one${findingMarker(0)}`, path: "src/a.ts", line: 2, replies: [{ author: "old", body: fixed, ...times }] }]);
 
   it("reads old's fix reply within the cutoff as the fixer's, and does not reply again", async () => {
@@ -470,7 +474,7 @@ describe("a former login's thread comments and reviews, on GitHub", () => {
   });
 
   it("resolves only a finding old raised within the cutoff", async () => {
-    const make = (times: { createdAt: string; lastEditedAt: string | null }): FakeTracker =>
+    const make = (times: Times): FakeTracker =>
       withPull([{ id: "T1", isResolved: false, body: `off by one${findingMarker(0)}`, author: "old", path: "src/a.ts", line: 2, ...times }]);
     const ok = make(within);
     await run(ok, review({ kind: "reviewed", findings: [], resolved: ["T1"] }, 2));

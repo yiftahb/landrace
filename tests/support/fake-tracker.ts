@@ -101,8 +101,10 @@ export interface FakeThread {
   createdAt?: string;
   /** When its opening comment was last edited: null, or absent, for never. */
   lastEditedAt?: string | null;
+  /** When its opening comment was submitted, which for a drafted review comment is after `createdAt`: absent for `createdAt`, null for none given. */
+  publishedAt?: string | null;
   /** The argument under the finding, oldest first, each stamped like the opening when it says no time. */
-  replies?: Array<{ author: string; body: string; createdAt?: string; lastEditedAt?: string | null }>;
+  replies?: Array<{ author: string; body: string; createdAt?: string; publishedAt?: string | null; lastEditedAt?: string | null }>;
 }
 
 export interface FakePull {
@@ -449,10 +451,10 @@ export function createFakeTracker(
       // `isResolved` and the last word, the briefing and the history the rest.
       nodes: page.map((t, i) => {
         t.createdAt ??= stamp();
-        const opening = { body: t.body, createdAt: t.createdAt, lastEditedAt: t.lastEditedAt ?? null, author: { login: t.author ?? BOT } };
+        const opening = { body: t.body, createdAt: t.createdAt, publishedAt: t.publishedAt === undefined ? t.createdAt : t.publishedAt, lastEditedAt: t.lastEditedAt ?? null, author: { login: t.author ?? BOT } };
         const said = [opening, ...(t.replies ?? []).map((r) => {
           r.createdAt ??= stamp();
-          return { body: r.body, createdAt: r.createdAt, lastEditedAt: r.lastEditedAt ?? null, author: { login: r.author } };
+          return { body: r.body, createdAt: r.createdAt, publishedAt: r.publishedAt === undefined ? r.createdAt : r.publishedAt, lastEditedAt: r.lastEditedAt ?? null, author: { login: r.author } };
         })];
         return {
           id: t.id ?? `thread-${pull.number}-${from + i}`,

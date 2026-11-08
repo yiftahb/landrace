@@ -95,8 +95,8 @@ query LandraceThreads($owner: String!, $name: String!, $number: Int!, $cursor: S
           isResolved
           path
           line
-          comments(first: 1) { totalCount nodes { body createdAt lastEditedAt author { login } } }
-          lastReply: comments(last: 1) { nodes { body createdAt lastEditedAt author { login } } }
+          comments(first: 1) { totalCount nodes { body createdAt publishedAt lastEditedAt author { login } } }
+          lastReply: comments(last: 1) { nodes { body createdAt publishedAt lastEditedAt author { login } } }
         }
       }
     }
@@ -173,7 +173,10 @@ type Page<T> = { pageInfo: { hasNextPage: boolean; endCursor: string | null }; n
 /** `author` is null for a deleted account, which GitHub shows as "ghost". */
 interface ThreadNodeComment {
   body: string | null;
+  /** When it was drafted, for a review comment — which may be long before anyone saw it. */
   createdAt?: string;
+  /** When it was submitted. Null for a comment still pending. */
+  publishedAt?: string | null;
   /** Null for a comment never edited. */
   lastEditedAt?: string | null;
   author: { login: string } | null;
@@ -210,10 +213,28 @@ const recordOf = (pull: PullNode): PullRecord => ({
 /** A thread comment as GraphQL answers it, as the kit reads one: a deleted account is no author at all. */
 const commentOf = (c: ThreadNodeComment | undefined): ThreadComment | null => {
   if (c === undefined) return null;
+  const created = writtenAt(c);
   // Never edited is last edited when it was written; no creation time is no time at all.
-  const edited = c.lastEditedAt ?? c.createdAt;
-  return { body: c.body ?? "", author: c.author?.login ?? null, created_at: c.createdAt ?? "", ...(edited === undefined ? {} : { updated_at: edited }) };
+  const edited = c.lastEditedAt ?? created;
+  return { body: c.body ?? "", author: c.author?.login ?? null, created_at: created, ...(edited === "" ? {} : { updated_at: edited }) };
 };
+
+/**
+ * When a comment was written, as far as a cutoff is concerned: the later of
+ * `createdAt` and `publishedAt`. GitHub stamps a review comment's `createdAt`
+ * when it is drafted, and a pending review never expires, so a former login
+ * could draft a reply before its `until` and submit it after — `createdAt`
+ * alone would trust it. Either time missing is no time: "".
+ */
+function writtenAt(c: ThreadNodeComment): string {
+  const created = c.createdAt ?? "";
+  const published = c.publishedAt ?? "";
+  if (created === "" || published === "") return "";
+  const a = Date.parse(created);
+  const b = Date.parse(published);
+  if (Number.isNaN(a) || Number.isNaN(b)) return "";
+  return b > a ? published : created;
+}
 
 /** A review thread as GraphQL answers it, as the kit reads one, placed in time by its opening comment. */
 const threadOf = (t: ThreadNode): ReviewThread => ({
