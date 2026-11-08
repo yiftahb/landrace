@@ -248,10 +248,21 @@ export function createRoster(opts: RosterOptions): Roster {
     return creds.paused === undefined ? undefined : `${personId} paused their runs`;
   };
 
-  /** Each runtime's pause, as its person's file says now. */
+  // How many pauses and resumes each person's runtime has been given, so a
+  // read of their file that one overtook is not applied over it.
+  const pauses = new Map<string, number>();
+
+  /**
+   * Each runtime's pause, as its person's file says now — unless a pause or
+   * resume landed while the file was read: what it set is newer than the
+   * read. Applied regardless, a read begun before `/pause` wrote undid it,
+   * and the tick worked every item of a person whose board said Paused.
+   */
   const markIdle = async (running: ReadonlyArray<{ entry: PersonRuntime; rt: WorkspaceRuntime }>): Promise<void> => {
     await Promise.all(running.map(async ({ entry, rt }) => {
+      const at = pauses.get(entry.person.id) ?? 0;
       const why = await whyIdle(entry.person.id);
+      if ((pauses.get(entry.person.id) ?? 0) !== at) return;
       if (why === undefined) delete rt.paused;
       else rt.paused = why;
     }));
@@ -318,6 +329,7 @@ export function createRoster(opts: RosterOptions): Roster {
         }
         // At once, not at the next tick: a check going now starts no step,
         // and a slot freed starts nothing for them.
+        pauses.set(person.id, (pauses.get(person.id) ?? 0) + 1);
         const rt = entries.get(person.id)?.slot.current() ?? null;
         if (rt === null) return;
         if (paused) {

@@ -533,6 +533,62 @@ describe("pausing a person's runs", () => {
     expect(await after.roster.paused("alice")).toBe(true);
   });
 
+  /*
+   * Review of #231: a tick's read of the file, begun before a pause wrote it
+   * and answered after, set the runtime back to running, and that tick worked
+   * every item of a person whose board said Paused. Its twin re-paused a
+   * runtime just resumed. The read here is held until the pause has answered.
+   */
+  async function heldRead(): Promise<{ store: CredentialStore; arm: () => void; held: () => boolean; release: () => void }> {
+    const inner = await storeOf(["alice"]);
+    let armed = false;
+    let holding = false;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    gates.push(open);
+    const store: CredentialStore = {
+      ...inner,
+      read: async (id) => {
+        const read = await inner.read(id);
+        if (armed && id === "alice") {
+          armed = false;
+          holding = true;
+          await gate;
+        }
+        return read;
+      },
+    };
+    return { store, arm: () => { armed = true; }, held: () => holding, release: () => open() };
+  }
+
+  it("keeps a pause that lands while a tick reads the file: that tick works nothing for her", async () => {
+    const h = await heldRead();
+    const w = await world({ people: ["alice"], store: h.store, items: [{ id: "1", labels: ["for:alice"] }] });
+    h.arm();
+    const ticking = w.roster.tick();
+    await until(h.held, "the tick's read of alice's file");
+    await w.roster.pause(ALICE, true);
+    h.release();
+    await ticking;
+
+    expect(w.runs).toEqual([]);
+    expect(w.events.filter((e) => e.name === "lock.acquired")).toEqual([]);
+  });
+
+  it("keeps a resume that lands while a tick reads the file: that tick works her items", async () => {
+    const h = await heldRead();
+    const w = await world({ people: ["alice"], store: h.store, items: [{ id: "1", labels: ["for:alice"] }] });
+    await w.roster.pause(ALICE, true);
+    h.arm();
+    const ticking = w.roster.tick();
+    await until(h.held, "the tick's read of alice's file");
+    await w.roster.pause(ALICE, false);
+    h.release();
+    await ticking;
+
+    expect(w.runs.map((r) => `${r.person}:${r.item}`)).toEqual(["alice:1"]);
+  });
+
   it("logs one event for a pause asked twice, and none for a resume of someone running", async () => {
     const w = await world({ people: ["alice"], items: [] });
     await w.roster.pause(ALICE, false);
