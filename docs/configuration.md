@@ -279,6 +279,7 @@ The credentials file is JSON, mode 0600, in a directory of mode 0700, sealed on 
 - `person` is `{ id, email?, name? }`. Its `id` must be the file's name.
 - Each connection holds `fields`, `source` (`paste`, `oauth`, `lookup` or `override`) and `connectedAt`, an ISO 8601 time.
 - A connection may also hold `expiresAt`, `failedAt`, `failure` and `refresh: { token }`. Any other key makes the file unreadable.
+- `paused: { at }`, an ISO 8601 time, is there while the person has paused their runs from the board's cog menu ([Pausing your runs](cli.md#pausing-your-runs)). Resuming removes it. A file that cannot be read runs nothing for that person, since whether they paused is unknown.
 
 The board's [Integrations tab](cli.md#the-board) writes a credential you paste into it, with `source: paste`, and one you connect with its provider, with `source: oauth` — its `expiresAt` the provider's end for it, and its `refresh` the token `start` renews it with (see [Connect with GitLab or GitHub](integrations.md#connect-with-gitlab-or-github)). It removes one you disconnect. An identity cannot be pasted: `start` looks it up by `people.local.email` and writes it with `source: lookup` (see [Connections](hooks.md#connections)). To name one a lookup cannot find, write it by hand, as above, or set the variable. When a step's agent refuses a stored login, or a provider refuses to renew one, `start` adds `failedAt` and `failure` to it. Every value in the file is cut from the log once it is read, if it is 8 characters or longer, and a pasted one before its connection's `check` runs; a per-person secret is also handed to hooks and scrubbed as any secret is (see [.env](#env)). A per-person var is still a var: it reaches comments and prompts unredacted. How runs are kept from reading the file is in [Security](security.md#stored-credentials).
 
@@ -328,6 +329,13 @@ Three are about a person's connections:
 - **`connection.expiring`** — `{ connection, expiresAt, daysLeft }`. A stored connection has 30 days or fewer left. `start` logs it at most once a day per connection, at the first tick of each UTC day. Not for a connection made by OAuth that holds a refresh token, which `start` renews before its end.
 - **`connection.failed`** — `{ item, workflow, stage, round }`. A step's agent refused the person's own stored login, such as a Claude token that has expired. The step is unavailable as before and writes no record; the connection is marked failed, `start` rebuilds its runtime, and nothing runs until it is connected again. With `{ connection, error }` instead, either marking it failed did not work, and why, or renewing an OAuth token failed: refused by the provider, when the connection is marked failed in the same way, or not answered, when the next minute's pass asks again — see [Connect with GitLab or GitHub](integrations.md#connect-with-gitlab-or-github).
 - **`connection.refreshed`** — `{ connection, expiresAt? }`. `start` renewed a token made by OAuth before its end, stored it, and handed it to the running hooks. Neither token is in the event.
+
+Two are about a person's runs:
+
+- **`person.paused`** — `{ person, personEmail? }`. The person chose **Pause my runs** in the board's cog menu, and their runtime stopped working ([Pausing your runs](cli.md#pausing-your-runs)). Logged once per pause: choosing it again while paused logs nothing.
+- **`person.resumed`** — `{ person, personEmail? }`. The person chose **Resume my runs**. The next tick works their items again.
+
+While a person is paused, each of their ticks logs `tick.skipped` with the reason `<id> paused their runs`. When their credentials file cannot be read, the reason says that whether they paused is unknown.
 
 On a remote instance, `signin.ok`, `signin.refused` and `request.refused` record sign-ins and refused requests — see [Remote mode](remote.md#events).
 
