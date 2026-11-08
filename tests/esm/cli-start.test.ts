@@ -2536,6 +2536,59 @@ export const chatIdentity = brand("connection", {
     }
   }, 30_000);
 
+  /*
+   * #229: one identity a var and a secret both name — the account id a
+   * predicate compares and an integration scopes its tracker by — builds;
+   * one credential both name is refused, on its row in the tab and in the log.
+   */
+  const SHARED = (connection: string): string =>
+    `vars: { me: { perPerson: true, connection: ${connection} } }\n`;
+  const sharedSecret = async (dir: string, connection: string): Promise<void> => {
+    const yaml = join(dir, "landrace.yaml");
+    await writeFile(yaml, (await readFile(yaml, "utf8")).replace(
+      "secrets: { githubToken: $LR_TEST_TOKEN }", `secrets: { githubToken: $LR_TEST_TOKEN, shared: { perPerson: true, connection: ${connection} } }`));
+  };
+  const FOR_ME = WORKFLOW.replace("Writing the spec, round {round}.", "Writing the spec for {vars.me}, round {round}.");
+
+  it("builds a runtime whose var and secret one identity field answers, each holding the looked-up value", async () => {
+    const { dir } = await fixture({ hookExtra: CHAT_IDENTITY, configExtra: EMAIL + SHARED("chat.user"), workflow: FOR_ME });
+    await sharedSecret(dir, "chat.user");
+    const credentials = await storeOf(null);
+    const gate = await localGate(dir, credentials);
+    expect(gate.resolution).toMatchObject({ ready: true, problems: [] });
+    const rt = await buildMain(dir, { credentials });
+    expect(rt.deps.ctx.secrets.get("shared")).toBe(LOOKED_UP);
+    expect(JSON.stringify(rt.deps.workflow)).toContain(`Writing the spec for ${LOOKED_UP}`);
+  }, 30_000);
+
+  it("refuses a runtime whose var and secret one credential field answers, on that connection's row and in the log", async () => {
+    const { dir } = await fixture({ hookExtra: FORGE_CONNECTION, configExtra: SHARED("forge.token"), workflow: FOR_ME });
+    await sharedSecret(dir, "forge.token");
+    const credentials = await storeOf({ forge: { fields: { token: PASTED }, source: "paste", connectedAt: new Date().toISOString() } });
+    await expect(buildWorkspaceRuntime(dir, { credentials })).rejects.toThrow(/connection\.failed: vars entry "me" resolves to the same value as a secret/);
+    await expect(runStart(dir, { ...keyless(), once: true, credentials })).rejects.toThrow(/vars entry "me" resolves to the same value as a secret/);
+
+    const { serve, drive } = inProcessDoor();
+    const printed: string[] = [];
+    const said: string[] = [];
+    const [log, error] = [console.log, console.error];
+    console.log = (line: unknown): void => { printed.push(String(line)); };
+    console.error = (line: unknown): void => { said.push(String(line)); };
+    const running = runStart(dir, { ...keyless(), interactive: false, credentials, serve });
+    try {
+      await until(() => said.some((l) => l.includes("triage page at ")), "the page to start");
+      const me = JSON.parse((await drive("/people/me")).body) as { ready: boolean; connections: Array<{ id: string; state: string; detail?: string }> };
+      expect(me.ready).toBe(false);
+      expect(me.connections).toEqual([expect.objectContaining({ id: "forge", state: "failed", detail: expect.stringMatching(/vars entry "me" resolves to the same value as a secret/) })]);
+      await until(() => eventsIn(printed).some((e) => e.name === "connection.failed" && /vars entry "me" resolves/.test(String(e["error"]))), "the refusal in the log");
+      expect(printed.join("\n")).not.toContain(PASTED);
+    } finally {
+      process.emit("SIGINT");
+      await running;
+      [console.log, console.error] = [log, error];
+    }
+  }, 30_000);
+
   it("says why a lookup found nobody, and asks again at the next gate", async () => {
     const { dir } = await fixture({ hookExtra: CHAT_IDENTITY, configExtra: "people: { local: { email: other@example.invalid } }\n" });
     const credentials = await storeOf(null);

@@ -1032,7 +1032,8 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     problems: [],
   };
   const { loaded } = local;
-  // Unresolved secrets, unresolved vars, a var holding a secret's value, and
+  // Unresolved secrets, unresolved vars, a var holding a secret's value — a
+  // pair with a per-person key in it is the person's judging's, below — and
   // a per-person key nothing answers — worded once, in config/load.ts and
   // people/resolve.ts, because `landrace validate` reports the same and a
   // daemon that checked fewer of them than the CLI would run a configuration

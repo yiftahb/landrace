@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **One identity can answer a per-person var and a per-person secret.** A remote person whose `vars.me` and `secrets.jiraAssignee` both name `jira.accountId` signed in, saw every connection made, and nothing ran for them: their runtime was refused because the var "resolves to the same value as a secret", which only the log said. Now a var and a secret that are both per-person keys answered by a connection of `kind: identity` are let through, and both carry the looked-up value. A var that shares a credential's value, or a value its variable gave, is still refused. When it is a per-person key's, the refusal is `connection.failed`, judged once the hooks load. The Integrations tab shows it on the row of the connection that answered the key, and the log still records it. See [Per-person keys](docs/configuration.md#per-person-keys).
+
 ## [2.0.2] - 2026-11-08
 
 ### Fixed

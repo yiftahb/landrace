@@ -1,10 +1,10 @@
 import { join } from "node:path";
-import { configProblems, loadConfig } from "#config/load.js";
+import { configProblems, loadConfig, varHoldsSecret } from "#config/load.js";
 import { LOCAL_PERSON_ID } from "#conventions.js";
 import { perPersonKeys } from "#people/keys.js";
 import { messageOf } from "#runner/errors.js";
 import type {
-  ConnectionDef, ConnectionStatus, ConnectionValue, CredentialStore, ExecutorConnection, LoadedConfig, LocalConfig, PerPersonKey, Person, PersonCredentials,
+  ConnectionDef, ConnectionStatus, ConnectionValue, CredentialStore, ExecutorConnection, KeySide, LoadedConfig, LocalConfig, PerPersonKey, Person, PersonCredentials,
   PersonResolution, Problem, Registry, RuntimeContext,
 } from "#namespace.js";
 
@@ -262,12 +262,16 @@ export function resolvePerson(
     return known;
   };
   const whose = `${person.id}'s "`;
+  // The connection that answered each per-person key, by "var:name" or
+  // "secret:name"; null for one its variable answered.
+  const answeredBy = new Map<string, ConnectionDef | null>();
 
   for (const key of perPersonKeys(loaded.config)) {
     const into = key.kind === "var" ? vars : secretValues;
     const fromEnv = mapOf(loaded, key).get(key.name);
     if (fromEnv !== undefined && !remote) {
       into.set(key.name, fromEnv);
+      answeredBy.set(`${key.kind}:${key.name}`, null);
       continue;
     }
     const { id, field } = key.connection;
@@ -298,6 +302,7 @@ export function resolvePerson(
     const value = status.state === "connected" ? creds.connections[def.id]?.fields[field] : undefined;
     if (filled(value)) {
       into.set(key.name, value);
+      answeredBy.set(`${key.kind}:${key.name}`, def);
     } else if (status.state === "expired" || (status.state === "failed" && creds.problem === undefined)) {
       problems.push({ rule: `connection.${status.state}`, message: `${entry(key)}: ${whose}${def.id}" connection is ${status.state}: ${status.detail ?? ""}; connect ${def.id} again` });
     } else {
@@ -321,8 +326,53 @@ export function resolvePerson(
     });
   }
 
+  problems.push(...varsHoldingPersonSecrets(loaded, vars, secretValues, answeredBy, statuses));
+
   return {
     secretValues, vars, statuses: [...statuses.values()], problems,
     ready: !problems.some((p) => p.rule.startsWith("connection.")),
   };
+}
+
+/**
+ * `varsHoldingSecrets` for each pair with a per-person key in it, which only
+ * a person's judging can see: a var whose value a secret also holds, when
+ * either is a per-person key. Not when both are answered by an identity
+ * connection's field — an account id, looked up and shown as text, that a
+ * predicate needs as a var and an integration reads from secrets, is no
+ * credential in a var. A credential shared with a var, or a key its variable
+ * answered, is refused as `configProblems` refuses two variables. Each
+ * connection that answered either side is marked failed with the reason, so
+ * the person's own row in the Integrations tab says why nothing runs.
+ */
+function varsHoldingPersonSecrets(
+  loaded: LoadedConfig, personVars: ReadonlyMap<string, string>, personSecrets: ReadonlyMap<string, string>,
+  answeredBy: ReadonlyMap<string, ConnectionDef | null>, statuses: Map<string, ConnectionStatus>,
+): Problem[] {
+  const { config } = loaded;
+  const sides = (kind: "var" | "secret", fixed: ReadonlyMap<string, string>, personal: ReadonlyMap<string, string>): KeySide[] => {
+    const section = kind === "var" ? config.vars : config.secrets;
+    return [
+      ...[...fixed].filter(([name]) => typeof section[name] === "string").map(([name, value]) => ({ name, value, by: undefined })),
+      ...[...personal].map(([name, value]) => ({ name, value, by: answeredBy.get(`${kind}:${name}`) ?? null })),
+    ].filter((s) => s.value.trim() !== "");
+  };
+  const secrets = sides("secret", loaded.secretValues, personSecrets);
+  const identity = (s: KeySide): boolean => s.by?.kind === "identity";
+  const problems: Problem[] = [];
+  const blamed = new Map<string, string[]>();
+  for (const v of sides("var", loaded.vars, personVars)) {
+    const clash = secrets.filter((s) => s.value.trim() === v.value.trim() && (v.by !== undefined || s.by !== undefined) && !(identity(v) && identity(s)));
+    if (clash.length === 0) continue;
+    const message = varHoldsSecret(v.name);
+    problems.push({ rule: "connection.failed", message });
+    for (const side of [v, ...clash]) {
+      if (side.by) blamed.set(side.by.id, [...new Set([...(blamed.get(side.by.id) ?? []), message])]);
+    }
+  }
+  for (const [id, why] of blamed) {
+    const status = statuses.get(id);
+    if (status) statuses.set(id, { ...status, state: "failed", detail: why.join("; ") });
+  }
+  return problems;
 }

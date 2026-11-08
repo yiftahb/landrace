@@ -193,6 +193,24 @@ describe("a var that is really a secret", () => {
     expect(varsHoldingSecrets(loaded)).toEqual(["token"]);
   });
 
+  // #229: only a per-person key an identity answers is exempt, and that is
+  // `resolvePerson`'s to judge; two variables that happen to agree are not one.
+  it("is named when two variables hold one account id", async () => {
+    const dir = await fixture("LR_X=acc-5b10ac8d82e05b22\nLR_Y=acc-5b10ac8d82e05b22\n", "vars: { me: $LR_X }\n");
+    await writeFile(join(dir, "landrace.yaml"), CONFIG.replace("secrets: { githubToken: $GITHUB_TOKEN }", "secrets: { githubToken: $GITHUB_TOKEN, jiraAssignee: $LR_Y }") + "vars: { me: $LR_X }\n");
+    const loaded = await loadConfig(dir);
+    expect(varsHoldingSecrets(loaded)).toEqual(["me"]);
+    expect(() => assertConfigUsable(dir, loaded)).toThrow(/vars: vars entry "me" resolves to the same value as a secret/);
+  });
+
+  it("leaves a pair with a per-person key in it to the person's judging", async () => {
+    const dir = await fixture("LR_X=acc-5b10ac8d82e05b22\nLR_Y=acc-5b10ac8d82e05b22\n");
+    await writeFile(join(dir, "landrace.yaml"), CONFIG.replace("secrets: { githubToken: $GITHUB_TOKEN }",
+      "secrets: { githubToken: $GITHUB_TOKEN, jiraAssignee: { perPerson: true, env: LR_Y, connection: jira.accountId } }") +
+      "vars: { me: $LR_X }\n");
+    expect(varsHoldingSecrets(await loadConfig(dir))).toEqual([]);
+  });
+
   it("says nothing about an ordinary var", async () => {
     const loaded = await loadConfig(await fixture("GITHUB_TOKEN=ghp_x", "vars:\n  team: platform\n"));
     expect(varsHoldingSecrets(loaded)).toEqual([]);

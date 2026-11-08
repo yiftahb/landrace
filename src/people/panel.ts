@@ -64,7 +64,10 @@ export function createPeoplePanel(opts: {
       const fields: Record<string, string[]> = {};
       const identities: Record<string, Record<string, string>> = {};
       const oauth: Record<string, string> = {};
-      const connections = defs.map((def) => connectionStatus(def, creds, at.getTime(), reasons));
+      // The judging's own rows where it has one: it marks a connection whose
+      // value a var shares failed, which the store alone cannot tell.
+      const judged = resolvePerson(loaded, registry, caller, creds, opts.mode, at, reasons);
+      const connections = defs.map((def) => judged.statuses.find((s) => s.id === def.id) ?? connectionStatus(def, creds, at.getTime(), reasons));
       for (const def of defs) {
         // Who a lookup matched, shown to that person alone — this read is
         // their own file — so they can tell it matched someone else. Never
@@ -81,7 +84,7 @@ export function createPeoplePanel(opts: {
       return {
         person: caller,
         connections,
-        ready: resolvePerson(loaded, registry, caller, creds, opts.mode, at, reasons).ready,
+        ready: judged.ready,
         hints,
         fields,
         identities,
