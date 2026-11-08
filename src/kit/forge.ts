@@ -36,25 +36,20 @@ export const FINDING_KIND = "finding";
 export const FIX_KIND = "fix";
 
 /**
- * Whether a thread's last word is the fixer's answer — ours, by login and
- * marker both, since anyone with comment access can paste a marker. Anything
- * else last, or no reply at all, is a thread awaiting a fix.
- */
-/**
  * Whether a thread comment, or a review, is ours by `markTrust`: the current
  * login, or a former one that wrote and last edited it by its cutoff.
  */
 export const wroteThread = (c: ThreadComment | null | undefined, logins: Logins): boolean =>
   c != null && markTrust(c.author, { created: c.created_at, edited: c.updated_at }, logins) === "ours";
 
+/**
+ * Whether a thread's last word is the fixer's answer — ours, by login and
+ * marker both, since anyone with comment access can paste a marker. Anything
+ * else last, or no reply at all, is a thread awaiting a fix.
+ */
 export const answered = (last: ThreadComment | null | undefined, logins: Logins): boolean =>
   wroteThread(last, logins) && parseMarker(last?.body ?? "")?.kind === FIX_KIND;
 
-/**
- * Whether a thread opens with the reviewer's own wording finding: ours, by
- * login and marker both, as `answered` reads the fixer's — a person who pasted
- * the marker opened a thread of their own, and theirs is never wording (#71).
- */
 /**
  * Whether a thread is one the reviewer raised: its opening ours, by login and
  * marker both. Only those may the reviewer resolve, and only those are named
@@ -63,6 +58,11 @@ export const answered = (last: ThreadComment | null | undefined, logins: Logins)
 const ownFinding = (thread: Pick<ReviewThread, "first">, logins: Logins): boolean =>
   wroteThread(thread.first, logins) && parseMarker(thread.first?.body ?? "")?.kind === FINDING_KIND;
 
+/**
+ * Whether a thread opens with the reviewer's own wording finding: ours, by
+ * login and marker both, as `answered` reads the fixer's — a person who pasted
+ * the marker opened a thread of their own, and theirs is never wording (#71).
+ */
 const wordingFinding = (first: ThreadComment | null | undefined, logins: Logins): boolean => {
   if (!wroteThread(first, logins)) return false;
   const marker = parseMarker(first?.body ?? "");
