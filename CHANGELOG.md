@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **On Linux, `start` and `validate` check that a write step's sandbox can start.** Claude Code runs a write step's commands in bubblewrap, which needs `bwrap` and `socat` on `PATH`. Ubuntu 24.04 also refuses bwrap a user namespace unless an AppArmor profile allows one. Before, read-only steps ran and every write step failed, one item after another. Now, when a workflow has a `repo:write` step under Claude, `start` refuses and `validate` reports it under `executor`, naming the steps. A missing program says to install bubblewrap and socat. A failed trial `bwrap` run quotes what bwrap printed and gives the AppArmor fix. macOS, Codex and workflows with no write step are not checked. See [A write step's sandbox](docs/security.md#a-write-steps-sandbox) and [Remote mode](docs/remote.md#before-you-start).
+
+### Fixed
+
+- **A Claude step that fails with an empty result says why.** When Claude Code's sandbox cannot start, its result's text is empty and the cause is in its `subtype` and `errors`. Before, the step's reason read `agent reported an error: ` with nothing after it. Now the reason names the `subtype` and each error. A result with text keeps its text as the reason.
+
 ## [2.0.2] - 2026-11-08
 
 ### Fixed
