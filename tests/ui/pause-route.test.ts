@@ -119,7 +119,8 @@ describe("POST /pause and POST /resume", () => {
 
   it("404s both routes on a board handed no pause", async () => {
     const w = await world();
-    const { pause: _, ...without } = w.ui;
+    const without: UiOptions = { ...w.ui };
+    delete without.pause;
     expect((await drive(without, "/pause", post("pause"))).status).toBe(404);
     expect((await drive(without, "/resume", post("resume"))).status).toBe(404);
     expect(JSON.parse((await drive(without, "/board.json")).body)).toEqual(empty);
