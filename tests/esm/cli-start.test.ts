@@ -529,9 +529,48 @@ describe("buildWorkspaceRuntime", () => {
       return dir;
     };
 
-    await expect(buildMain(await startWith("repo:read, repo:write"), {})).rejects.toThrow(
-      /executor "codex" could not start: steps\/build\.md may write the repository, and the codex executor cannot keep a run from writing a path/);
+    const refused = await buildMain(await startWith("repo:read, repo:write"), {}).then(() => "started", (e: unknown) => String(e));
+    expect(refused).toMatch(/executor "codex" could not start: steps\/build\.md may write the repository, and the codex executor cannot keep a run from writing a path/);
+    // Codex keeps its own sandbox: Claude's Linux check (#230) is not run for it.
+    expect(refused).not.toMatch(/bwrap|socat/);
     await expect(buildMain(await startWith("repo:read"), {})).resolves.toBeDefined();
+  });
+
+  /*
+   * #230: on a Linux host where Claude Code's sandbox cannot start, read
+   * steps ran and each write step failed with an empty reason. `start`
+   * refuses before any step runs, naming the step and what to install; a
+   * workflow with only read steps starts there.
+   */
+  it("refuses a write step whose sandbox cannot start on a Linux host, and starts a read step there", async () => {
+    const claude = JSON.stringify(join(process.cwd(), "integrations", "claude", "index.ts"));
+    const empty = JSON.stringify(await mkdtemp(join(tmpdir(), "lr-empty-path-")));
+    const startWith = async (capabilities: string): Promise<string> => {
+      const { dir } = await fixture({});
+      await writeFile(join(dir, "hooks", "claude.ts"), `import { pathToFileURL } from "node:url";
+const { Claude } = await import(pathToFileURL(${claude}).href);
+export const claude = new Claude({ platform: "linux", searchPath: ${empty} });
+`);
+      await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+      await writeFile(join(workflowIn(dir), "steps", "build.md"), [
+        "---", `capabilities: [${capabilities}]`, "output:", "  discriminator: kind", "  shapes: { done: {} }",
+        "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+        "---", "", "build", "",
+      ].join("\n"));
+      await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW
+        .replace("    terminal: true\n", "    step: steps/build.md\n")
+        .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+      return dir;
+    };
+
+    const writing = await startWith("repo:read, repo:write");
+    await expect(buildMain(writing, {})).rejects.toThrow(
+      /executor "claude" could not start: steps\/build\.md may write the repository, in Claude Code's sandbox, which cannot start on this host: bwrap and socat are not on PATH\. Install bubblewrap and socat/);
+    await expect(buildMain(await startWith("repo:read"), {})).resolves.toBeDefined();
+    // The host is start's to judge, never validate's: the same workflow
+    // passes validate's executor rule, and nothing it reports names bwrap.
+    const { problems } = await runValidate(writing);
+    expect(problems.filter((p) => p.rule === "executor" || /bwrap|socat/.test(p.message))).toEqual([]);
   });
 
   // Not only the kit's: a plain Executor hook with no handoff could never be
@@ -567,8 +606,15 @@ describe("buildWorkspaceRuntime", () => {
    * a template that is none is refused with the configuration.
    */
   it("holds a stage's branch to the one landrace.yaml names, and refuses one that is no template", async () => {
+    const claude = JSON.stringify(join(process.cwd(), "integrations", "claude", "index.ts"));
     const branched = async (config: string, branch: string): Promise<string> => {
       const { dir } = await fixture({ configExtra: config });
+      // A write step: a Claude for a host whose sandbox needs no check, so
+      // the test passes on a Linux machine without bubblewrap (#230).
+      await writeFile(join(dir, "hooks", "claude.ts"), `import { pathToFileURL } from "node:url";
+const { Claude } = await import(pathToFileURL(${claude}).href);
+export const claude = new Claude({ platform: "darwin" });
+`);
       await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
       await writeFile(join(workflowIn(dir), "steps", "build.md"), [
         "---", "capabilities: [repo:read, repo:write]", "output:", "  discriminator: kind", "  shapes: { done: {} }",

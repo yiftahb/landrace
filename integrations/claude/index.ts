@@ -7,11 +7,12 @@
  * A project's hook is `export const claude = new Claude();`, or a subclass
  * that overrides one piece.
  */
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, existsSync, realpathSync } from "node:fs";
-import { copyFile, mkdir, open, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, open, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, posix, sep } from "node:path";
+import { delimiter, dirname, join, posix, sep } from "node:path";
 import { BaseExecutor, CREDENTIALS_DENY, DEFAULT_DENY, shortPath } from "landrace/kit";
 import type {
   AgentSettings, EventReading, FrontDoor, HandoffPlan, HookLog, McpServerConfig, PairingKind, RunPlan, SandboxSettings, StepKey,
@@ -102,6 +103,65 @@ function toolLine(name: string, input: unknown, cwd: string): string {
   const args = input !== null && typeof input === "object" ? (input as Record<string, unknown>) : {};
   const key = TOOL_ARGS.find((k) => typeof args[k] === "string" && args[k] !== "");
   return key === undefined ? name : `${name} ${shortPath(args[key] as string, cwd)}`;
+}
+
+/**
+ * Why an error result failed: its text, or, when that is empty, its
+ * `subtype` and `errors`. A sandbox that cannot start ends the run with an
+ * empty `result` and the cause in `errors`, and a reason built from `result`
+ * alone read "agent reported an error: " with nothing after it.
+ */
+function errorOf({ result, subtype, errors }: { result?: unknown; subtype?: unknown; errors?: unknown }): string {
+  const text = String(result ?? "").trim();
+  if (text) return `agent reported an error: ${text}`;
+  const listed = (Array.isArray(errors) ? errors : errors === undefined || errors === null ? [] : [errors])
+    .map((err) => (typeof err === "string" ? err : JSON.stringify(err)))
+    .filter((err) => err !== "");
+  const parts = [...(typeof subtype === "string" && subtype !== "" ? [subtype] : []), ...(listed.length ? [listed.join("; ")] : [])];
+  return parts.length ? `agent reported an error: ${parts.join(": ")}` : "agent reported an error, and gave no reason, subtype or errors";
+}
+
+/** Where `name` is on `searchPath`, as a shell would find it: the first executable file of that name. */
+async function onPath(name: string, searchPath: string): Promise<string | undefined> {
+  for (const dir of searchPath.split(delimiter).filter((d) => d !== "")) {
+    const path = join(dir, name);
+    const file = await stat(path).catch(() => undefined);
+    if (file?.isFile() && (await access(path, constants.X_OK).then(() => true, () => false))) return path;
+  }
+  return undefined;
+}
+
+/** The sandbox's own trial: what Claude Code asks of bwrap, with nothing in it. */
+const BWRAP_TRIAL = ["--unshare-net", "--unshare-pid", "--ro-bind", "/", "/", "true"];
+const BWRAP_TRIAL_MS = 10_000;
+
+/**
+ * Why Claude Code's sandbox cannot start on this Linux host, or undefined
+ * when it can: bwrap and socat on `searchPath`, and a trial run of bwrap in
+ * the namespaces the sandbox asks for. Ubuntu 24.04 refuses an unprivileged
+ * user namespace to a program no AppArmor profile allows one, and a missing
+ * profile is the usual reason a bwrap that is installed still fails.
+ */
+async function linuxSandboxProblem(searchPath: string): Promise<string | undefined> {
+  const [bwrap, socat] = await Promise.all([onPath("bwrap", searchPath), onPath("socat", searchPath)]);
+  const missing = [...(bwrap === undefined ? ["bwrap"] : []), ...(socat === undefined ? ["socat"] : [])];
+  if (missing.length || bwrap === undefined) {
+    return `${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} not on PATH. ` +
+      "Install bubblewrap and socat (on Debian or Ubuntu: apt install bubblewrap socat)";
+  }
+  const failed = await new Promise<string | undefined>((resolve) => {
+    execFile(bwrap, BWRAP_TRIAL, { env: { PATH: searchPath }, timeout: BWRAP_TRIAL_MS, killSignal: "SIGKILL" }, (error, _stdout, stderr) => {
+      if (error === null) return resolve(undefined);
+      const said = String(stderr).trim().replace(/\s+/g, " ").slice(0, 500);
+      const how = error.killed ? `did not finish within ${BWRAP_TRIAL_MS / 1000}s`
+        : typeof error.code === "number" ? `failed (exit ${error.code})` : `could not run (${error.message})`;
+      resolve(`${how}${said ? `: ${said}` : ""}`);
+    });
+  });
+  if (failed === undefined) return undefined;
+  return `bwrap ${BWRAP_TRIAL.join(" ")} ${failed}. ` +
+    `If bwrap cannot create a user namespace: on Ubuntu 24.04, give ${bwrap} an AppArmor profile that allows \`userns\`, ` +
+    "or allow unprivileged user namespaces (sysctl kernel.apparmor_restrict_unprivileged_userns=0)";
 }
 
 /** The name the CLI gives a directory's sessions: its path, every character but a letter or digit made "-". */
@@ -417,10 +477,30 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
   protected override readonly keepsDenyWrite = true;
   /** Whose `~/.claude` a session is looked up in. The operator's own, but for a test. */
   private readonly home: string;
+  /** The host's platform and PATH, which the sandbox's check reads. This process's own, but for a test. */
+  private readonly platform: NodeJS.Platform;
+  private readonly searchPath: string;
 
-  constructor({ bin = "claude", home = homedir() }: { bin?: string | undefined; home?: string | undefined } = {}) {
+  constructor({ bin = "claude", home = homedir(), platform = process.platform, searchPath = process.env.PATH ?? "" }: {
+    bin?: string | undefined; home?: string | undefined; platform?: NodeJS.Platform | undefined; searchPath?: string | undefined;
+  } = {}) {
     super(bin);
     this.home = home;
+    this.platform = platform;
+    this.searchPath = searchPath;
+  }
+
+  /**
+   * On Linux, whether Claude Code's sandbox — bubblewrap, with socat for its
+   * network proxy — can start here. `failIfUnavailable` refuses a write run
+   * whose sandbox cannot, with an empty result; read-only steps need no
+   * sandbox, so the instance looked healthy while each write step failed.
+   * macOS's Seatbelt is part of the system, so there is nothing to check.
+   */
+  protected override async writeSandboxProblems(paths: readonly string[]): Promise<string[]> {
+    if (this.platform !== "linux") return [];
+    const why = await linuxSandboxProblem(this.searchPath);
+    return why === undefined ? [] : [`${paths.join(", ")} may write the repository, in Claude Code's sandbox, which cannot start on this host: ${why}`];
   }
 
   protected readExtras(agent: Record<string, unknown>): { extras: ClaudeExtras; problems: string[] } {
@@ -583,7 +663,7 @@ export class Claude extends BaseExecutor<ClaudeExtras> {
         done: true,
         session: e.session_id,
         text: String(e.result ?? ""),
-        ...(e.is_error ? { error: `agent reported an error: ${String(e.result ?? "")}` } : {}),
+        ...(e.is_error ? { error: errorOf(e) } : {}),
       };
     }
     const content = e.message?.content;

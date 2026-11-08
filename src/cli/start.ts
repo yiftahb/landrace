@@ -1195,7 +1195,10 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
     // steps, whose efforts it refuses now rather than at each step's first run.
     // A context of its own per workflow, so a factory two workflows share is
     // built once for each, against that workflow's steps (see `executorFor`).
-    const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps, pairingStages: pairingStages(workflow), frontDoor, denyPaths };
+    // `checksHost`: this runtime runs the steps, so the factory judges this
+    // host too — a write step's sandbox that cannot start — which `validate`
+    // leaves alone.
+    const ectx: ExecutorContext = { ...ctx, dir, redact: log.redact, steps, pairingStages: pairingStages(workflow), frontDoor, denyPaths, checksHost: true };
     // Named on what converge and notify log for it — `agent.limited` among
     // them — without a field of its own in deps.
     const workflowLog = log.with({ workflow: id });

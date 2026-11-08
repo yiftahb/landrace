@@ -202,6 +202,36 @@ export const codex = new Codex();
   });
 
   /*
+   * #230: whether Claude Code's sandbox can start is a fact about the host,
+   * which `start` checks; `validate` judges the configuration. Checking the
+   * host here failed `validate` on every Linux machine without bubblewrap, CI
+   * and this repository's own tests included. The hook is a Claude for a Linux
+   * host whose PATH holds neither bwrap nor socat, and `start` refuses it.
+   */
+  it("passes a write step on a Linux host whose sandbox cannot start", async () => {
+    const problems = async (capabilities: string): Promise<Problem[]> => {
+      const dir = join(await mkdtemp(join(tmpdir(), "lr-validate-")), ".landrace");
+      const empty = await mkdtemp(join(tmpdir(), "lr-empty-path-"));
+      await mkdir(join(dir, "hooks"), { recursive: true });
+      await writeFile(join(dir, "hooks", "claude.ts"), `import { pathToFileURL } from "node:url";
+const { Claude } = await import(pathToFileURL(${JSON.stringify(join(process.cwd(), "integrations", "claude", "index.ts"))}).href);
+export const claude = new Claude({ platform: "linux", searchPath: ${JSON.stringify(empty)} });
+`);
+      await writeFile(join(dir, "landrace.yaml"), "version: 1\nagent: { adapter: claude }\n");
+      const main = workflowIn(dir);
+      await mkdir(join(main, "steps"), { recursive: true });
+      const minimal = join(process.cwd(), "tests", "fixtures", "minimal");
+      await writeFile(join(main, "workflow.yaml"), (await readFile(join(minimal, "workflow.yaml"), "utf8"))
+        .replace("name: minimal\n", "name: minimal\nhooks: [../../hooks/claude.ts]\n"));
+      await writeFile(join(main, "steps", "spec.md"), (await readFile(join(minimal, "steps", "spec.md"), "utf8"))
+        .replace("capabilities: [repo:read]", `capabilities: [${capabilities}]`));
+      return (await runValidate(dir)).problems.filter((p) => p.rule === "executor");
+    };
+    expect(await problems("repo:read, repo:write")).toEqual([]);
+    expect(await problems("repo:read")).toEqual([]);
+  });
+
+  /*
    * A step that may write under an integration that has not shown it keeps a
    * run from the git paths the engine lists: `validate` reports what `start`
    * refuses, naming the step, and a read step under it passes.
