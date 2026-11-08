@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Jira lookup by email finds a person whose email their profile hides.** Jira Cloud answers a hidden email as an empty string, not by leaving it out. Before, the lookup read that as a different email and dropped the person, so `jiraConnection` said Jira found nobody, and a `jiraAssignee`, mention or user field given that email matched no user. This showed only when another account did the lookup, such as a remote instance's shared Jira account, because Jira always shows you your own email. Now an empty or blank email counts as hidden. An email that matches several users is still refused. See [One developer's issues](docs/integrations.md#one-developers-issues).
+
 ## [2.0.2] - 2026-11-08
 
 ### Fixed

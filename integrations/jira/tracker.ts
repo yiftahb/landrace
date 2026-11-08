@@ -413,13 +413,14 @@ function worklogLogged(worklogs: WorklogRecord[], effect: Effect, bot: string): 
 /**
  * The users an email may be: those Jira finds for it whose email it shows as
  * that one, or hides — Jira keeps most emails private, so one shown none may
- * be the one meant. Null when the search fills a page, and the one meant may
- * be past it.
+ * be the one meant. Jira Cloud answers a hidden email as `""`, not by leaving
+ * it out: read as another email, it dropped the one person the search found
+ * (#226). Null when the search fills a page, and the one meant may be past it.
  */
 async function usersWithEmail(jira: Client, email: string): Promise<User[] | null> {
   const found = await jira.call<User[] | null>("GET", `/rest/api/3/user/search?query=${encodeURIComponent(email)}&maxResults=${USER_PAGE}`) ?? [];
   if (found.length >= USER_PAGE) return null;
-  return found.filter((u) => u.emailAddress === undefined || same(u.emailAddress, email));
+  return found.filter((u) => !u.emailAddress?.trim() || same(u.emailAddress, email));
 }
 
 /** Issues one `issue/bulkfetch` returns whatever fields it asks for: up to 1000 only when they are named, and this stays inside both. */
