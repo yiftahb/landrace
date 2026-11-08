@@ -765,9 +765,13 @@ export abstract class BaseTracker {
    * its path-coverage rule from this list, so a path declared and not
    * provided passes a workflow that reads nothing. Only what a graph cannot
    * hold: the title, labels and assignees are the node's.
+   *
+   * Except `tracker.foreign`, put there and deliberately not declared: how
+   * many marks do not count is a number any commenter can raise, so no
+   * workflow may route on it. The engine reads it to say `records.foreign`.
    */
   provides(): string[] {
-    return ["item", "item.body", "item.comments", "entries", "tracker", "tracker.bot", "tracker.former", "tracker.foreign"];
+    return ["item", "item.body", "item.comments", "entries", "tracker", "tracker.bot", "tracker.former"];
   }
 
   /**
