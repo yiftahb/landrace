@@ -76,6 +76,20 @@ describe("formerLoginsOf", () => {
     expect(() => formerLoginsOf(config({ formerLogins: [{ login: "old", until: "2026-11-01" }] }))).toThrow(/formerLogins/);
     expect(() => formerLoginsOf(config({ formerLogins: "old" }))).toThrow(/formerLogins/);
   });
+
+  it("halts on a login listed twice, naming both entries, rather than letting the first until win", () => {
+    const twice = config({ formerLogins: [{ login: "old", until: T }, { login: "other", until: T }, { login: "OLD[bot]", until: AFTER }] });
+    expect(() => formerLoginsOf(twice)).toThrow(/formerLogins\.0 \("old"\) and tracker\.formerLogins\.2 \("OLD\[bot\]"\)/);
+    expect(formerLoginsOf(config({ formerLogins: [{ login: "old", until: T }, { login: "older", until: T }] }))).toHaveLength(2);
+  });
+});
+
+describe("markTrust, with one login listed twice", () => {
+  it("halts on a Logins built by hand rather than judging by the first entry", () => {
+    const twice: Logins = { current: "new", former: [{ login: "old", until: AFTER }, { login: "Old", until: BEFORE }] };
+    expect(() => markTrust("old", { created: T, edited: T }, twice)).toThrow(/listed twice/);
+    expect(markTrust("mallory", { created: T, edited: T }, twice)).toBe("unlisted");
+  });
 });
 
 describe("entriesFromComments, with former logins", () => {

@@ -67,6 +67,11 @@ describe("loginsOf", () => {
     expect(() => loginsOf(snapshotWith({ tracker: { bot: BOT } }))).toThrow(/tracker\.former/);
     expect(() => loginsOf(snapshotWith({ tracker: { bot: BOT, former: [{ login: "old", until: "2026-11-01" }] } }))).toThrow(/until/);
   });
+
+  it("halts when the snapshot lists one former login twice", () => {
+    const former = [{ login: "old", until: T }, { login: "Old", until: T }];
+    expect(() => loginsOf(snapshotWith({ tracker: { bot: BOT, former } }))).toThrow(/listed twice/);
+  });
 });
 
 describe("labelSatisfied", () => {

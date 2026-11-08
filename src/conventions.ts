@@ -1081,7 +1081,12 @@ export function markTrust(
   // sameLogin: an app is `myapp[bot]` on its comments and may be configured as
   // `myapp`, and reading our own records as a person's re-runs every paid step.
   if (sameLogin(author, logins.current)) return "ours";
-  const former = logins.former.find((f) => sameLogin(f.login, author));
+  // Every match, never the first: a login listed twice has two cutoffs, and
+  // picking one by order is ambiguity settled silently. formerLoginsOf
+  // refuses the list earlier; this holds for a Logins built by hand too.
+  const matches = logins.former.filter((f) => sameLogin(f.login, author));
+  if (matches.length > 1) throw new Error(`former login "${author}" is listed twice, with untils ${matches.map((f) => f.until).join(" and ")}; one account has one cutoff`);
+  const former = matches[0];
   if (former === undefined) return "unlisted";
   const until = instant(former.until);
   const made = instant(created);
@@ -1100,12 +1105,19 @@ export function formerLoginsOf(config: { tracker?: unknown } | undefined): reado
   const list = (config?.tracker as { formerLogins?: unknown } | undefined)?.formerLogins;
   if (list === undefined) return [];
   if (!Array.isArray(list)) throw new Error("tracker.formerLogins is a list of { login, until }");
-  return list.map((f: unknown, i): FormerLogin => {
+  const read = list.map((f: unknown, i): FormerLogin => {
     const { login, until } = (f ?? {}) as { login?: unknown; until?: unknown };
     if (typeof login !== "string" || login.trim() === "") throw new Error(`tracker.formerLogins.${i}.login must name the account`);
     if (!isOffsetTime(until)) throw new Error(`tracker.formerLogins.${i}.until ${OFFSET_TIME_HINT}`);
     return { login, until };
   });
+  // One account, two cutoffs: which one holds cannot be told, so it halts
+  // and names both, as the schema does.
+  read.forEach((f, i) => {
+    const j = read.findIndex((e) => sameLogin(e.login, f.login));
+    if (j < i) throw new Error(`tracker.formerLogins.${j} ("${read[j]?.login}") and tracker.formerLogins.${i} ("${f.login}") are one login listed twice; one account has one cutoff`);
+  });
+  return read;
 }
 
 /** What an `until` must be, in the words the schema and this reader both refuse with. */
