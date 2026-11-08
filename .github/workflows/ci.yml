@@ -11,17 +11,6 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      # On Linux, `validate` and `start` check that Claude Code's sandbox can
-      # start once a write step is loaded, and the tests validate this
-      # repository's own workflow, whose build step writes. So the runner is
-      # set up as docs/remote.md asks of a Linux host.
-      - name: Let Claude Code's sandbox start
-        run: |
-          sudo apt-get update -q && sudo apt-get install -y -q bubblewrap socat
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --unshare-net --unshare-pid --ro-bind / / true
       - run: pnpm typecheck
       - run: pnpm lint
       - run: pnpm test

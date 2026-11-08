@@ -36,8 +36,6 @@ pnpm typecheck && pnpm lint && pnpm test && pnpm build
 
 Where the process may not bind `127.0.0.1` — inside a write step's sandbox, for one — the tests that start a local server are skipped, and jest says so once, first.
 
-On Linux, the tests validate this repository's own workflow, whose write steps need Claude Code's sandbox to start. Install bubblewrap and socat first, as [Remote mode](remote.md#before-you-start) says, or those tests fail on the [startup check](security.md#a-write-steps-sandbox). CI's runner installs them.
-
 Neither pass runs `plugins/`. The [board pane](board-pane.md) is a Claude Code plugin outside the engine, which `tsc`, `eslint` and the npm package leave out too. Its tests import `claude-code/testing` and run under Claude Code's own runner. Run its checks when you change it:
 
 ```sh
