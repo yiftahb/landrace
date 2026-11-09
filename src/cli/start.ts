@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
-import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, noneWriteRefusal, repositoryRoot } from "#agent/worktree.js";
+import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, noneWriteRefusal, ownAdminFolderIntact, repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { credentialKey, KEY_CREDENTIAL, KEY_DOCS, keyArgs } from "#people/key.js";
 import { sealAll } from "#people/sealed.js";
@@ -808,7 +808,7 @@ export async function screenerFor(config: RuntimeConfig, registry: Registry, ctx
  * and a `copy`, `setup` or `lockfiles` that would never be read is refused,
  * not ignored.
  */
-export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sandbox | null> {
+export async function sandboxFor(config: RuntimeConfig, dir: string, platform: NodeJS.Platform = process.platform): Promise<Sandbox | null> {
   const { isolation, worktree } = config.agent;
   if (isolation === "container") {
     throw new Error(
@@ -824,7 +824,10 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sa
     return null;
   }
   const root = await repositoryRoot(dir);
-  const lockfiles = worktree.lockfiles ?? [...DEFAULT_LOCKFILES];
+  // As the common directory is found: a Linux write step could have rebuilt the
+  // operator's own admin folder before a restart, and `git worktree add` reads it.
+  await ownAdminFolderIntact(dir, platform);
+  const lockfiles =worktree.lockfiles ?? [...DEFAULT_LOCKFILES];
   const problems = [...lockfileProblems(lockfiles), ...(await copyProblems(root, worktree.copy))];
   if (problems.length) throw new Error(problems.join("\n"));
   const timeoutMs = durationMs(worktree.setupTimeout) ?? 0;

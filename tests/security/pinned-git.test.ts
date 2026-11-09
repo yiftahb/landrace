@@ -1,14 +1,16 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { ensureWorktree } from "#agent/worktree.js";
 import { runInit } from "#cli/init.js";
+import { sandboxFor } from "#cli/start.js";
 import { runValidate } from "#cli/validate.js";
+import { runtimeConfigSchema } from "#config/schema.js";
 import { resolveStepServers } from "#kit/executor.js";
-import { CommonDirRefused, pinnedCommonDir, repositoryOf } from "#kit/git.js";
+import { CommonDirRefused, gitCommonDir, pinnedCommonDir, repositoryOf } from "#kit/git.js";
 import { gitRepo, removeRepos } from "#tests/support/repo.js";
 import { workspaceOf } from "#tests/support/workspace.js";
 
@@ -80,6 +82,77 @@ describe("pinnedCommonDir", () => {
     const { root, file } = await planted();
     expect(() => pinnedCommonDir(root)).toThrow(CommonDirRefused);
     expect(() => pinnedCommonDir(root)).toThrow(file);
+  });
+});
+
+/*
+ * Run from a linked worktree, git finds the common directory through the
+ * admin folder's `commondir`, which a Linux step can rebuild by renaming the
+ * folder away. Cached, that is caught within one process; a restart, a fresh
+ * `landrace mcp`, `validate` or forge git would pin every git to the step's
+ * directory, and `git worktree add` would run its filter.
+ */
+describe("the common directory, from the operator's own linked worktree", () => {
+  /** A repository, a linked worktree of it as the operator's checkout, and that checkout's admin folder. */
+  async function linked(): Promise<{ root: string; own: string; common: string; admin: string }> {
+    const root = await gitRepo();
+    const common = realpathSync(join(root, ".git"));
+    const own = join(await scratch("lr-own-"), "wt");
+    await exec("git", ["worktree", "add", "-q", "-b", "own", own], { cwd: root });
+    return { root, own: realpathSync(own), common, admin: join(common, "worktrees", "wt") };
+  }
+
+  /** A git directory of the step's, beside the common directory, holding what git needs to answer from it. */
+  async function evil(common: string): Promise<string> {
+    const at = join(common, "evil");
+    await mkdir(at);
+    for (const shared of ["objects", "refs", "HEAD", "config"]) await cp(join(common, shared), join(at, shared), { recursive: true });
+    return at;
+  }
+
+  it("is git's answer when that is the directory the .git file names", async () => {
+    const { own, common } = await linked();
+    expect(gitCommonDir(own)).toBe(common);
+    expect(pinnedCommonDir(own)).toEqual({ GIT_COMMON_DIR: common });
+  });
+
+  it.each([
+    ["its commondir rebuilt to name another", async (_common: string, admin: string, at: string) => {
+      await writeFile(join(admin, "commondir"), `${at}\n`);
+    }],
+    ["<common>/worktrees moved behind a link", async (common: string, _admin: string, at: string) => {
+      await rename(join(common, "worktrees"), join(at, "worktrees"));
+      await symlink(join(at, "worktrees"), join(common, "worktrees"));
+    }],
+  ])("is refused, naming both, with %s", async (_what, plant) => {
+    const { own, common, admin } = await linked();
+    const at = await evil(common);
+    await plant(common, admin, at);
+    // Armed: git itself now answers the step's directory.
+    expect(realpathSync((await exec("git", ["rev-parse", "--git-common-dir"], { cwd: own })).stdout.trim())).toBe(at);
+    expect(() => gitCommonDir(own)).toThrow(CommonDirRefused);
+    expect(() => gitCommonDir(own)).toThrow(`git answers ${at}`);
+    expect(() => gitCommonDir(own)).toThrow(`names ${common}`);
+    expect(() => pinnedCommonDir(own)).toThrow(CommonDirRefused);
+    await expect(repositoryOf(join(own, "src", "a.ts"))).rejects.toThrow(`git answers ${at}`);
+  });
+
+  it("passes a relative .git file", async () => {
+    const { own, common, admin } = await linked();
+    await writeFile(join(own, ".git"), `gitdir: ${relative(own, admin)}\n`);
+    expect(gitCommonDir(own)).toBe(common);
+  });
+
+  // On Linux the operator's own admin folder is judged as the common directory is found at startup,
+  // not only around a step's run: a restart before the next run would run `git worktree add` there.
+  it("has its admin folder judged at startup on Linux, naming what a step put there", async () => {
+    const { own, admin } = await linked();
+    const config = runtimeConfigSchema.parse({ version: 1, agent: { adapter: "fake", isolation: "worktree" } });
+    await expect(sandboxFor(config, own, "linux")).resolves.toMatchObject({ root: own });
+    await mkdir(join(admin, "hooks"));
+    await expect(sandboxFor(config, own, "linux")).rejects.toThrow(`${join(admin, "hooks")} exists`);
+    await expect(sandboxFor(config, own, "linux")).rejects.toThrow(/a step that may write could have put it there/);
+    await expect(sandboxFor(config, own, "darwin")).resolves.toMatchObject({ root: own });
   });
 });
 

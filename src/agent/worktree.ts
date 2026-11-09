@@ -542,6 +542,48 @@ async function adminFolderProblemsOf(folder: string, want: string, common: strin
 }
 
 /**
+ * On Linux, where the checkout `dir` is in is a linked worktree, that its own
+ * admin folder reads as git made it (`adminFolderProblems`); why not, thrown,
+ * naming each path. Asked at startup, as the common directory is found: a
+ * Linux write step can rename that folder away and make it again, and the
+ * checks before and after each run catch it only while a run is under way. A
+ * restart before the next run would otherwise run the engine's `git worktree
+ * add` there first. Elsewhere, and in a checkout whose `.git` is a directory,
+ * nothing to judge.
+ */
+export async function ownAdminFolderIntact(dir: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+  if (platform !== "linux") return;
+  let dotGit: string | null = null;
+  for (let at = await realpath(dir); ; at = dirname(at)) {
+    const kind = await lstat(join(at, ".git")).then((s) => (s.isDirectory() ? "dir" : "file"), () => null);
+    if (kind === "dir") return;
+    if (kind === "file") {
+      dotGit = join(at, ".git");
+      break;
+    }
+    if (dirname(at) === at) return;
+  }
+  const what = `refusing to start in ${dirname(dotGit)}, a linked worktree`;
+  const pointer = (await readFile(dotGit, "utf8").catch(() => "")).match(/^gitdir: (.+?)\s*$/m)?.[1];
+  if (pointer === undefined) return;
+  const admin = resolve(dirname(dotGit), pointer);
+  // A submodule's or a separate git directory: no admin folder of a repository's.
+  if (basename(dirname(admin)) !== "worktrees") return;
+  // Refused here already when git's answer is not the directory the .git file names (`gitCommonDir`).
+  const common = commonDirOf(dirname(dotGit), what);
+  let problems: string[];
+  try {
+    problems = [
+      ...[await placedAway(join(common, "worktrees"), join(common, "worktrees"))].filter((p): p is string => p !== null),
+      ...await adminFolderProblemsOf(admin, join(common, "worktrees", basename(admin)), common),
+    ];
+  } catch (e) {
+    throw new Error(`${what}: ${admin} could not be read: ${messageOf(e)}`);
+  }
+  if (problems.length > 0) throw new Error(`${what}: ${problems.join("; ")}: ${PLANTED_FIX}`);
+}
+
+/**
  * Why `path`, which git makes as a folder at `want`, is somewhere else, or
  * null: a link in its place, or a folder reached through one. Git follows
  * both before it reads anything there, so a step that moved
