@@ -12,6 +12,7 @@ import { connectionsOf, loadLocalConfig, localCredentials, resolvePerson } from 
 import { frontDoorOrigins, serveProblems } from "#front/hosts.js";
 import { GIT_GUARD_ARGS, ITEM_BRANCH, LOCAL_PERSON_ID } from "#conventions.js";
 import { loadHooks } from "#hooks/load.js";
+import { CommonDirRefused, pinnedCommonDir } from "#kit/git.js";
 import { messageOf } from "#runner/errors.js";
 import { notifyProblems } from "#runner/notify.js";
 import { snapshotProvides } from "#runner/snapshot.js";
@@ -46,8 +47,10 @@ const execFileAsync = promisify(execFile);
  * otherwise legitimate setup.
  */
 async function isEnvExposed(dir: string): Promise<boolean> {
+  // Thrown, never read as "not ignored": a planted commondir is `exposedEnv`'s to report.
+  const env = { ...process.env, ...pinnedCommonDir(dir) };
   try {
-    await execFileAsync("git", [...GIT_GUARD_ARGS, "check-ignore", "-q", ".env"], { cwd: dir });
+    await execFileAsync("git", [...GIT_GUARD_ARGS, "check-ignore", "-q", ".env"], { cwd: dir, env });
     return false;
   } catch (e) {
     const code = (e as { code?: number | string }).code;
@@ -377,7 +380,11 @@ async function workflowProblems(
 async function exposedEnv(dir: string): Promise<Problem[]> {
   const envPath = join(dir, ".env");
   const env = await readFile(envPath, "utf8").catch(() => null);
-  return env !== null && (await isEnvExposed(dir))
-    ? [{ rule: "secret", message: `${envPath} exists but is not gitignored` }]
-    : [];
+  if (env === null) return [];
+  try {
+    return (await isEnvExposed(dir)) ? [{ rule: "secret", message: `${envPath} exists but is not gitignored` }] : [];
+  } catch (e) {
+    if (!(e instanceof CommonDirRefused)) throw e;
+    return [{ rule: "secret", message: `whether ${envPath} is gitignored could not be asked: ${e.message}` }];
+  }
 }

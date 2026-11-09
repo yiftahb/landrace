@@ -64,7 +64,30 @@ export function gitIn(dir: string): Git {
  */
 export async function repositoryOf(file: string): Promise<string> {
   const here = dirname(file.startsWith("file:") ? fileURLToPath(file) : file);
-  return (await gitIn(here)(["rev-parse", "--show-toplevel"])).trim();
+  return (await gitIn(here)(["rev-parse", "--show-toplevel"], pinnedCommonDir(here))).trim();
+}
+
+/**
+ * The environment that pins git run in `dir` to its repository's common
+ * directory (`gitCommonDir`), so a `commondir` a step planted there hands it
+ * no config of its own; refused while one is there (`CommonDirRefused`),
+ * which git would still read branches through. Nothing outside a repository,
+ * where git then says so in its own words.
+ *
+ * For every git the engine runs when it may: none of them runs only before
+ * steps do, since a forge's first git can come after a run, and `landrace
+ * mcp`, `validate` and `init` run at any time.
+ */
+export function pinnedCommonDir(dir: string): { GIT_COMMON_DIR?: string } {
+  let common: string;
+  try {
+    common = gitCommonDir(dir);
+  } catch (e) {
+    if (e instanceof CommonDirRefused) throw e;
+    return {};
+  }
+  commonDirIntact(common);
+  return { GIT_COMMON_DIR: common };
 }
 
 /** A repository whose own git directory holds a `commondir`: git would follow it, and the engine will not. */
