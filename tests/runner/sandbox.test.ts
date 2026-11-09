@@ -1170,6 +1170,34 @@ describe("a write run that leaves a git control path holding something", () => {
       },
     );
 
+    // actions/checkout runs `git sparse-checkout disable`, which writes <common>/config.worktree, and
+    // then unsets the extension: refusing what it left halted every Linux write run in CI.
+    it.each([["in a worktree", true], ["with no worktree", false]])(
+      "runs a write step %s on Linux in a repository left the way actions/checkout leaves it",
+      async (_where, worktree) => {
+        const root = await repo();
+        await exec("git", ["sparse-checkout", "disable"], { cwd: root });
+        await exec("git", ["config", "--unset-all", "extensions.worktreeConfig"], { cwd: root });
+        const left = await readFile(join(commonOf(root), "config.worktree"), "utf8");
+        expect(left).toMatch(/sparseCheckout = false/);
+        let ran = false;
+        const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+        Object.defineProperty(process, "platform", { value: "linux" });
+        let r: Awaited<ReturnType<typeof converge>>;
+        try {
+          r = await converge("1", deps(world(), {
+            executor: { id: "counter", run: async () => { ran = true; return { text: OK, sessionId: "sid-1" }; } },
+            steps: writes, ...(worktree ? { sandbox: { root } } : { workspace: root }),
+          }));
+        } finally {
+          Object.defineProperty(process, "platform", was);
+        }
+        expect(r.why).toBeUndefined();
+        expect(ran).toBe(true);
+        expect(await readFile(join(commonOf(root), "config.worktree"), "utf8")).toBe(left);
+      },
+    );
+
     // A Linux step with no worktree could rename the checkout's .git away and make it again, and its
     // sandbox's binds would move with the old one: a configured agent.isolation: none is refused by
     // the run as well as at start. A run told no isolation — the in-memory harness's, which enters no
