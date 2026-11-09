@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { Command, InvalidArgumentError, Option } from "commander";
-import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, repositoryRoot } from "#agent/worktree.js";
+import { copyProblems, DEFAULT_LOCKFILES, lockfileProblems, noneWriteRefusal, ownAdminFolderIntact, repositoryRoot } from "#agent/worktree.js";
 import { assertConfigUsable, loadConfig, redactionValues } from "#config/load.js";
 import { credentialKey, KEY_CREDENTIAL, KEY_DOCS, keyArgs } from "#people/key.js";
 import { sealAll } from "#people/sealed.js";
@@ -24,7 +24,7 @@ import { createSlotPool } from "#runner/pool.js";
 import { send as sendPage } from "#ui/server.js";
 import { defineExecutor } from "#hooks/contracts.js";
 import { loadHooks } from "#hooks/load.js";
-import { CREDENTIALS_ROOT, durationMs, futureUntilProblems, LOCAL_PERSON_ID, RECORD_EFFECT } from "#conventions.js";
+import { CREDENTIALS_ROOT, durationMs, futureUntilProblems, LOCAL_PERSON_ID, mayWriteRepo, RECORD_EFFECT } from "#conventions.js";
 import { stepTimeoutMs } from "#runner/budget.js";
 import type {
   ActivityLog,
@@ -213,6 +213,7 @@ export function mcpEndpointFor(
   const workflows = rt.toolWorkflows ?? [];
   const sandbox = rt.workflows.find((w) => w.deps.sandbox)?.deps.sandbox;
   const workspace = rt.workflows.find((w) => w.deps.workspace !== undefined)?.deps.workspace;
+  const isolation = rt.workflows.find((w) => w.deps.isolation !== undefined)?.deps.isolation;
   return createMcpEndpoint({
     workflows: workflows.map((w) => w.id),
     ...(opts.pairing === undefined ? {} : { pairing: opts.pairing }),
@@ -220,6 +221,7 @@ export function mcpEndpointFor(
     toolsFor: (_caller, scope) => createTools(workflows, rt.ctx, {
       ...(sandbox ? { sandbox } : {}),
       ...(workspace === undefined ? {} : { workspace }),
+      ...(isolation === undefined ? {} : { isolation }),
       ...(rt.activity ? { activity: rt.activity } : {}),
       wake: () => {
         schedule.wake();
@@ -808,7 +810,7 @@ export async function screenerFor(config: RuntimeConfig, registry: Registry, ctx
  * and a `copy`, `setup` or `lockfiles` that would never be read is refused,
  * not ignored.
  */
-export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sandbox | null> {
+export async function sandboxFor(config: RuntimeConfig, dir: string, platform: NodeJS.Platform = process.platform): Promise<Sandbox | null> {
   const { isolation, worktree } = config.agent;
   if (isolation === "container") {
     throw new Error(
@@ -824,7 +826,10 @@ export async function sandboxFor(config: RuntimeConfig, dir: string): Promise<Sa
     return null;
   }
   const root = await repositoryRoot(dir);
-  const lockfiles = worktree.lockfiles ?? [...DEFAULT_LOCKFILES];
+  // As the common directory is found: a Linux write step could have rebuilt the
+  // operator's own admin folder before a restart, and `git worktree add` reads it.
+  await ownAdminFolderIntact(dir, platform);
+  const lockfiles =worktree.lockfiles ?? [...DEFAULT_LOCKFILES];
   const problems = [...lockfileProblems(lockfiles), ...(await copyProblems(root, worktree.copy))];
   if (problems.length) throw new Error(problems.join("\n"));
   const timeoutMs = durationMs(worktree.setupTimeout) ?? 0;
@@ -921,6 +926,24 @@ function refuseUnsoundBeforeHooks(dir: string, ws: Workspace, config: RuntimeCon
       ...admitProblems(id, workflow),
     ]),
   ]]));
+  if (!readOnly) refuseNoneWrite(ws, config);
+}
+
+/**
+ * On Linux, a step that may write with `agent.isolation: none`, refused before
+ * the first tick rather than at that step's first run (`noneWriteRefusal`),
+ * naming each such step. A reload builds again through here, so a workflow
+ * that gains one is still never run; `landrace mcp` asks too, for its turns.
+ * `validate` judges the configuration, not the host it runs on, and does not ask.
+ */
+export function refuseNoneWrite(ws: Workspace, config: RuntimeConfig, platform: NodeJS.Platform = process.platform): void {
+  if (config.agent.isolation !== "none") return;
+  const refusal = noneWriteRefusal(platform);
+  if (refusal === null) return;
+  const writes = ws.workflows.flatMap(({ id, steps }) =>
+    [...steps].filter(([, step]) => mayWriteRepo(step.capabilities)).map(([path]) => `workflows/${id}/${path}`));
+  if (writes.length === 0) return;
+  throw new Error(`${refusal}. ${writes.length === 1 ? "This step declares" : "These steps declare"} repo:write: ${writes.join(", ")}`);
 }
 
 /**
@@ -1238,6 +1261,7 @@ export async function buildWorkspaceRuntime(dir: string, opts: BuildOptions): Pr
         childServer,
         ...(sandbox === null ? {} : { sandbox }),
         workspace: dir,
+        isolation: loaded.config.agent.isolation,
         ...(screener ? { screen: screener } : {}),
         ...(connectionFailed ? { connectionFailed } : {}),
         ctx,
@@ -1611,6 +1635,7 @@ export async function servedRuntime(
       executor: w.deps.executor, workflow: w.deps.workflow, steps: w.deps.steps,
       ...(w.deps.sandbox ? { sandbox: w.deps.sandbox } : {}),
       ...(w.deps.workspace === undefined ? {} : { workspace: w.deps.workspace }),
+      ...(w.deps.isolation === undefined ? {} : { isolation: w.deps.isolation }),
       ...(w.deps.screen ? { screen: w.deps.screen } : {}),
       scrub: w.deps.scrub,
       ...(w.deps.childServer ? { server: w.deps.childServer } : {}),

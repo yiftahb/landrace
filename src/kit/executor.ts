@@ -18,6 +18,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { CAPABILITIES, CHILD_SERVER_NAME, CREDENTIALS_ROOT, GIT_GUARD_ARGS, INHERITED_ENV_KEYS, mayCreateItems, mayWriteRepo, retiredCapabilityPointers, unknownCapabilities } from "#conventions.js";
 import { defineExecutor } from "#hooks/contracts.js";
+import { CommonDirRefused, pinnedCommonDir } from "#kit/git.js";
 import { isLoopback } from "#kit/http.js";
 import type {
   AgentSettings,
@@ -108,11 +109,14 @@ async function assertCwd(cwd: string): Promise<string> {
  * stderr rides along rather than a generic guess: a checkout git refuses for
  * "dubious ownership", or a missing git binary entirely, would otherwise both
  * be misreported as "not inside a git repository" — a fix that isn't there to
- * make, since neither one is that.
+ * make, since neither one is that. Pinned to the common directory
+ * (`pinnedCommonDir`), and refused while a planted `commondir` is there.
  */
 async function repositoryRoot(dir: string): Promise<string> {
+  // Outside the try: a refusal is said as itself, never as "not inside a git repository".
+  const env = { ...process.env, ...pinnedCommonDir(dir) };
   try {
-    const { stdout } = await exec("git", [...GIT_GUARD_ARGS, "rev-parse", "--show-toplevel"], { cwd: dir });
+    const { stdout } = await exec("git", [...GIT_GUARD_ARGS, "rev-parse", "--show-toplevel"], { cwd: dir, env });
     return stdout.trim();
   } catch (e) {
     const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
@@ -372,6 +376,7 @@ export async function resolveStepServers(
   try {
     root = await repositoryRoot(dir);
   } catch (e) {
+    if (e instanceof CommonDirRefused) return fail(`agent.mcp names servers to look up in the repository root's .mcp.json: ${e.message}`);
     return fail(`agent.mcp names servers to look up in the repository root's .mcp.json, and there is no repository: ${messageOf(e)}`);
   }
   const file = fileOf(root);

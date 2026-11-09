@@ -7,7 +7,9 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { buildWorkspaceRuntime, childServerCommand, denyPathsFor, keyDirOf, localGate, runStart } from "#cli/start.js";
+import { buildWorkspaceRuntime, childServerCommand, denyPathsFor, keyDirOf, localGate, refuseNoneWrite, runStart } from "#cli/start.js";
+import { loadConfig } from "#config/load.js";
+import { loadWorkspace } from "#workflow/workspace.js";
 import { buildChildTool } from "#cli/mcp.js";
 import { createLogger } from "#runner/events.js";
 import { runStatus } from "#cli/status.js";
@@ -464,6 +466,56 @@ describe("buildWorkspaceRuntime", () => {
     // Reading does not run a step, so `status` still works on it.
     await expect(buildMain(dir, { readOnly: true })).resolves.toBeDefined();
   });
+
+  // A Linux step with no worktree could rename the checkout's .git away and make it again, and its
+  // sandbox's binds would move with the old one: refused before the first tick, naming the step.
+  it("refuses a write step with agent.isolation: none on Linux before the first tick, and lets it through on macOS", async () => {
+    const { dir } = await fixture({ agentKeys: "isolation: none" });
+    await mkdir(join(workflowIn(dir), "steps"), { recursive: true });
+    await writeFile(join(workflowIn(dir), "steps", "build.md"), [
+      "---", "capabilities: [repo:read, repo:write]", "output:", "  discriminator: kind", "  shapes: { done: {} }",
+      "  routes:", "    - when: { kind: done }", '      effect: { type: tracker.comment, marker: "done:{round}" }',
+      "---", "", "build", "",
+    ].join("\n"));
+    await writeFile(join(workflowIn(dir), "workflow.yaml"), WORKFLOW
+      .replace("    terminal: true\n", "    step: steps/build.md\n")
+      .concat('  - id: done\n    terminal: true\n    triggers: [{ when: { "run.outputs.spec.kind": done } }]\n'));
+    const refusal = /agent\.isolation: none[\s\S]*agent\.isolation: worktree[\s\S]*workflows\/main\/steps\/build\.md/;
+
+    const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      await expect(buildMain(dir, {})).rejects.toThrow(refusal);
+      const credentialsRoot = join(await mkdtemp(join(tmpdir(), "lr-start-none-")), "credentials");
+      const said = console.error;
+      console.error = (): void => {};
+      try {
+        await expect(runStart(dir, { once: true, credentialsRoot, keyLookup: { platform: "linux", env: {} } })).rejects.toThrow(refusal);
+      } finally {
+        console.error = said;
+      }
+      // Reading runs no step, so `status` still works on it.
+      await expect(buildMain(dir, { readOnly: true })).resolves.toBeDefined();
+    } finally {
+      Object.defineProperty(process, "platform", was);
+    }
+    // macOS runs it. Judged on its own: a build here would also judge Claude's sandbox on this host.
+    const loaded = await loadConfig(dir);
+    const ws = await loadWorkspace(dir, loaded.vars, loaded.config.workflows);
+    expect(() => refuseNoneWrite(ws, loaded.config, "darwin")).not.toThrow();
+    expect(() => refuseNoneWrite(ws, loaded.config, "linux")).toThrow(refusal);
+  });
+
+  // A run refuses a configured agent.isolation: none on Linux only when it is told the setting:
+  // the runtime `start` builds hands it to every workflow's deps, the default as well.
+  it.each([["isolation: none", "none"], [undefined, "worktree"]] as const)(
+    "hands the configured agent.isolation (%s) to the runtime's deps",
+    async (agentKeys, isolation) => {
+      const { dir } = await fixture(agentKeys === undefined ? {} : { agentKeys });
+      const built = await buildMain(dir, { readOnly: true });
+      expect(built.deps.isolation).toBe(isolation);
+    },
+  );
 
   // In `validate`'s words: a pairing is cut a checkout of its own.
   it("refuses a stage that waits for a pairing when steps do not run in worktrees", async () => {

@@ -10,8 +10,8 @@
  * says back.
  */
 import { execFile, execFileSync } from "node:child_process";
-import { lstatSync, realpathSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { EffectRefused, GIT_GUARD_ARGS, isReservedId } from "#conventions.js";
@@ -64,7 +64,30 @@ export function gitIn(dir: string): Git {
  */
 export async function repositoryOf(file: string): Promise<string> {
   const here = dirname(file.startsWith("file:") ? fileURLToPath(file) : file);
-  return (await gitIn(here)(["rev-parse", "--show-toplevel"])).trim();
+  return (await gitIn(here)(["rev-parse", "--show-toplevel"], pinnedCommonDir(here))).trim();
+}
+
+/**
+ * The environment that pins git run in `dir` to its repository's common
+ * directory (`gitCommonDir`), so a `commondir` a step planted there hands it
+ * no config of its own; refused while one is there (`CommonDirRefused`),
+ * which git would still read branches through. Nothing outside a repository,
+ * where git then says so in its own words.
+ *
+ * For every git the engine runs when it may: none of them runs only before
+ * steps do, since a forge's first git can come after a run, and `landrace
+ * mcp`, `validate` and `init` run at any time.
+ */
+export function pinnedCommonDir(dir: string): { GIT_COMMON_DIR?: string } {
+  let common: string;
+  try {
+    common = gitCommonDir(dir);
+  } catch (e) {
+    if (e instanceof CommonDirRefused) throw e;
+    return {};
+  }
+  commonDirIntact(common);
+  return { GIT_COMMON_DIR: common };
 }
 
 /** A repository whose own git directory holds a `commondir`: git would follow it, and the engine will not. */
@@ -76,8 +99,12 @@ export class CommonDirRefused extends Error {}
  * git reads `commondir` in the main git directory too, and a write step on
  * Linux may make one there — its sandbox denies only paths that exist — to
  * hand every git in the checkout a config of its own. One found there is
- * refused, naming it, never followed. Where `.git` is a file, git's answer:
- * the admin folder's `commondir` that answer follows exists, and so is denied.
+ * refused, naming it, never followed. Where `.git` is a file, git's answer,
+ * only when it is the directory that file names (`commonDirNamedBy`): git
+ * reaches it through the admin folder's `commondir`, which a Linux step can
+ * rebuild by renaming the folder away, and the next process to ask — a
+ * restart, `landrace mcp`, `validate`, a forge's first git — would otherwise
+ * pin every git to the step's directory. Refused otherwise, naming both.
  *
  * Throws git's own words outside a repository.
  */
@@ -95,8 +122,25 @@ export function gitCommonDir(dir: string): string {
       commonDirIntact(common);
       return common;
     }
-    if (kind === "file" || dirname(at) === at) break;
+    if (kind === "file") {
+      const common = askedCommonDir(dir);
+      const expected = commonDirNamedBy(dotGit);
+      if (expected !== null && expected !== common) {
+        throw new CommonDirRefused(
+          `refusing to run git in ${at}: git answers ${common} as its repository's common directory, but ${dotGit} names ` +
+          `${expected}. git reached it through the admin folder's commondir, or a link to the folder, and a step that may ` +
+          "write could have rebuilt either. Put back the admin folder git made, and the item carries on",
+        );
+      }
+      return common;
+    }
+    if (dirname(at) === at) break;
   }
+  return askedCommonDir(dir);
+}
+
+/** `git rev-parse --git-common-dir` in `dir`, resolved; git's own words when it fails. */
+function askedCommonDir(dir: string): string {
   try {
     const out = execFileSync("git", [...GIT_GUARD_ARGS, "rev-parse", "--git-common-dir"], {
       cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
@@ -106,6 +150,33 @@ export function gitCommonDir(dir: string): string {
   } catch (e) {
     const stderr = String((e as { stderr?: unknown }).stderr ?? "").trim();
     throw new Error(stderr || (e instanceof Error ? e.message : String(e)));
+  }
+}
+
+/**
+ * The common directory the `.git` file at `dotGit` names, resolved, or null
+ * when it cannot be read as one, which git then says in its own words. For a
+ * linked worktree's `gitdir: <common>/worktrees/<name>`, `<common>`, taken from
+ * the path as written: a step can rebuild the admin folder's `commondir`, or
+ * move the folder or `<common>/worktrees` behind a link, but not the
+ * operator's own `.git` file, which no sandbox lets it write. Any other
+ * `gitdir` — a submodule's, or `--separate-git-dir` — is itself the common
+ * directory.
+ */
+function commonDirNamedBy(dotGit: string): string | null {
+  let pointer: string | undefined;
+  try {
+    pointer = readFileSync(dotGit, "utf8").match(/^gitdir: (.+?)\s*$/m)?.[1];
+  } catch {
+    return null;
+  }
+  if (pointer === undefined) return null;
+  const gitdir = resolve(dirname(dotGit), pointer);
+  const named = basename(dirname(gitdir)) === "worktrees" ? dirname(dirname(gitdir)) : gitdir;
+  try {
+    return realpathSync(named);
+  } catch {
+    return null;
   }
 }
 

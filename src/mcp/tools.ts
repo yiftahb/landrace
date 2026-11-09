@@ -164,6 +164,7 @@ export function createTools(workflows: readonly ToolWorkflow[], ctx: RuntimeCont
       ...(w.screen ? { screen: w.screen } : {}),
       ...(opts.sandbox ? { sandbox: opts.sandbox } : {}),
       ...(opts.workspace === undefined ? {} : { workspace: opts.workspace }),
+      ...(opts.isolation === undefined ? {} : { isolation: opts.isolation }),
       ...(opts.lock ? { lock: opts.lock } : {}),
       // And for the same reason, the step's own declaration: a turn is held to
       // the capabilities and the model of the step it continues, which the

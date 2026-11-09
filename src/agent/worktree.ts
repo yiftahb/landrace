@@ -6,7 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { GIT_GUARD_ARGS, INHERITED_ENV_KEYS } from "#conventions.js";
-import type { ControlPaths, GitDirs, RemoteGuard, WorktreeBranch, WorktreePreparation, WorktreeSetup, WorktreeState } from "#namespace.js";
+import type { ControlPaths, GitDirs, RemoteGuard, RuntimeConfig, WorktreeBranch, WorktreePreparation, WorktreeSetup, WorktreeState } from "#namespace.js";
 import { CommonDirRefused, commonDirIntact } from "#kit/git.js";
 import { commonDirOf as sandboxCommonDir, sandboxRoot } from "#sandbox.js";
 import { containedPath } from "#workflow/load.js";
@@ -187,6 +187,14 @@ async function adminDirOf(path: string, common: string, what: string): Promise<s
         : `${naming.length} admin folders name it, ${naming.join(", ")}, and git would use whichever its .git file points at`}`,
     );
   }
+  // Git follows a link at the folder, or at `<common>/worktrees`, before it reads anything there.
+  let away: string | null;
+  try {
+    away = await placedAway(under, join(common, "worktrees")) ?? await placedAway(admin, join(common, "worktrees", basename(admin)));
+  } catch (e) {
+    throw new Error(`${what}: refusing to run git in ${path}: ${messageOf(e)}`);
+  }
+  if (away !== null) throw new Error(`${what}: refusing to run git in ${path}: ${away}`);
   const own = join(admin, "config.worktree");
   let holds: boolean;
   try {
@@ -274,9 +282,10 @@ export async function gitDirsOf(path: string, repoRoot: string): Promise<GitDirs
 /**
  * That a worktree reads as git made it, before it is handed to a person or
  * an agent is run in it, or setup runs there: its `.git` file points at the
- * admin folder found by lookup, which has a `commondir`
- * naming this repository's common directory, and no `config`, `hooks` or
- * `info` of its own. A checkout whose `.git` is a directory has no admin
+ * admin folder found by lookup, which is no link and is reached through none,
+ * has a `commondir` naming this repository's common directory, and no
+ * `config` or `hooks` of its own, nor an `info` holding anything but git's
+ * own `sparse-checkout`. A checkout whose `.git` is a directory has no admin
  * folder, and passes.
  *
  * The engine's own git never reads `commondir` (`gitDirsOf`). But a write
@@ -313,7 +322,11 @@ export async function worktreeIntact(path: string, repoRoot: string): Promise<vo
   if (named === null) {
     throw new Error(`${what}: ${file} is missing, so git there would read ${admin} as a repository of its own`);
   }
-  const target = resolve(admin, named.trim());
+  // Git dies on an empty one rather than read anything: still no worktree to hand out.
+  if (named.trim() === "") throw new Error(`${what}: ${file} is empty, so git there would not run at all`);
+  // Against the admin folder as git finds it, links followed (strbuf_realpath); `adminDirOf`
+  // has already refused one reached through a link.
+  const target = resolve(await realpath(admin), named.trim());
   const resolved = await realpath(target).catch(() => null);
   if (resolved !== common) {
     throw new Error(
@@ -321,12 +334,14 @@ export async function worktreeIntact(path: string, repoRoot: string): Promise<vo
       "a step that may write could have pointed it at a git directory of its own",
     );
   }
-  for (const own of ["config", "hooks", "info"]) {
+  for (const own of ["config", "hooks"]) {
     const at = join(admin, own);
     if (await lstat(at).then(() => true, () => false)) {
       throw new Error(`${what}: ${at} exists, and git never makes one in an admin folder; a step that may write could have put it there`);
     }
   }
+  const info = await adminInfoProblem(join(admin, "info")).catch((e: unknown) => `${join(admin, "info")} could not be read: ${messageOf(e)}`);
+  if (info !== null) throw new Error(`${what}: ${info}; a step that may write could have put it there`);
 }
 
 // `commondir` in the common directory too: git reads it in any git directory,
@@ -361,11 +376,52 @@ const ADMIN_CONTROL_FILES = ["config", "config.worktree", "commondir", "gitdir",
  * a boolean; a config that cannot be read refuses too. Nor, on any
  * platform, while a control file has a second name, which a deny by path
  * leaves writable.
+ *
+ * And on Linux, nothing that a lost refusal record would hide. A path listed
+ * absent is judged only after the run, so a record that failed to be written
+ * left it there, denied and never judged again. So what can be is judged from
+ * the repository itself, before every run: `<common>/hooks`, `info` and
+ * `config.worktree` are made empty when missing, so they are denied and never
+ * absent (`git init` makes the folders, and empty, none changes anything —
+ * an empty `config.worktree` sets nothing with the extension on or off). What
+ * is in one already is the operator's or a tool's, and is not judged: `git
+ * sparse-checkout disable`, which actions/checkout runs on every checkout,
+ * writes `config.worktree`, and refusing it halted every CI run.
+ * `<common>/config`, which `git init` always makes, must be there; and every
+ * admin folder must read as git made it (`adminFolderProblems`), which is
+ * judged again after the run through `commons`. `<common>/commondir` is
+ * refused wherever the engine's git runs (`commonDirIntact`).
  */
 export async function gitControlPaths(path: string, repoRoot: string, platform: NodeJS.Platform = process.platform): Promise<ControlPaths> {
   const what = `could not list the git paths a write step may not write in ${path}`;
   const common = commonDirOf(repoRoot, what);
-  if (platform === "linux") await worktreeConfigOff(common, repoRoot, what);
+  const linux = platform === "linux";
+  if (linux) {
+    const config = join(common, "config");
+    if (!(await exists(config).catch((e: unknown) => {
+      throw new Error(`${what}: ${messageOf(e)}`);
+    }))) {
+      throw new Error(
+        `${what}: ${config} is missing, and git init always makes one; a step that may write could have moved it away. ` +
+        "Put the repository's config back and the item carries on",
+      );
+    }
+    await worktreeConfigOff(common, repoRoot, what);
+    // `wx` and `mkdir` never overwrite: what is there already is the operator's, or a tool's.
+    const makes: [string, () => Promise<unknown>][] = [
+      ["hooks", () => mkdir(join(common, "hooks"))],
+      ["info", () => mkdir(join(common, "info"))],
+      ["config.worktree", () => writeFile(join(common, "config.worktree"), "", { flag: "wx" })],
+    ];
+    for (const [name, make] of makes) {
+      await make().catch((e: unknown) => {
+        if ((e as NodeJS.ErrnoException).code === "EEXIST") return;
+        throw new Error(
+          `${what}: ${join(common, name)} is missing and could not be made, so a write step could plant one: ${messageOf(e)}`,
+        );
+      });
+    }
+  }
   const under = join(common, "worktrees");
   const names = await readdir(under).catch((e: unknown) => {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [] as string[];
@@ -397,6 +453,12 @@ export async function gitControlPaths(path: string, repoRoot: string, platform: 
       "Replace it with a copy of its own, or remove it, and the item carries on",
     );
   }
+  if (linux) {
+    const problems = await adminFolderProblems(common).catch((e: unknown) => {
+      throw new Error(`${what}: ${messageOf(e)}`);
+    });
+    if (problems.length > 0) throw new Error(`${what}: ${problems.join("; ")}: ${PLANTED_FIX}`);
+  }
   // An admin folder with no `gitdir` or `commondir` yet is another item's
   // `git worktree add` under way, which writes both after making the folder:
   // judged after the run, they read as planted and halted an item that did
@@ -408,9 +470,244 @@ export async function gitControlPaths(path: string, repoRoot: string, platform: 
     .map((n) => join(under, n))
     .filter((folder) => absent.includes(join(folder, "gitdir")) || absent.includes(join(folder, "commondir")));
   return {
-    deny: platform === "linux" ? all.filter((at) => !absent.includes(at)) : all,
+    deny: linux ? all.filter((at) => !absent.includes(at)) : all,
     absent: absent.filter((at) => !making.includes(dirname(at))),
+    commons: linux ? [common] : [],
   };
+}
+
+/** What every refusal of a planted control path ends with. */
+const PLANTED_FIX = "a step that may write could have put it there. Remove it and the item carries on";
+
+/**
+ * Each admin folder under `<common>/worktrees` that does not read as git made
+ * it, as a sentence naming the path: `<common>/worktrees` or the folder a
+ * link, or reached through one (`placedAway`); a `commondir`, where there is
+ * one, that resolves anywhere but `common`; a `config` or `hooks`, which git
+ * never makes in one; an `info` holding anything but nothing or git's own
+ * `sparse-checkout` (`adminInfoProblem`); a `config.worktree` holding
+ * something (`holdsSomething`). Judged by content, never against a list taken
+ * before: git decides what an admin folder holds, so one a step renamed away
+ * and made again is caught however many refusal records were lost — the
+ * operator's own linked worktree's too. A folder with no `commondir` yet, or
+ * an empty one, is another item's `git worktree add` under way, and passes;
+ * one git would then read as a repository is refused for its `config` or
+ * `hooks`. A folder that cannot be read is a problem too;
+ * `<common>/worktrees` that cannot, a throw.
+ *
+ * The engine's own `git worktree remove` and `prune` delete other items'
+ * folders, and `<common>/worktrees` once empty, while this runs after a
+ * write run: a folder gone by the time it is read holds nothing git reads, so
+ * it is nothing to judge (`whileThere`), never a planted path that halts an
+ * unrelated item.
+ */
+export async function adminFolderProblems(common: string): Promise<string[]> {
+  const under = join(common, "worktrees");
+  if (!(await exists(under))) return [];
+  const real = await realpath(common);
+  let away: string | null;
+  let names: string[];
+  try {
+    away = await placedAway(under, join(real, "worktrees"));
+    names = (await readdir(under)).sort();
+  } catch (e) {
+    if (await goneAfter(under, e)) return [];
+    throw e;
+  }
+  const problems: string[] = away === null ? [] : [away];
+  for (const name of names) {
+    const folder = join(under, name);
+    problems.push(...await whileThere(folder, () => adminFolderProblemsOf(folder, join(real, "worktrees", name), real)));
+  }
+  return problems;
+}
+
+/** Whether `e` came of `path`, or something in it, not being there, and `path` is gone now. */
+async function goneAfter(path: string, e: unknown): Promise<boolean> {
+  return MISSING.has((e as NodeJS.ErrnoException).code ?? "") && !(await exists(path).catch(() => true));
+}
+
+/**
+ * What `judge` finds wrong in the folder at `path`, which git may be deleting
+ * as it is read: nothing once `path` is gone, whatever was found on the way;
+ * judged again, twice at most, when something in it vanished as it was read
+ * and the folder is still there; and what cannot be read, as a problem.
+ */
+async function whileThere(path: string, judge: () => Promise<string[]>): Promise<string[]> {
+  for (let tries = 1; ; tries++) {
+    try {
+      const found = await judge();
+      return found.length > 0 && !(await exists(path).catch(() => true)) ? [] : found;
+    } catch (e) {
+      if (await goneAfter(path, e)) return [];
+      if (!MISSING.has((e as NodeJS.ErrnoException).code ?? "") || tries === 3) {
+        return [`${path} could not be read: ${messageOf(e)}`];
+      }
+    }
+  }
+}
+
+/**
+ * Why the admin folder at `folder`, which git made at `want` in the common
+ * directory `common` (both resolved), does not read as git made it, one
+ * sentence each: see `adminFolderProblems`.
+ */
+async function adminFolderProblemsOf(folder: string, want: string, common: string): Promise<string[]> {
+  const problems: string[] = [];
+  const away = await placedAway(folder, want);
+  if (away !== null) problems.push(away);
+  const file = join(folder, "commondir");
+  const named = (await smallFile(file))?.trim() ?? "";
+  // Empty is a `git worktree add` between opening the file and writing it, and git dies on one:
+  // nothing is trusted, and removing it would break a worktree being made.
+  if (named !== "") {
+    // Against the folder as git finds it, links followed (strbuf_realpath): read as text, a `../..`
+    // in a folder moved behind a link names the common directory while git goes elsewhere.
+    const target = resolve(await realpath(folder), named);
+    const resolved = await realpath(target).catch(() => null);
+    if (resolved !== common) problems.push(`${file} names ${resolved ?? `${target}, which does not exist`}, not ${common}`);
+  }
+  for (const own of ["config", "hooks"]) {
+    if (await exists(join(folder, own))) problems.push(`${join(folder, own)} exists, and git never makes one in an admin folder`);
+  }
+  const info = await adminInfoProblem(join(folder, "info"));
+  if (info !== null) problems.push(info);
+  const worktreeConfig = join(folder, "config.worktree");
+  if (await holdsSomething(worktreeConfig)) problems.push(`${worktreeConfig} holds something, and landrace never makes one`);
+  return problems;
+}
+
+/**
+ * On Linux, where the checkout `dir` is in is a linked worktree, that its own
+ * admin folder reads as git made it (`adminFolderProblems`); why not, thrown,
+ * naming each path. Asked at startup, as the common directory is found: a
+ * Linux write step can rename that folder away and make it again, and the
+ * checks before and after each run catch it only while a run is under way. A
+ * restart before the next run would otherwise run the engine's `git worktree
+ * add` there first. Elsewhere, and in a checkout whose `.git` is a directory,
+ * nothing to judge.
+ */
+export async function ownAdminFolderIntact(dir: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+  if (platform !== "linux") return;
+  let dotGit: string | null = null;
+  for (let at = await realpath(dir); ; at = dirname(at)) {
+    const kind = await lstat(join(at, ".git")).then((s) => (s.isDirectory() ? "dir" : "file"), () => null);
+    if (kind === "dir") return;
+    if (kind === "file") {
+      dotGit = join(at, ".git");
+      break;
+    }
+    if (dirname(at) === at) return;
+  }
+  const what = `refusing to start in ${dirname(dotGit)}, a linked worktree`;
+  const pointer = (await readFile(dotGit, "utf8").catch(() => "")).match(/^gitdir: (.+?)\s*$/m)?.[1];
+  if (pointer === undefined) return;
+  const admin = resolve(dirname(dotGit), pointer);
+  // A submodule's or a separate git directory: no admin folder of a repository's.
+  if (basename(dirname(admin)) !== "worktrees") return;
+  // Refused here already when git's answer is not the directory the .git file names (`gitCommonDir`).
+  const common = commonDirOf(dirname(dotGit), what);
+  let problems: string[];
+  try {
+    problems = [
+      ...[await placedAway(join(common, "worktrees"), join(common, "worktrees"))].filter((p): p is string => p !== null),
+      ...await adminFolderProblemsOf(admin, join(common, "worktrees", basename(admin)), common),
+    ];
+  } catch (e) {
+    throw new Error(`${what}: ${admin} could not be read: ${messageOf(e)}`);
+  }
+  if (problems.length > 0) throw new Error(`${what}: ${problems.join("; ")}: ${PLANTED_FIX}`);
+}
+
+/**
+ * Why `path`, which git makes as a folder at `want`, is somewhere else, or
+ * null: a link in its place, or a folder reached through one. Git follows
+ * both before it reads anything there, so a step that moved
+ * `<common>/worktrees` or an admin folder behind a link hands git a directory
+ * of its own while every path the engine reads still looks right.
+ */
+async function placedAway(path: string, want: string): Promise<string | null> {
+  const fix = "git makes a folder there, and a step that may write could have moved it behind a link";
+  if ((await lstat(path)).isSymbolicLink()) {
+    return `${path} is a link to ${await realpath(path).catch(() => "nothing")}; ${fix}`;
+  }
+  const real = await realpath(path);
+  return real === want ? null : `${path} resolves to ${real}, not ${want}; ${fix}`;
+}
+
+/**
+ * Why an admin folder's `info` is not git's, or null when it is, or is not
+ * there: git makes one only to copy the repository's `info/sparse-checkout`
+ * into it, with `core.sparseCheckout` on, and per worktree reads nothing else
+ * from it. So one holding exactly that, a regular file of its own, passes;
+ * anything else in it, or one that is not a folder, is refused. An empty one
+ * passes: git reads nothing from it, and leaves one for a moment both as
+ * `git worktree add` copies the file in and as git deletes the folder.
+ */
+async function adminInfoProblem(info: string): Promise<string | null> {
+  const stat = await lstat(info).catch((e: unknown) => {
+    if (MISSING.has((e as NodeJS.ErrnoException).code ?? "")) return null;
+    throw e;
+  });
+  if (stat === null) return null;
+  const never = "and git never makes one in an admin folder but to hold its sparse-checkout";
+  if (!stat.isDirectory()) return `${info} exists, ${never}`;
+  const names = (await readdir(info)).sort();
+  const others = names.filter((n) => n !== "sparse-checkout");
+  if (others.length > 0) return `${info} holds ${others.map((n) => join(info, n)).join(", ")}, ${never}`;
+  if (names.length === 0) return null;
+  const sparse = join(info, "sparse-checkout");
+  const file = await lstat(sparse);
+  if (!file.isFile() || file.nlink > 1) return `${sparse} is not a file of its own, and git copies one there`;
+  return null;
+}
+
+/**
+ * A regular file's text, or null when nothing is there. Opened without
+ * following a link or waiting on a FIFO, as `holdsSomething` opens one, and
+ * refused when it is anything else or over `MOST_READ` bytes: git writes an
+ * admin folder's `commondir` as a short file, and a step's FIFO there would
+ * otherwise hang the engine before the refusal is said.
+ */
+async function smallFile(path: string): Promise<string | null> {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "";
+    if (MISSING.has(code)) return null;
+    if (code === "ELOOP") throw new Error(`${path} is a link, and git writes a file there`);
+    throw e;
+  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error(`${path} is not a file, and git writes a file there`);
+    if (stat.size > MOST_READ) throw new Error(`${path} is over ${MOST_READ} bytes, and git writes a short file there`);
+    const buffer = Buffer.alloc(MOST_READ + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > MOST_READ) throw new Error(`${path} is over ${MOST_READ} bytes, and git writes a short file there`);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Why a write run with no worktree (`agent.isolation: none`) is refused on
+ * `platform`, or null where it runs. On Linux the sandbox denies the
+ * checkout's control paths by binding each one read-only, and a step could
+ * rename the checkout's `.git` away and make it again: the binds move with
+ * the old one, and the engine's git reads what the step made. Comparing the
+ * folder's identity before and after would keep that in one run's memory, so
+ * a lost record would trust the remade one; this comes from the configuration,
+ * and cannot be lost. Refused where the configuration is read, by `landrace
+ * start` and `landrace mcp`, and by a run told it (`checkoutControlPaths`).
+ */
+export function noneWriteRefusal(platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== "linux") return null;
+  return "on Linux, a step that may write does not run with agent.isolation: none: its sandbox denies the checkout's git " +
+    "control paths by path, and a step could rename the checkout's .git away and make it again, which those denials do not " +
+    "follow. Set agent.isolation: worktree, and each such step runs in a worktree of its own";
 }
 
 /** That `extensions.worktreeConfig` is not on in the repository at `common`, as git reads it there; why not, thrown. */
@@ -445,10 +742,22 @@ async function worktreeConfigOff(common: string, repoRoot: string, what: string)
  * For a write run with no worktree (`agent.isolation: none`): the control
  * paths of each checkout it reaches — where it runs, and the workspace's —
  * each once. A directory in no repository has none.
+ *
+ * With `agent.isolation: none` configured, refused on Linux
+ * (`noneWriteRefusal`), as `landrace start` and `landrace mcp` refuse it at
+ * startup, so a runtime built some other way is held to it too. Not refused
+ * with no isolation given: that is the in-memory harness's run, which enters
+ * no worktree and runs no agent, and refused it failed every harness write
+ * step on Linux, a third party's too.
  */
-export async function checkoutControlPaths(dirs: readonly string[], platform: NodeJS.Platform = process.platform): Promise<ControlPaths> {
+export async function checkoutControlPaths(
+  dirs: readonly string[], platform: NodeJS.Platform = process.platform, isolation?: RuntimeConfig["agent"]["isolation"],
+): Promise<ControlPaths> {
+  const refusal = isolation === "none" ? noneWriteRefusal(platform) : null;
+  if (refusal !== null) throw new Error(refusal);
   const deny: string[] = [];
   const absent: string[] = [];
+  const commons: string[] = [];
   for (const dir of dirs) {
     let top: string;
     try {
@@ -460,8 +769,9 @@ export async function checkoutControlPaths(dirs: readonly string[], platform: No
     const paths = await gitControlPaths(top, top, platform);
     deny.push(...paths.deny);
     absent.push(...paths.absent);
+    commons.push(...paths.commons);
   }
-  return { deny: [...new Set(deny)], absent: [...new Set(absent)] };
+  return { deny: [...new Set(deny)], absent: [...new Set(absent)], commons: [...new Set(commons)] };
 }
 
 /**
@@ -470,12 +780,19 @@ export async function checkoutControlPaths(dirs: readonly string[], platform: No
  * something now (`holdsSomething`), and each that cannot be read. Asked on
  * every way a run ends — an answer, a throw, its limit, an abort — and before
  * the engine's git runs there: a step on Linux may make one, which its
- * sandbox denies only once it exists.
+ * sandbox denies only once it exists. And every admin folder in `commons`
+ * that does not read as git made it (`adminFolderProblems`): on Linux a step
+ * can rename one away and make it again, which no list taken before the run
+ * would catch.
  */
-export async function plantedControlPaths(absent: readonly string[]): Promise<string | null> {
+export async function plantedControlPaths({ absent, commons }: ControlPaths): Promise<string | null> {
   const planted: string[] = [];
   const unreadable: string[] = [];
+  // An admin folder's `info` in a judged common directory is `adminFolderProblems`'s, which passes
+  // git's own `info/sparse-checkout` there: judged here as well, that file would read as planted.
+  const judged = new Set(commons.map((c) => join(c, "worktrees")));
   for (const path of absent) {
+    if (basename(path) === "info" && judged.has(dirname(dirname(path)))) continue;
     try {
       // A `commondir` is judged by being there at all, not by what it holds:
       // every engine git refuses one in the common directory that exists
@@ -488,6 +805,16 @@ export async function plantedControlPaths(absent: readonly string[]): Promise<st
       unreadable.push(`${path} (${messageOf(e)})`);
     }
   }
+  const admins: string[] = [];
+  for (const common of commons) {
+    try {
+      admins.push(...await adminFolderProblems(common));
+    } catch (e) {
+      admins.push(`the admin folders under ${join(common, "worktrees")} could not be read after the run: ${messageOf(e)}`);
+    }
+  }
+  // An admin folder's path already named as planted is said once.
+  const named = [...planted, ...unreadable.map((u) => u.slice(0, u.indexOf(" (")))];
   const reasons = [
     ...(planted.length === 0 ? [] : [
       `${planted.join(", ")} ${planted.length === 1 ? "was" : "were"} not there before the run and now ` +
@@ -496,6 +823,7 @@ export async function plantedControlPaths(absent: readonly string[]): Promise<st
     ...(unreadable.length === 0 ? [] : [
       `${unreadable.join(", ")} ${unreadable.length === 1 ? "was" : "were"} not there before the run and could not be read after it`,
     ]),
+    ...admins.filter((problem) => !named.some((at) => problem.startsWith(`${at} `))),
   ];
   if (reasons.length === 0) return null;
   return `${reasons.join("; ")}: a step that may write could have put it there to configure git. Remove it and the item carries on`;

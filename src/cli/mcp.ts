@@ -23,7 +23,7 @@ import { pairingStages } from "#workflow/validate.js";
 import { loadWorkspace, workflowById } from "#workflow/workspace.js";
 import { sandboxRoot } from "#sandbox.js";
 import { touchWake, wakePath } from "#wake.js";
-import { childServerCommand, denyPathsFor, keyDirOf, personGate, sandboxFor, screenerFor, stepExecutorFor } from "#cli/start.js";
+import { childServerCommand, denyPathsFor, keyDirOf, personGate, refuseNoneWrite, sandboxFor, screenerFor, stepExecutorFor } from "#cli/start.js";
 
 /**
  * Everything the MCP plane is, short of a transport.
@@ -39,6 +39,7 @@ import { childServerCommand, denyPathsFor, keyDirOf, personGate, sandboxFor, scr
  */
 export async function buildMcpTools(
   dir: string, scope?: string, store: CredentialStore = readingStore(), locator: KeyLocator = { source: "none" },
+  platform: NodeJS.Platform = process.platform,
 ): Promise<Tools> {
   // With the local person's stored values merged in, as the loop reads it.
   const local = await loadLocalConfig(dir, store);
@@ -51,6 +52,10 @@ export async function buildMcpTools(
   // By name, before any hook module is imported: a server bound to a workflow
   // the workspace does not have is one nobody can use.
   if (scope !== undefined) workflowById(ws, scope);
+  // On Linux, a write step under `agent.isolation: none`, refused as `start`
+  // refuses it, before a turn could run one. Each turn is told the setting and
+  // refuses it too (`checkoutControlPaths`).
+  refuseNoneWrite(ws, loaded.config, platform);
 
   // stdout carries the MCP protocol, so anything we have to say goes to
   // stderr — which is what the client that spawned us shows. What an
@@ -212,6 +217,7 @@ export async function buildMcpTools(
   return createTools(workflows, ctx, {
     ...(sandbox === null ? {} : { sandbox }),
     workspace: dir,
+    isolation: loaded.config.agent.isolation,
     // A turn asked here runs in this process, and the loop's page reads its
     // progress from the same directory the loop's own steps write to.
     activity: createActivityLog(sandboxRoot(dir), person.id, scrubberOf(ctx.secrets, events.scrub)),

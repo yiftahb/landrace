@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { parse } from "yaml";
 import { GIT_GUARD_ARGS, isEngineLabel } from "#conventions.js";
+import { pinnedCommonDir } from "#kit/git.js";
 import { WORKFLOW_ID, WORKFLOW_ID_RULE } from "#workflow/workspace.js";
 
 const execFileAsync = promisify(execFile);
@@ -99,12 +100,15 @@ stages:
  * counts: the person's own excludes file, which `validate` counts, and the
  * clone's `.git/info/exclude` ignore it in this clone only, and the entry is
  * for every clone. Outside a repository, or without git, the file's own lines
- * are all there is to read.
+ * are all there is to read. Pinned to the common directory, and a planted
+ * `commondir` there refuses the init (`pinnedCommonDir`) rather than reading
+ * as "not ignored".
  */
 async function ignored(cwd: string, text: string | null): Promise<boolean> {
+  const env = { ...process.env, ...pinnedCommonDir(cwd) };
   try {
     // The excludes file off too, since one may itself be named ~/.gitignore.
-    const { stdout } = await execFileAsync("git", [...GIT_GUARD_ARGS, "-c", "core.excludesFile=/dev/null", "check-ignore", "-v", ENV_ENTRY], { cwd });
+    const { stdout } = await execFileAsync("git", [...GIT_GUARD_ARGS, "-c", "core.excludesFile=/dev/null", "check-ignore", "-v", ENV_ENTRY], { cwd, env });
     // `<source>:<line>:<pattern>\t<path>` for the deciding pattern; a "!" one un-ignores.
     return /^"?(?:.*\/)?\.gitignore"?:\d+:(?!!)/.test(stdout);
   } catch (e) {
@@ -143,6 +147,8 @@ export async function runInit(cwd: string, name: string): Promise<string[]> {
   if (isEngineLabel(label)) throw new Error(`"${name}" would admit items labelled ${label}, a label the engine writes itself; choose another name`);
 
   const fresh = await stat(join(cwd, ".landrace")).then(() => false, () => true);
+  // Asked before anything is written: the .gitignore check below refuses a planted commondir too.
+  if (fresh) pinnedCommonDir(cwd);
   const folder = join(".landrace", "workflows", name);
   await mkdir(join(cwd, ".landrace", "workflows"), { recursive: true });
   await mkdir(join(cwd, folder)).catch((e: unknown) => {

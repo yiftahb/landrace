@@ -292,7 +292,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
               ? null
               : sandbox
                 ? await gitControlPaths(sandbox.path, sandbox.root)
-                : await checkoutControlPaths([process.cwd(), ...(deps.workspace === undefined ? [] : [deps.workspace])]);
+                : await checkoutControlPaths([process.cwd(), ...(deps.workspace === undefined ? [] : [deps.workspace])], process.platform, deps.isolation);
 
             // The person's words, first and unmarked: they are a human turn —
             // the same rule `landrace_reply` follows — so the item shows who
@@ -352,7 +352,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
             // check, for the same reason. A turn records nothing, so the
             // person asking is told which path to remove.
             if (controls !== null) {
-              const planted = await plantedControlPaths(controls.absent);
+              const planted = await plantedControlPaths(controls);
               if (planted !== null) throw new Error(`this conversation turn was refused: ${planted}`);
             }
             if (!ran.ok) {

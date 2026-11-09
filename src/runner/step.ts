@@ -416,7 +416,7 @@ export async function runStep(opts: {
   // now holds something. Recorded even for a run that was aborted (`planted`),
   // since the next run's list finds it there and never judges it again.
   if (controls !== null) {
-    const planted = await plantedControlPaths(controls.absent);
+    const planted = await plantedControlPaths(controls);
     if (planted !== null) return { ok: false, kind: "refused", reason: planted, planted: true };
   }
 

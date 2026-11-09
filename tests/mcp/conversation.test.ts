@@ -744,6 +744,37 @@ describe("a conversation turn is held to what its step declared", () => {
       }
       expect(ran).toBe(false);
     });
+
+    // A configured agent.isolation: none is refused by a Linux write turn, as by `landrace mcp` at
+    // startup; a turn told no isolation, as a conversation assembled without one, runs.
+    it.each([["none", false], [undefined, true]] as const)(
+      `with ${worktree ? "a worktree" : "no worktree"}, isolation %s configured, on Linux runs: %s, and runs on macOS`,
+      async (isolation, linuxRuns) => {
+        const refused = worktree ? false : !linuxRuns;
+        const runs: string[] = [];
+        const counter: Executor = { id: "counter", run: async () => { runs.push("ran"); return { text: "Understood.", sessionId: null }; } };
+        const ask = async (): Promise<unknown> => {
+          const checkout = await gitRepo();
+          return world(seeded(), counter, {}, undefined, {
+            ...spec({ capabilities: ["repo:read", "repo:write"] }),
+            ...(worktree ? { sandbox: { root: checkout } } : { workspace: checkout }),
+            ...(isolation === undefined ? {} : { isolation: worktree ? "worktree" : isolation }),
+          }).ask("1", "carry on");
+        };
+        const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+        try {
+          Object.defineProperty(process, "platform", { value: "linux" });
+          if (refused) await expect(ask()).rejects.toThrow(/agent\.isolation: none[\s\S]*agent\.isolation: worktree/);
+          else await expect(ask()).resolves.toBeDefined();
+          expect(runs).toHaveLength(refused ? 0 : 1);
+          Object.defineProperty(process, "platform", { value: "darwin" });
+          await expect(ask()).resolves.toBeDefined();
+          expect(runs).toHaveLength(refused ? 1 : 2);
+        } finally {
+          Object.defineProperty(process, "platform", was);
+        }
+      },
+    );
   });
 
   it("runs the turn in a worktree of its own, never in the checkout the loop runs from", async () => {
