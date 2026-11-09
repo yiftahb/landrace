@@ -140,6 +140,25 @@ describe("a configured item branch", () => {
     expect(() => state.pull("pr-2")).toThrow();
   });
 
+  // #241: the harness enters no worktree, as `agent.isolation: none` does, and a run refused that
+  // on Linux once, so every harness write step failed there, a third party's too. The refusal is
+  // `landrace start`'s and `landrace mcp`'s, where the configuration is read.
+  it("runs the write step on Linux too", async () => {
+    const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }], config });
+    const { workflow, steps } = await loadWorkflow("tests/fixtures/item-branch");
+    expect([...steps.values()].some((s) => s.capabilities?.includes("repo:write") === true)).toBe(true);
+    const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    try {
+      const run = createHarness({ workflow, steps, source: state.source, pre: [state.pre], post: [state.post], answers: { build: BUILT }, config });
+      const r = await run.converge();
+      expect(r.result.settled).toBe("terminal");
+      expect(run.counts()).toEqual({ build: 1 });
+    } finally {
+      Object.defineProperty(process, "platform", was);
+    }
+  });
+
   it("seeds a pull request on the configured branch, and on landrace/{item} with none", async () => {
     const state = createExternalState({ items: [{ id: "1", labels: ["lr:auto"] }], config });
     expect(state.pull(state.openPull("1")).branch).toBe("lr-1");

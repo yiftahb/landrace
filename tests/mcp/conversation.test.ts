@@ -735,18 +735,19 @@ describe("a conversation turn is held to what its step declared", () => {
       const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
       Object.defineProperty(process, "platform", { value: "linux" });
       try {
-        // With no worktree, Linux refuses the write turn before the setting is read.
         await expect(world(seeded(), { id: "never", run: async () => { ran = true; return { text: "", sessionId: null }; } }, {}, undefined, {
           ...spec({ capabilities: ["repo:read", "repo:write"] }),
           ...(worktree ? { sandbox: { root: checkout } } : { workspace: checkout }),
-        }).ask("1", "carry on")).rejects.toThrow(worktree ? /extensions\.worktreeConfig/ : /agent\.isolation: none/);
+        }).ask("1", "carry on")).rejects.toThrow(/extensions\.worktreeConfig/);
       } finally {
         Object.defineProperty(process, "platform", was);
       }
       expect(ran).toBe(false);
     });
 
-    it(`is ${worktree ? "run" : "refused"} on Linux with ${worktree ? "a worktree" : "agent.isolation: none"}, and runs on macOS`, async () => {
+    // A turn's run cannot tell agent.isolation: none from the in-memory harness, which enters no
+    // worktree either: the Linux refusal is `landrace mcp`'s, at startup, and a turn here runs.
+    it(`runs on Linux and on macOS with ${worktree ? "a worktree" : "no worktree"}`, async () => {
       const runs: string[] = [];
       const counter: Executor = { id: "counter", run: async () => { runs.push("ran"); return { text: "Understood.", sessionId: null }; } };
       const ask = async (): Promise<unknown> => {
@@ -759,14 +760,13 @@ describe("a conversation turn is held to what its step declared", () => {
       const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
       Object.defineProperty(process, "platform", { value: "linux" });
       try {
-        if (worktree) await expect(ask()).resolves.toBeDefined();
-        else await expect(ask()).rejects.toThrow(/agent\.isolation: none[\s\S]*agent\.isolation: worktree/);
+        await expect(ask()).resolves.toBeDefined();
       } finally {
         Object.defineProperty(process, "platform", was);
       }
-      expect(runs).toHaveLength(worktree ? 1 : 0);
+      expect(runs).toHaveLength(1);
       await expect(ask()).resolves.toBeDefined();
-      expect(runs).toHaveLength(worktree ? 2 : 1);
+      expect(runs).toHaveLength(2);
     });
   });
 

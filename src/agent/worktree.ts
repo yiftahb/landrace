@@ -542,7 +542,8 @@ async function smallFile(path: string): Promise<string | null> {
  * the old one, and the engine's git reads what the step made. Comparing the
  * folder's identity before and after would keep that in one run's memory, so
  * a lost record would trust the remade one; this comes from the configuration,
- * and cannot be lost. Refused by `start`, and by each run and turn.
+ * and cannot be lost. Refused where the configuration is read, by `landrace
+ * start` and `landrace mcp`, never by a run (`checkoutControlPaths`).
  */
 export function noneWriteRefusal(platform: NodeJS.Platform = process.platform): string | null {
   if (platform !== "linux") return null;
@@ -582,12 +583,15 @@ async function worktreeConfigOff(common: string, repoRoot: string, what: string)
 /**
  * For a write run with no worktree (`agent.isolation: none`): the control
  * paths of each checkout it reaches — where it runs, and the workspace's —
- * each once. A directory in no repository has none. On Linux, refused
- * (`noneWriteRefusal`).
+ * each once. A directory in no repository has none.
+ *
+ * Never refused here on Linux, though such a run is (`noneWriteRefusal`): a
+ * run with no worktree is also the in-memory harness's, which enters none and
+ * runs no agent, and refused here it failed every harness write step on Linux,
+ * a third party's too. The refusal is made where the configuration is read —
+ * `landrace start` and `landrace mcp` — which can tell the two apart.
  */
 export async function checkoutControlPaths(dirs: readonly string[], platform: NodeJS.Platform = process.platform): Promise<ControlPaths> {
-  const refused = noneWriteRefusal(platform);
-  if (refused !== null) throw new Error(refused);
   const deny: string[] = [];
   const absent: string[] = [];
   const commons: string[] = [];

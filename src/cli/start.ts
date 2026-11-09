@@ -927,9 +927,9 @@ function refuseUnsoundBeforeHooks(dir: string, ws: Workspace, config: RuntimeCon
 /**
  * On Linux, a step that may write with `agent.isolation: none`, refused before
  * the first tick rather than at that step's first run (`noneWriteRefusal`),
- * naming each such step. Each run and turn refuses it too, so a workflow that
- * gains one on a reload is still never run. `validate` judges the
- * configuration, not the host it runs on, and does not ask.
+ * naming each such step. A reload builds again through here, so a workflow
+ * that gains one is still never run; `landrace mcp` asks too, for its turns.
+ * `validate` judges the configuration, not the host it runs on, and does not ask.
  */
 export function refuseNoneWrite(ws: Workspace, config: RuntimeConfig, platform: NodeJS.Platform = process.platform): void {
   if (config.agent.isolation !== "none") return;

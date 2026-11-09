@@ -186,18 +186,17 @@ describe("on Linux, an admin folder", () => {
 
 // Under `agent.isolation: none` a Linux step could rename the checkout's `.git` away and make it
 // again, and bwrap's binds would move with the old one. A record of what was there lives in one
-// run's memory; the refusal comes from the configuration, and cannot be lost.
+// run's memory; the refusal comes from the configuration, at `start` and `landrace mcp`, and cannot
+// be lost. A run itself never refuses: with no worktree it is also the in-memory harness's.
 describe("a write run with no worktree", () => {
-  it("is refused on Linux, saying to set agent.isolation: worktree", async () => {
-    const { root } = await gitRepoWithOrigin();
-    const reason = noneWriteRefusal("linux");
-    expect(reason).toMatch(/agent\.isolation: none[\s\S]*agent\.isolation: worktree/);
-    await expect(checkoutControlPaths([root], "linux")).rejects.toThrow(reason ?? "a reason");
+  it("is refused on Linux only, saying to set agent.isolation: worktree", () => {
+    expect(noneWriteRefusal("linux")).toMatch(/agent\.isolation: none[\s\S]*agent\.isolation: worktree/);
+    expect(noneWriteRefusal("darwin")).toBeNull();
   });
 
-  it("runs on macOS", async () => {
+  it("has its control paths listed on Linux, as on macOS", async () => {
     const { root } = await gitRepoWithOrigin();
-    expect(noneWriteRefusal("darwin")).toBeNull();
+    await expect(checkoutControlPaths([root], "linux")).resolves.toMatchObject({ commons: [realpathSync(join(root, ".git"))] });
     await expect(checkoutControlPaths([root], "darwin")).resolves.toMatchObject({ commons: [] });
   });
 });
