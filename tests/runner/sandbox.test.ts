@@ -141,7 +141,7 @@ describe("a step that exceeds what it declared", () => {
       const admin = join(common, "worktrees", basename(path));
       await writeFile(join(admin, "commondir"), `${tmpdir()}\n`);
       let ran = false;
-      const r = await runStep({ controls: { deny: [], absent: [] },
+      const r = await runStep({ controls: { deny: [], absent: [], commons: [] },
         item: "1", step: step(capabilities),
         stageId: "spec", round: 1, snapshot: {},
         executor: { id: "never", run: async () => { ran = true; return { text: "", sessionId: null }; } },
@@ -1162,11 +1162,39 @@ describe("a write run that leaves a git control path holding something", () => {
             steps: writes, ...(worktree ? { sandbox: { root } } : { workspace: root }),
           }));
           expect(r.settled).toBe("halt");
-          expect(r.why).toMatch(/extensions\.worktreeConfig is on .*turn it off/);
+          // With no worktree, Linux refuses the write run before the setting is read.
+          expect(r.why).toMatch(worktree ? /extensions\.worktreeConfig is on .*turn it off/ : /agent\.isolation: none/);
         } finally {
           Object.defineProperty(process, "platform", was);
         }
         expect(ran).toBe(false);
+      },
+    );
+
+    // A Linux step with no worktree could rename the checkout's .git away and make it again, and its
+    // sandbox's binds would move with the old one: refused from the configuration, never remembered.
+    it.each([["linux", "refuses"], ["darwin", "runs"]] as const)(
+      "with no worktree, on %s, %s the write step",
+      async (platform, verb) => {
+        const runs = verb === "runs";
+        const workspace = await repo();
+        let ran = false;
+        const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
+        Object.defineProperty(process, "platform", { value: platform });
+        let r: Awaited<ReturnType<typeof converge>>;
+        try {
+          r = await converge("1", deps(world(), {
+            executor: { id: "counter", run: async () => { ran = true; return { text: OK, sessionId: "sid-1" }; } },
+            steps: writes, workspace,
+          }));
+        } finally {
+          Object.defineProperty(process, "platform", was);
+        }
+        expect(ran).toBe(runs);
+        if (!runs) {
+          expect(r.settled).toBe("halt");
+          expect(r.why).toMatch(/agent\.isolation: none[\s\S]*agent\.isolation: worktree/);
+        }
       },
     );
 

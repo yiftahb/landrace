@@ -3545,6 +3545,13 @@ export interface WorktreeState {
 export interface ControlPaths {
   deny: string[];
   absent: string[];
+  /**
+   * The common directories whose admin folders are judged by what they hold
+   * after the run (`adminFolderProblems`). On Linux only, where a step can
+   * rename an admin folder away and make it again, and the sandbox's binds
+   * move with the old one; empty elsewhere, where every path is denied.
+   */
+  commons: string[];
 }
 
 /**

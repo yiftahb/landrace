@@ -352,7 +352,7 @@ export function createConversation(deps: ConversationDeps): Conversation {
             // check, for the same reason. A turn records nothing, so the
             // person asking is told which path to remove.
             if (controls !== null) {
-              const planted = await plantedControlPaths(controls.absent);
+              const planted = await plantedControlPaths(controls);
               if (planted !== null) throw new Error(`this conversation turn was refused: ${planted}`);
             }
             if (!ran.ok) {

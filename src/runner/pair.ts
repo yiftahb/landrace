@@ -387,7 +387,7 @@ export function finishPair(deps: PairDeps, item: string, note?: string): Promise
     // However the closing turn ended, and before any git runs there:
     // runStep's check, recorded as its refusal is.
     if (controls !== null) {
-      const planted = await plantedControlPaths(controls.absent);
+      const planted = await plantedControlPaths(controls);
       // Recorded even when the run was aborted, as converge records it: the
       // next list finds the path there and never judges it again.
       if (planted !== null) return reject("refused", planted, { ...deps, ctx: { ...deps.ctx, signal: new AbortController().signal } });
