@@ -315,8 +315,9 @@ describe("on Linux, an admin folder", () => {
 
 // Under `agent.isolation: none` a Linux step could rename the checkout's `.git` away and make it
 // again, and bwrap's binds would move with the old one. A record of what was there lives in one
-// run's memory; the refusal comes from the configuration, at `start` and `landrace mcp`, and cannot
-// be lost. A run itself never refuses: with no worktree it is also the in-memory harness's.
+// run's memory; the refusal comes from the configuration, so it cannot be lost: `start` and
+// `landrace mcp` refuse a configured `none`, and so does a run. Only a run told no isolation at all,
+// the in-memory harness's, goes through.
 describe("a write run with no worktree", () => {
   it("is refused on Linux only, saying to set agent.isolation: worktree", () => {
     expect(noneWriteRefusal("linux")).toMatch(/agent\.isolation: none[\s\S]*agent\.isolation: worktree/);
