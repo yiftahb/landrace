@@ -2539,6 +2539,13 @@ export interface ConvergeDeps {
    * control paths of both checkouts: where it runs, and this one.
    */
   workspace?: string;
+  /**
+   * `agent.isolation` as the configuration reads it, handed in by whatever read
+   * one (`landrace start`, `landrace mcp`). With `none`, a Linux write run is
+   * refused (`noneWriteRefusal`). Absent where nothing was configured: the
+   * in-memory harness, which enters no worktree either and runs no agent.
+   */
+  isolation?: RuntimeConfig["agent"]["isolation"];
   steps: Map<string, Step>;
   /**
    * The workflow's `budget.stepTimeout`, for a step that names no `timeout` of
@@ -3115,6 +3122,8 @@ export interface ToolOptions {
   sandbox?: Pick<Sandbox, "root" | "scope">;
   /** As `ConvergeDeps.workspace`: with no `sandbox`, a write turn is denied this checkout's git control paths too. */
   workspace?: string;
+  /** As `ConvergeDeps.isolation`: with `none` configured, a Linux write turn is refused. */
+  isolation?: RuntimeConfig["agent"]["isolation"];
   /** Where a turn's activity goes, so the loop's page shows an Ask asked here too. */
   activity?: ActivityLog;
   /**
@@ -3674,6 +3683,8 @@ export interface ConversationDeps {
   sandbox?: Pick<Sandbox, "root" | "scope">;
   /** As `ConvergeDeps.workspace`: with no `sandbox`, a write turn is denied this checkout's git control paths too. */
   workspace?: string;
+  /** As `ConvergeDeps.isolation`: with `none` configured, a Linux write turn is refused. */
+  isolation?: RuntimeConfig["agent"]["isolation"];
   /**
    * The screener, when the operator configured one — the same shape runStep
    * takes, because a turn is an agent invocation like any other and §15 knows

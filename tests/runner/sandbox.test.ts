@@ -1170,9 +1170,13 @@ describe("a write run that leaves a git control path holding something", () => {
       },
     );
 
-    // A run with no worktree is the in-memory harness's too, which enters none: refused there on
-    // Linux, every harness write step failed. The refusal is `landrace start`'s and `landrace mcp`'s.
-    it.each(["linux", "darwin"] as const)("with no worktree, on %s, runs the write step", async (platform) => {
+    // A Linux step with no worktree could rename the checkout's .git away and make it again, and its
+    // sandbox's binds would move with the old one: a configured agent.isolation: none is refused by
+    // the run as well as at start. A run told no isolation — the in-memory harness's, which enters no
+    // worktree either — runs: refused there, every harness write step on Linux failed, a third party's too.
+    it.each([
+      ["linux", "none", false], ["darwin", "none", true], ["linux", undefined, true], ["darwin", undefined, true],
+    ] as const)("with no worktree, on %s, isolation %s configured, runs the write step: %s", async (platform, isolation, runs) => {
       const workspace = await repo();
       let ran = false;
       const was = Object.getOwnPropertyDescriptor(process, "platform") as PropertyDescriptor;
@@ -1181,13 +1185,17 @@ describe("a write run that leaves a git control path holding something", () => {
       try {
         r = await converge("1", deps(world(), {
           executor: { id: "counter", run: async () => { ran = true; return { text: OK, sessionId: "sid-1" }; } },
-          steps: writes, workspace,
+          steps: writes, workspace, ...(isolation === undefined ? {} : { isolation }),
         }));
       } finally {
         Object.defineProperty(process, "platform", was);
       }
-      expect(ran).toBe(true);
-      expect(r.settled).not.toBe("halt");
+      expect(ran).toBe(runs);
+      if (runs) expect(r.settled).not.toBe("halt");
+      else {
+        expect(r.settled).toBe("halt");
+        expect(r.why).toMatch(/agent\.isolation: none[\s\S]*agent\.isolation: worktree/);
+      }
     });
 
     it("halts the item when a run with no worktree plants one in the workspace", async () => {

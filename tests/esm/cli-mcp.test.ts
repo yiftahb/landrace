@@ -331,8 +331,8 @@ describe("buildMcpTools and the startup preflight", () => {
     await expect(buildMcpTools(bare.dir)).rejects.toThrow(/formerLogins\.0\.until/);
   });
 
-  // #241: a turn's own run cannot tell agent.isolation: none from the in-memory harness, which
-  // enters no worktree either, so the Linux refusal is made here, where the configuration is read.
+  // #241: the Linux refusal is made here, where the configuration is read, before any turn; each
+  // turn is told the setting and refuses it again.
   it("refuses, on Linux, a write step under agent.isolation: none, naming it; macOS and a read step assemble", async () => {
     const { dir } = await fixture({ screen: false, preflight: "pass", capabilities: "repo:read, repo:write" });
     await expect(buildMcpTools(dir, undefined, undefined, undefined, "linux")).rejects.toThrow(

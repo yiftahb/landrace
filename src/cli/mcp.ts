@@ -53,8 +53,8 @@ export async function buildMcpTools(
   // the workspace does not have is one nobody can use.
   if (scope !== undefined) workflowById(ws, scope);
   // On Linux, a write step under `agent.isolation: none`, refused as `start`
-  // refuses it, before a turn could run one: a turn's own run cannot tell the
-  // configuration from the in-memory harness, which enters no worktree either.
+  // refuses it, before a turn could run one. Each turn is told the setting and
+  // refuses it too (`checkoutControlPaths`).
   refuseNoneWrite(ws, loaded.config, platform);
 
   // stdout carries the MCP protocol, so anything we have to say goes to
@@ -217,6 +217,7 @@ export async function buildMcpTools(
   return createTools(workflows, ctx, {
     ...(sandbox === null ? {} : { sandbox }),
     workspace: dir,
+    isolation: loaded.config.agent.isolation,
     // A turn asked here runs in this process, and the loop's page reads its
     // progress from the same directory the loop's own steps write to.
     activity: createActivityLog(sandboxRoot(dir), person.id, scrubberOf(ctx.secrets, events.scrub)),

@@ -506,6 +506,17 @@ describe("buildWorkspaceRuntime", () => {
     expect(() => refuseNoneWrite(ws, loaded.config, "linux")).toThrow(refusal);
   });
 
+  // A run refuses a configured agent.isolation: none on Linux only when it is told the setting:
+  // the runtime `start` builds hands it to every workflow's deps, the default as well.
+  it.each([["isolation: none", "none"], [undefined, "worktree"]] as const)(
+    "hands the configured agent.isolation (%s) to the runtime's deps",
+    async (agentKeys, isolation) => {
+      const { dir } = await fixture(agentKeys === undefined ? {} : { agentKeys });
+      const built = await buildMain(dir, { readOnly: true });
+      expect(built.deps.isolation).toBe(isolation);
+    },
+  );
+
   // In `validate`'s words: a pairing is cut a checkout of its own.
   it("refuses a stage that waits for a pairing when steps do not run in worktrees", async () => {
     const { dir } = await fixture({ agentKeys: "isolation: none" });

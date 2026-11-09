@@ -6,7 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { GIT_GUARD_ARGS, INHERITED_ENV_KEYS } from "#conventions.js";
-import type { ControlPaths, GitDirs, RemoteGuard, WorktreeBranch, WorktreePreparation, WorktreeSetup, WorktreeState } from "#namespace.js";
+import type { ControlPaths, GitDirs, RemoteGuard, RuntimeConfig, WorktreeBranch, WorktreePreparation, WorktreeSetup, WorktreeState } from "#namespace.js";
 import { CommonDirRefused, commonDirIntact } from "#kit/git.js";
 import { commonDirOf as sandboxCommonDir, sandboxRoot } from "#sandbox.js";
 import { containedPath } from "#workflow/load.js";
@@ -663,7 +663,7 @@ async function smallFile(path: string): Promise<string | null> {
  * folder's identity before and after would keep that in one run's memory, so
  * a lost record would trust the remade one; this comes from the configuration,
  * and cannot be lost. Refused where the configuration is read, by `landrace
- * start` and `landrace mcp`, never by a run (`checkoutControlPaths`).
+ * start` and `landrace mcp`, and by a run told it (`checkoutControlPaths`).
  */
 export function noneWriteRefusal(platform: NodeJS.Platform = process.platform): string | null {
   if (platform !== "linux") return null;
@@ -705,13 +705,18 @@ async function worktreeConfigOff(common: string, repoRoot: string, what: string)
  * paths of each checkout it reaches — where it runs, and the workspace's —
  * each once. A directory in no repository has none.
  *
- * Never refused here on Linux, though such a run is (`noneWriteRefusal`): a
- * run with no worktree is also the in-memory harness's, which enters none and
- * runs no agent, and refused here it failed every harness write step on Linux,
- * a third party's too. The refusal is made where the configuration is read —
- * `landrace start` and `landrace mcp` — which can tell the two apart.
+ * With `agent.isolation: none` configured, refused on Linux
+ * (`noneWriteRefusal`), as `landrace start` and `landrace mcp` refuse it at
+ * startup, so a runtime built some other way is held to it too. Not refused
+ * with no isolation given: that is the in-memory harness's run, which enters
+ * no worktree and runs no agent, and refused it failed every harness write
+ * step on Linux, a third party's too.
  */
-export async function checkoutControlPaths(dirs: readonly string[], platform: NodeJS.Platform = process.platform): Promise<ControlPaths> {
+export async function checkoutControlPaths(
+  dirs: readonly string[], platform: NodeJS.Platform = process.platform, isolation?: RuntimeConfig["agent"]["isolation"],
+): Promise<ControlPaths> {
+  const refusal = isolation === "none" ? noneWriteRefusal(platform) : null;
+  if (refusal !== null) throw new Error(refusal);
   const deny: string[] = [];
   const absent: string[] = [];
   const commons: string[] = [];

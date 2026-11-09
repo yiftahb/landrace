@@ -461,7 +461,7 @@ async function converging(
         try {
           controls = sandbox
             ? await gitControlPaths(sandbox.path, sandbox.root)
-            : await checkoutControlPaths([process.cwd(), ...(deps.workspace === undefined ? [] : [deps.workspace])]);
+            : await checkoutControlPaths([process.cwd(), ...(deps.workspace === undefined ? [] : [deps.workspace])], process.platform, deps.isolation);
         } catch (e) {
           const reason = messageOf(e);
           deps.log("step.rejected", { item, stage: stage.id, round, reason });
