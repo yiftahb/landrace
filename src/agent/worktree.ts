@@ -380,14 +380,17 @@ const ADMIN_CONTROL_FILES = ["config", "config.worktree", "commondir", "gitdir",
  * And on Linux, nothing that a lost refusal record would hide. A path listed
  * absent is judged only after the run, so a record that failed to be written
  * left it there, denied and never judged again. So what can be is judged from
- * the repository itself, before every run: `<common>/hooks` and `info` are
- * made empty when missing, so they are denied and never absent (`git init`
- * makes both, and empty they change nothing); `<common>/config`, which `git
- * init` always makes, must be there; `<common>/config.worktree` must hold
- * nothing, since git reads none with the extension off; and every admin
- * folder must read as git made it (`adminFolderProblems`), which is judged
- * again after the run through `commons`. `<common>/commondir` is refused
- * wherever the engine's git runs (`commonDirIntact`).
+ * the repository itself, before every run: `<common>/hooks`, `info` and
+ * `config.worktree` are made empty when missing, so they are denied and never
+ * absent (`git init` makes the folders, and empty, none changes anything —
+ * an empty `config.worktree` sets nothing with the extension on or off). What
+ * is in one already is the operator's or a tool's, and is not judged: `git
+ * sparse-checkout disable`, which actions/checkout runs on every checkout,
+ * writes `config.worktree`, and refusing it halted every CI run.
+ * `<common>/config`, which `git init` always makes, must be there; and every
+ * admin folder must read as git made it (`adminFolderProblems`), which is
+ * judged again after the run through `commons`. `<common>/commondir` is
+ * refused wherever the engine's git runs (`commonDirIntact`).
  */
 export async function gitControlPaths(path: string, repoRoot: string, platform: NodeJS.Platform = process.platform): Promise<ControlPaths> {
   const what = `could not list the git paths a write step may not write in ${path}`;
@@ -404,9 +407,18 @@ export async function gitControlPaths(path: string, repoRoot: string, platform: 
       );
     }
     await worktreeConfigOff(common, repoRoot, what);
-    for (const folder of ["hooks", "info"]) {
-      await mkdir(join(common, folder)).catch((e: unknown) => {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw new Error(`${what}: ${messageOf(e)}`);
+    // `wx` and `mkdir` never overwrite: what is there already is the operator's, or a tool's.
+    const makes: [string, () => Promise<unknown>][] = [
+      ["hooks", () => mkdir(join(common, "hooks"))],
+      ["info", () => mkdir(join(common, "info"))],
+      ["config.worktree", () => writeFile(join(common, "config.worktree"), "", { flag: "wx" })],
+    ];
+    for (const [name, make] of makes) {
+      await make().catch((e: unknown) => {
+        if ((e as NodeJS.ErrnoException).code === "EEXIST") return;
+        throw new Error(
+          `${what}: ${join(common, name)} is missing and could not be made, so a write step could plant one: ${messageOf(e)}`,
+        );
       });
     }
   }
@@ -442,19 +454,9 @@ export async function gitControlPaths(path: string, repoRoot: string, platform: 
     );
   }
   if (linux) {
-    const own = join(common, "config.worktree");
-    let holds: boolean;
-    try {
-      holds = await holdsSomething(own);
-    } catch (e) {
-      throw new Error(`${what}: ${own} could not be read: ${messageOf(e)}`);
-    }
-    const problems = [
-      ...(holds ? [`${own} holds something, and with extensions.worktreeConfig off git has no reason to make one`] : []),
-      ...(await adminFolderProblems(common).catch((e: unknown) => {
-        throw new Error(`${what}: ${messageOf(e)}`);
-      })),
-    ];
+    const problems = await adminFolderProblems(common).catch((e: unknown) => {
+      throw new Error(`${what}: ${messageOf(e)}`);
+    });
     if (problems.length > 0) throw new Error(`${what}: ${problems.join("; ")}: ${PLANTED_FIX}`);
   }
   // An admin folder with no `gitdir` or `commondir` yet is another item's

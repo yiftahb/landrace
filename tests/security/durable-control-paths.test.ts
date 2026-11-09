@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -78,15 +78,50 @@ describe("on Linux, the common directory", () => {
     expect((await gitControlPaths(path, root, "linux")).commons).toEqual([common]);
   });
 
-  it("refuses a write run while its config.worktree holds something, with no record of it, naming it", async () => {
+  // Made empty when missing, so it is denied and nothing can be planted in it; an empty one sets
+  // nothing with extensions.worktreeConfig on or off.
+  it("has a missing config.worktree made empty, and denied rather than listed absent", async () => {
     const { root, path, common } = await setup();
     const file = join(common, "config.worktree");
-    await writeFile(file, "[core]\n\tfsmonitor = /bin/true\n");
-    const refused = gitControlPaths(path, root, "linux");
-    await expect(refused).rejects.toThrow(file);
-    await expect(gitControlPaths(path, root, "linux")).rejects.toThrow(PLANTED);
-    // What a Linux sandbox leaves where it denied a path that was not there: it sets nothing.
-    await writeFile(file, "");
+    expect(existsSync(file)).toBe(false);
+    const { deny, absent } = await gitControlPaths(path, root, "linux");
+    expect(await readFile(file, "utf8")).toBe("");
+    expect(deny).toContain(file);
+    expect(absent).not.toContain(file);
+  });
+
+  // `git sparse-checkout disable`, which actions/checkout runs on every checkout, writes one.
+  it("keeps a config.worktree that holds something as it is, and judges none of it", async () => {
+    const { root, path, common } = await setup();
+    const file = join(common, "config.worktree");
+    const body = "[core]\n\tsparseCheckout = false\n";
+    await writeFile(file, body);
+    const { deny } = await gitControlPaths(path, root, "linux");
+    expect(deny).toContain(file);
+    expect(await readFile(file, "utf8")).toBe(body);
+  });
+
+  it("passes a repository left the way actions/checkout leaves it", async () => {
+    const { root, path, common } = await setup();
+    await git(root, "sparse-checkout", "disable");
+    await git(root, "config", "--unset-all", "extensions.worktreeConfig");
+    expect((await readFile(join(common, "config.worktree"), "utf8")).trim()).not.toBe("");
+    await expect(gitControlPaths(path, root, "linux")).resolves.toBeDefined();
+  });
+
+  it.each(["hooks", "info", "config.worktree"])("refuses a write run when a missing %s cannot be made, naming it", async (name) => {
+    const { root, path, common } = await setup();
+    await rm(join(common, name), { recursive: true, force: true });
+    // Every other one there already, so only this one is made.
+    for (const other of ["hooks", "info"].filter((n) => n !== name)) await mkdir(join(common, other), { recursive: true });
+    if (name !== "config.worktree") await writeFile(join(common, "config.worktree"), "");
+    await chmod(common, 0o555);
+    try {
+      const refused = gitControlPaths(path, root, "linux");
+      await expect(refused).rejects.toThrow(`${join(common, name)} is missing and could not be made`);
+    } finally {
+      await chmod(common, 0o755);
+    }
     await expect(gitControlPaths(path, root, "linux")).resolves.toBeDefined();
   });
 

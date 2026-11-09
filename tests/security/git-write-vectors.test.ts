@@ -674,8 +674,8 @@ describe("plantedControlPaths", () => {
 
   // A hard link to a file the step may still write, such as `<common>/description`: empty when
   // judged, bound read-only by path from the next run on, and filled through its other name.
+  // `<common>/config.worktree` is never absent on Linux: it is made empty before the run.
   it.each([
-    ["<common>/config.worktree", (c: string) => join(c, "config.worktree")],
     ["an admin config.worktree", (_c: string, a: string) => join(a, "config.worktree")],
     ["an admin config", (_c: string, a: string) => join(a, "config")],
   ])("refuses an empty hard link at %s, which another name can fill", async (_what, where: (c: string, a: string) => string) => {
