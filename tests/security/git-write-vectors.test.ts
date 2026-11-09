@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import {
-  adminFolderProblems, checkoutControlPaths, ensureWorktree, gitControlPaths, gitDirsOf, keptSlot, noneWriteRefusal, plantedControlPaths,
-  prepareWorktree, releaseWorktree, removeWorktree, worktreeHead, worktreeIntact, worktreeState,
+  ensureWorktree, gitControlPaths, gitDirsOf, keptSlot, plantedControlPaths, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead,
+  worktreeIntact, worktreeState,
 } from "#agent/worktree.js";
 import type { ControlPaths } from "#namespace.js";
 import { GIT_GUARD_ARGS } from "#conventions.js";
