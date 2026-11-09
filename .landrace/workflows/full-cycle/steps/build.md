@@ -117,7 +117,8 @@ checks its deadline on every branch, the one where the holder cannot be read
 included, and gives up naming what it waited on.
 A check that judges what a tool writes — git's directories — runs against each
 of that tool's own operations, mid-way included (`worktree add` under way,
-`sparse-checkout`, `remove` and `prune` while it reads), and each must pass.
+`sparse-checkout`, `remove` and `prune` while it reads) and in the repository
+CI's checkout leaves (actions/checkout), and each must pass.
 Code gated on a platform this machine is not meets, under that platform, every
 test whose path reaches it — the in-memory harness's included — so run those
 with the platform stubbed: CI runs them there, and your gate does not.

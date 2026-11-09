@@ -102,7 +102,10 @@ A list of what untrusted work may not touch names every file the trusted
 reader reads, in each place of that kind — every git directory, the main one
 and one the work could remake alike — taken from the reader's own reference
 (git's `gitrepository-layout`), not from the attacks reproduced, and covers
-every way the work runs, the person's own checkout included; it is checked
+every way the work runs, the person's own checkout and a CI runner's included —
+a file the reader's own tool writes there (`git sparse-checkout disable`, which
+actions/checkout runs, fills `config.worktree`) is denied, never refused for its
+content, or every honest checkout halts; it is checked
 again before each trusted reader, the first included (setup commands), for the
 places the work made while it ran, on every way the run ends (throw, timeout,
 abort). A place other untrusted work can still write while the reader reads —
