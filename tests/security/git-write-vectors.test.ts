@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { chmod, cp, link, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { basename, join, relative } from "node:path";
 import { promisify } from "node:util";
 import {
   ensureWorktree, gitControlPaths, gitDirsOf, keptSlot, plantedControlPaths, prepareWorktree, releaseWorktree, removeWorktree, worktreeHead,
@@ -427,6 +427,57 @@ describe("a worktree handed out or run in", () => {
     const { root, path, admin } = await setup();
     await writeFile(join(path, ".git"), `gitdir: ${relative(path, admin)}\n`);
     await expect(worktreeIntact(path, root)).resolves.toBeUndefined();
+  });
+
+  // Git follows links before it resolves `commondir` (strbuf_realpath): a `../..` read as text
+  // names the common directory, while git, in a folder moved behind a link, reads the step's.
+  it.each([
+    ["<common>/worktrees", async (common: string, _admin: string, evil: string) => {
+      await rename(join(common, "worktrees"), join(evil, "worktrees"));
+      await symlink(join(evil, "worktrees"), join(common, "worktrees"));
+      return join(common, "worktrees");
+    }],
+    ["the admin folder", async (_common: string, admin: string, evil: string) => {
+      await mkdir(join(evil, "worktrees"));
+      await rename(admin, join(evil, "worktrees", basename(admin)));
+      await symlink(join(evil, "worktrees", basename(admin)), admin);
+      return admin;
+    }],
+  ])("is armed, and halts, when %s is moved behind a link into a git directory of the step's", async (_what, move) => {
+    const t = await trap();
+    const { root, path, common, admin } = await setup();
+    const evil = await evilCopy(common, join(t.dir, "evil"), t);
+    await rm(join(evil, "worktrees"), { recursive: true, force: true });
+    const linked = await move(common, admin, evil);
+    expect((await readFile(join(admin, "commondir"), "utf8")).trim()).toBe("../..");
+    await exec("git", ["status"], { cwd: path }).catch(() => undefined);
+    expect(ran(t.marker)).toBe(true);
+    await rm(t.marker, { force: true });
+
+    await expect(worktreeIntact(path, root)).rejects.toThrow(`${linked} is a link`);
+    await expect(prepareWorktree({
+      item: "8", path, root, log: () => {},
+      setup: { copy: [], setup: ["git status"], timeoutMs: 30_000, lockfiles: ["*.ts"] },
+    })).rejects.toThrow(`${linked} is a link`);
+    expect(ran(t.marker)).toBe(false);
+  });
+
+  // `git worktree add` truncates commondir before writing it; git dies on an empty one.
+  it("halts on an empty commondir, saying it is empty", async () => {
+    const { root, path, admin } = await setup();
+    await writeFile(join(admin, "commondir"), "");
+    await expect(worktreeIntact(path, root)).rejects.toThrow(`${join(admin, "commondir")} is empty`);
+  });
+
+  // With core.sparseCheckout on, `git worktree add` copies info/sparse-checkout into the admin
+  // folder, and per worktree git reads nothing else from that info.
+  it("accepts an admin folder whose info holds only git's sparse-checkout, and halts on anything else there", async () => {
+    const { root, path, admin } = await setup();
+    await mkdir(join(admin, "info"));
+    await writeFile(join(admin, "info", "sparse-checkout"), "/*\n");
+    await expect(worktreeIntact(path, root)).resolves.toBeUndefined();
+    await writeFile(join(admin, "info", "attributes"), "* filter=trap\n");
+    await expect(worktreeIntact(path, root)).rejects.toThrow(join(admin, "info", "attributes"));
   });
 
   it("accepts the relative commondir git writes, and an absolute one naming the same directory", async () => {

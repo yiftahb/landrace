@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import {
   adminFolderProblems, checkoutControlPaths, ensureWorktree, gitControlPaths, noneWriteRefusal, plantedControlPaths,
@@ -181,6 +181,91 @@ describe("on Linux, an admin folder", () => {
     const { common, admin } = await setup();
     expect((await readFile(join(admin, "commondir"), "utf8")).trim()).toBe("../..");
     expect(await adminFolderProblems(common)).toEqual([]);
+  });
+
+  // Git resolves `commondir` after following links (strbuf_realpath), so `../..` read as text names
+  // the common directory while git, in a moved folder reached through a link, reads one the step built.
+  it("reached through a link from <common>/worktrees is refused after the run, and again before the next", async () => {
+    await judged(async (_admin, common) => {
+      await mkdir(join(common, "evil"));
+      await rename(join(common, "worktrees"), join(common, "evil", "worktrees"));
+      await symlink(join(common, "evil", "worktrees"), join(common, "worktrees"));
+      return join(common, "worktrees");
+    });
+  });
+
+  it("that is itself a link is refused after the run, and again before the next", async () => {
+    await judged(async (admin, common) => {
+      await mkdir(join(common, "evil", "worktrees"), { recursive: true });
+      const moved = join(common, "evil", "worktrees", basename(admin));
+      await rename(admin, moved);
+      await symlink(moved, admin);
+      return admin;
+    });
+  });
+
+  it("whose commondir reads ../.. but resolves, through a linked <common>/worktrees, elsewhere, names where git goes", async () => {
+    const { common } = await setup();
+    await mkdir(join(common, "evil"));
+    await rename(join(common, "worktrees"), join(common, "evil", "worktrees"));
+    await symlink(join(common, "evil", "worktrees"), join(common, "worktrees"));
+    expect((await adminFolderProblems(common)).join("\n")).toContain(`names ${join(common, "evil")}, not ${common}`);
+  });
+
+  // `git worktree add` opens commondir with O_TRUNC before writing it, and another run's check can
+  // land in between: git dies on an empty one, so nothing is trusted, and removing it breaks a
+  // worktree that was valid.
+  it("with an empty commondir, as git worktree add leaves it for a moment, passes", async () => {
+    const { root, path, common } = await setup();
+    const folder = join(common, "worktrees", "adding");
+    await mkdir(folder);
+    await writeFile(join(folder, "gitdir"), "/somewhere/wt/.git\n");
+    await writeFile(join(folder, "commondir"), "");
+    expect(await adminFolderProblems(common)).toEqual([]);
+    await expect(gitControlPaths(path, root, "linux")).resolves.toBeDefined();
+  });
+
+  // `git worktree add` copies info/sparse-checkout into the folder with core.sparseCheckout on,
+  // and per worktree git reads only that file from it.
+  it("with git's own info/sparse-checkout passes, before and after a run", async () => {
+    const { root, path, common, admin } = await setup();
+    const controls = await gitControlPaths(path, root, "linux");
+    expect(controls.absent).toContain(join(admin, "info"));
+    await mkdir(join(admin, "info"));
+    await writeFile(join(admin, "info", "sparse-checkout"), "/*\n");
+    expect(await plantedControlPaths(controls)).toBeNull();
+    expect(await adminFolderProblems(common)).toEqual([]);
+    await expect(gitControlPaths(path, root, "linux")).resolves.toBeDefined();
+  });
+
+  it("made by git worktree add with core.sparseCheckout on passes", async () => {
+    const { root, path, common } = await setup();
+    await git(root, "config", "core.sparseCheckout", "true");
+    await mkdir(join(common, "info"), { recursive: true });
+    await writeFile(join(common, "info", "sparse-checkout"), "/*\n");
+    const own = join(await scratch("lr-sparse-"), "wt");
+    await git(root, "worktree", "add", "-q", "-b", "sparse", own);
+    const admin = await adminOf(common, realpathSync(own));
+    expect(await readdir(join(admin, "info"))).toEqual(["sparse-checkout"]);
+    expect(await adminFolderProblems(common)).toEqual([]);
+    await expect(gitControlPaths(path, root, "linux")).resolves.toBeDefined();
+  });
+
+  it.each([
+    ["anything else beside sparse-checkout", async (info: string) => {
+      await writeFile(join(info, "sparse-checkout"), "/*\n");
+      await writeFile(join(info, "attributes"), "* filter=x\n");
+      return join(info, "attributes");
+    }],
+    ["a sparse-checkout that is a link", async (info: string) => {
+      await symlink("/etc/hosts", join(info, "sparse-checkout"));
+      return join(info, "sparse-checkout");
+    }],
+  ])("with an info holding %s is refused after the run, and again before the next", async (_what, put) => {
+    await judged(async (admin) => {
+      await mkdir(join(admin, "info"));
+      return put(join(admin, "info"));
+    });
   });
 });
 
