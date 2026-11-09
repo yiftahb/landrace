@@ -482,7 +482,7 @@ const PLANTED_FIX = "a step that may write could have put it there. Remove it an
  * it, as a sentence naming the path: `<common>/worktrees` or the folder a
  * link, or reached through one (`placedAway`); a `commondir`, where there is
  * one, that resolves anywhere but `common`; a `config` or `hooks`, which git
- * never makes in one; an `info` holding anything but git's own
+ * never makes in one; an `info` holding anything but nothing or git's own
  * `sparse-checkout` (`adminInfoProblem`); a `config.worktree` holding
  * something (`holdsSomething`). Judged by content, never against a list taken
  * before: git decides what an admin folder holds, so one a step renamed away
@@ -492,23 +492,57 @@ const PLANTED_FIX = "a step that may write could have put it there. Remove it an
  * one git would then read as a repository is refused for its `config` or
  * `hooks`. A folder that cannot be read is a problem too;
  * `<common>/worktrees` that cannot, a throw.
+ *
+ * The engine's own `git worktree remove` and `prune` delete other items'
+ * folders, and `<common>/worktrees` once empty, while this runs after a
+ * write run: a folder gone by the time it is read holds nothing git reads, so
+ * it is nothing to judge (`whileThere`), never a planted path that halts an
+ * unrelated item.
  */
 export async function adminFolderProblems(common: string): Promise<string[]> {
   const under = join(common, "worktrees");
   if (!(await exists(under))) return [];
   const real = await realpath(common);
-  const problems: string[] = [];
-  const away = await placedAway(under, join(real, "worktrees"));
-  if (away !== null) problems.push(away);
-  for (const name of (await readdir(under)).sort()) {
+  let away: string | null;
+  let names: string[];
+  try {
+    away = await placedAway(under, join(real, "worktrees"));
+    names = (await readdir(under)).sort();
+  } catch (e) {
+    if (await goneAfter(under, e)) return [];
+    throw e;
+  }
+  const problems: string[] = away === null ? [] : [away];
+  for (const name of names) {
     const folder = join(under, name);
-    try {
-      problems.push(...await adminFolderProblemsOf(folder, join(real, "worktrees", name), real));
-    } catch (e) {
-      problems.push(`${folder} could not be read: ${messageOf(e)}`);
-    }
+    problems.push(...await whileThere(folder, () => adminFolderProblemsOf(folder, join(real, "worktrees", name), real)));
   }
   return problems;
+}
+
+/** Whether `e` came of `path`, or something in it, not being there, and `path` is gone now. */
+async function goneAfter(path: string, e: unknown): Promise<boolean> {
+  return MISSING.has((e as NodeJS.ErrnoException).code ?? "") && !(await exists(path).catch(() => true));
+}
+
+/**
+ * What `judge` finds wrong in the folder at `path`, which git may be deleting
+ * as it is read: nothing once `path` is gone, whatever was found on the way;
+ * judged again, twice at most, when something in it vanished as it was read
+ * and the folder is still there; and what cannot be read, as a problem.
+ */
+async function whileThere(path: string, judge: () => Promise<string[]>): Promise<string[]> {
+  for (let tries = 1; ; tries++) {
+    try {
+      const found = await judge();
+      return found.length > 0 && !(await exists(path).catch(() => true)) ? [] : found;
+    } catch (e) {
+      if (await goneAfter(path, e)) return [];
+      if (!MISSING.has((e as NodeJS.ErrnoException).code ?? "") || tries === 3) {
+        return [`${path} could not be read: ${messageOf(e)}`];
+      }
+    }
+  }
 }
 
 /**
@@ -604,7 +638,9 @@ async function placedAway(path: string, want: string): Promise<string | null> {
  * there: git makes one only to copy the repository's `info/sparse-checkout`
  * into it, with `core.sparseCheckout` on, and per worktree reads nothing else
  * from it. So one holding exactly that, a regular file of its own, passes;
- * anything else in it, an empty one, or one that is not a folder is refused.
+ * anything else in it, or one that is not a folder, is refused. An empty one
+ * passes: git reads nothing from it, and leaves one for a moment both as
+ * `git worktree add` copies the file in and as git deletes the folder.
  */
 async function adminInfoProblem(info: string): Promise<string | null> {
   const stat = await lstat(info).catch((e: unknown) => {
@@ -617,7 +653,7 @@ async function adminInfoProblem(info: string): Promise<string | null> {
   const names = (await readdir(info)).sort();
   const others = names.filter((n) => n !== "sparse-checkout");
   if (others.length > 0) return `${info} holds ${others.map((n) => join(info, n)).join(", ")}, ${never}`;
-  if (names.length === 0) return `${info} exists, ${never}`;
+  if (names.length === 0) return null;
   const sparse = join(info, "sparse-checkout");
   const file = await lstat(sparse);
   if (!file.isFile() || file.nlink > 1) return `${sparse} is not a file of its own, and git copies one there`;

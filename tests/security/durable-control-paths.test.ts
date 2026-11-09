@@ -145,6 +145,8 @@ describe("on Linux, an admin folder", () => {
     await judged(async (admin) => {
       if (own === "config") await writeFile(join(admin, own), "[core]\n\thooksPath = x\n");
       else await mkdir(join(admin, own));
+      // An empty info is git's own for a moment, as it copies sparse-checkout in or deletes the folder.
+      if (own === "info") await writeFile(join(admin, own, "attributes"), "* filter=x\n");
       return join(admin, own);
     });
   });
@@ -247,6 +249,13 @@ describe("on Linux, an admin folder", () => {
     await git(root, "worktree", "add", "-q", "-b", "sparse", own);
     const admin = await adminOf(common, realpathSync(own));
     expect(await readdir(join(admin, "info"))).toEqual(["sparse-checkout"]);
+    expect(await adminFolderProblems(common)).toEqual([]);
+    await expect(gitControlPaths(path, root, "linux")).resolves.toBeDefined();
+  });
+
+  it("with an empty info, as git leaves one while adding or deleting the folder, passes", async () => {
+    const { root, path, common, admin } = await setup();
+    await mkdir(join(admin, "info"));
     expect(await adminFolderProblems(common)).toEqual([]);
     await expect(gitControlPaths(path, root, "linux")).resolves.toBeDefined();
   });

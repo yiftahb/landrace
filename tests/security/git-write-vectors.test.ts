@@ -406,7 +406,9 @@ describe("a worktree handed out or run in", () => {
     const { root, path, admin } = await setup();
     if (file === "config") await writeFile(join(admin, file), "[core]\n\tfsmonitor = /bin/true\n");
     else await mkdir(join(admin, file));
-    await expect(worktreeIntact(path, root)).rejects.toThrow(`${join(admin, file)} exists`);
+    // An empty info is git's own for a moment, as it copies sparse-checkout in or deletes the folder.
+    if (file === "info") await writeFile(join(admin, file, "attributes"), "* filter=x\n");
+    await expect(worktreeIntact(path, root)).rejects.toThrow(file === "info" ? join(admin, file, "attributes") : `${join(admin, file)} exists`);
   });
 
   it("keeps the admin folder lookup's config.worktree halt", async () => {
